@@ -19,20 +19,20 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-func TestNewBackgroundJobRegistry(t *testing.T) {
+func TestNewBashRegistry(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	if r == nil {
-		t.Fatal("NewBackgroundJobRegistry() returned nil")
+		t.Fatal("NewBashRegistry() returned nil")
 	}
 	if len(r.List()) != 0 {
 		t.Error("new registry should have no tasks")
 	}
 }
 
-func TestBackgroundJobRegistry_Spawn(t *testing.T) {
+func TestBashRegistry_Spawn(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("echo hello", 1234, NewStreamingOutput(nil))
 	if job == nil {
@@ -58,9 +58,9 @@ func TestBackgroundJobRegistry_Spawn(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Spawn_IncrementalID(t *testing.T) {
+func TestBashRegistry_Spawn_IncrementalID(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	task1 := r.Spawn("cmd1", 1, nil)
 	task2 := r.Spawn("cmd2", 2, nil)
@@ -70,9 +70,9 @@ func TestBackgroundJobRegistry_Spawn_IncrementalID(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_List(t *testing.T) {
+func TestBashRegistry_List(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	r.Spawn("cmd1", 1, nil)
 	r.Spawn("cmd2", 2, nil)
@@ -83,9 +83,9 @@ func TestBackgroundJobRegistry_List(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill(t *testing.T) {
+func TestBashRegistry_Kill(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	// Use PID 0 to avoid killing actual processes in test
 	job := r.Spawn("sleep 100", 0, NewStreamingOutput(nil))
@@ -108,9 +108,9 @@ func TestBackgroundJobRegistry_Kill(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill_NotFound(t *testing.T) {
+func TestBashRegistry_Kill_NotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	err := r.Kill("nonexistent")
 	if err == nil {
@@ -118,9 +118,9 @@ func TestBackgroundJobRegistry_Kill_NotFound(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill_AlreadyCompleted(t *testing.T) {
+func TestBashRegistry_Kill_AlreadyCompleted(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("echo done", 0, nil)
 	job.Complete(0, false)
@@ -131,9 +131,9 @@ func TestBackgroundJobRegistry_Kill_AlreadyCompleted(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Wait(t *testing.T) {
+func TestBashRegistry_Wait(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("echo hello", 0, nil)
 
@@ -156,9 +156,9 @@ func TestBackgroundJobRegistry_Wait(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Wait_NotFound(t *testing.T) {
+func TestBashRegistry_Wait_NotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	_, err := r.Wait("nonexistent")
 	if err == nil {
@@ -166,9 +166,9 @@ func TestBackgroundJobRegistry_Wait_NotFound(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Wait_NonZeroExit(t *testing.T) {
+func TestBashRegistry_Wait_NonZeroExit(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("exit 1", 0, nil)
 	job.Complete(1, false)
@@ -185,9 +185,9 @@ func TestBackgroundJobRegistry_Wait_NonZeroExit(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Get(t *testing.T) {
+func TestBashRegistry_Get(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("cmd", 1, nil)
 
@@ -205,9 +205,9 @@ func TestBackgroundJobRegistry_Get(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Remove(t *testing.T) {
+func TestBashRegistry_Remove(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("cmd", 1, nil)
 	job.Complete(0, false)
@@ -278,9 +278,9 @@ func TestBackgroundJob_SetStallCancel(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill_StopsStallWatchdog(t *testing.T) {
+func TestBashRegistry_Kill_StopsStallWatchdog(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("cmd", 0, nil)
 
@@ -297,9 +297,9 @@ func TestBackgroundJobRegistry_Kill_StopsStallWatchdog(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_ConcurrentAccess(t *testing.T) {
+func TestBashRegistry_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	var wg sync.WaitGroup
 	for range 10 {
@@ -318,9 +318,9 @@ func TestBackgroundJobRegistry_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill_NoStallCancel(t *testing.T) {
+func TestBashRegistry_Kill_NoStallCancel(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("cmd", 0, nil)
 	// Don't set stall cancel — cover the nil cancelStall path
@@ -335,9 +335,9 @@ func TestBackgroundJobRegistry_Kill_NoStallCancel(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Kill_WithPID(t *testing.T) {
+func TestBashRegistry_Kill_WithPID(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	// Use os.Getpid() — killing own process tree would be bad,
 	// but killProcessTree with our own PID will succeed without killing us
@@ -370,9 +370,9 @@ func TestBackgroundJob_Complete_StopsStallCancel(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Spawn_WithOutput(t *testing.T) {
+func TestBashRegistry_Spawn_WithOutput(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	output := NewStreamingOutput(nil)
 	n, err := output.Write([]byte("hello\n"))
@@ -394,16 +394,16 @@ func TestBackgroundJobRegistry_Spawn_WithOutput(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_RemoveNonexistent(t *testing.T) {
+func TestBashRegistry_RemoveNonexistent(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	// Should not panic
 	r.Remove("nonexistent")
 }
 
-func TestBackgroundJobRegistry_Kill_RealPID(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+func TestBashRegistry_Kill_RealPID(t *testing.T) {
+	r := NewBashRegistry()
 
 	// Spawn a real sleep process in its own process group
 	cmd := exec.Command("sleep", "300")
@@ -553,9 +553,9 @@ func TestEscapeXML(t *testing.T) {
 // RegisterForeground
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_RegisterForeground(t *testing.T) {
+func TestBashRegistry_RegisterForeground(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	output := NewStreamingOutput(nil)
 	job := r.RegisterForeground("echo hello", "desc", output)
 
@@ -583,9 +583,9 @@ func TestBackgroundJobRegistry_RegisterForeground(t *testing.T) {
 // Background
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_Background(t *testing.T) {
+func TestBashRegistry_Background(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("cmd", "", nil)
 
 	if !r.Background(job.ID) {
@@ -596,26 +596,26 @@ func TestBackgroundJobRegistry_Background(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_Background_NotFound(t *testing.T) {
+func TestBashRegistry_Background_NotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	if r.Background("nonexistent") {
 		t.Error("Background on nonexistent should return false")
 	}
 }
 
-func TestBackgroundJobRegistry_Background_AlreadyBackgrounded(t *testing.T) {
+func TestBashRegistry_Background_AlreadyBackgrounded(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, nil) // Spawn sets IsBackgrounded=true
 	if r.Background(job.ID) {
 		t.Error("Background on already-backgrounded job should return false")
 	}
 }
 
-func TestBackgroundJobRegistry_Background_CompletedTask(t *testing.T) {
+func TestBashRegistry_Background_CompletedTask(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("cmd", "", nil)
 	job.Complete(0, false)
 	if r.Background(job.ID) {
@@ -627,9 +627,9 @@ func TestBackgroundJobRegistry_Background_CompletedTask(t *testing.T) {
 // BackgroundAll
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_BackgroundAll(t *testing.T) {
+func TestBashRegistry_BackgroundAll(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	t1 := r.RegisterForeground("cmd1", "", nil)
 	t2 := r.RegisterForeground("cmd2", "", nil)
 	_ = r.Spawn("cmd3", 0, nil) // already backgrounded, should be skipped
@@ -643,9 +643,9 @@ func TestBackgroundJobRegistry_BackgroundAll(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_BackgroundAll_NoForeground(t *testing.T) {
+func TestBashRegistry_BackgroundAll_NoForeground(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.Spawn("cmd", 0, nil)
 	transitioned := r.BackgroundAll()
 	if len(transitioned) != 0 {
@@ -657,9 +657,9 @@ func TestBackgroundJobRegistry_BackgroundAll_NoForeground(t *testing.T) {
 // BackgroundExistingForegroundTask
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_BackgroundExistingForegroundTask(t *testing.T) {
+func TestBashRegistry_BackgroundExistingForegroundTask(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("cmd", "", nil)
 	if !r.BackgroundExistingForegroundTask(job.ID) {
 		t.Error("should transition foreground job")
@@ -673,27 +673,27 @@ func TestBackgroundJobRegistry_BackgroundExistingForegroundTask(t *testing.T) {
 // HasForegroundTasks
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_HasForegroundTasks_True(t *testing.T) {
+func TestBashRegistry_HasForegroundTasks_True(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.RegisterForeground("cmd", "", nil)
 	if !r.HasForegroundTasks() {
 		t.Error("should have foreground tasks")
 	}
 }
 
-func TestBackgroundJobRegistry_HasForegroundTasks_False(t *testing.T) {
+func TestBashRegistry_HasForegroundTasks_False(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.Spawn("cmd", 0, nil) // Spawn sets IsBackgrounded=true
 	if r.HasForegroundTasks() {
 		t.Error("should not have foreground tasks")
 	}
 }
 
-func TestBackgroundJobRegistry_HasForegroundTasks_CompletedNotCounted(t *testing.T) {
+func TestBashRegistry_HasForegroundTasks_CompletedNotCounted(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("cmd", "", nil)
 	job.Complete(0, false)
 	if r.HasForegroundTasks() {
@@ -705,9 +705,9 @@ func TestBackgroundJobRegistry_HasForegroundTasks_CompletedNotCounted(t *testing
 // MarkNotified
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_MarkNotified(t *testing.T) {
+func TestBashRegistry_MarkNotified(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, nil)
 	if !r.MarkNotified(job.ID) {
 		t.Error("first MarkNotified should return true")
@@ -717,9 +717,9 @@ func TestBackgroundJobRegistry_MarkNotified(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_MarkNotified_NotFound(t *testing.T) {
+func TestBashRegistry_MarkNotified_NotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	if r.MarkNotified("nonexistent") {
 		t.Error("MarkNotified on nonexistent should return false")
 	}
@@ -729,9 +729,9 @@ func TestBackgroundJobRegistry_MarkNotified_NotFound(t *testing.T) {
 // UnregisterForeground
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_UnregisterForeground(t *testing.T) {
+func TestBashRegistry_UnregisterForeground(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("cmd", "", nil)
 	job.Complete(0, false)
 	r.UnregisterForeground(job.ID)
@@ -740,9 +740,9 @@ func TestBackgroundJobRegistry_UnregisterForeground(t *testing.T) {
 	}
 }
 
-func TestBackgroundJobRegistry_UnregisterForeground_BackgroundNotRemoved(t *testing.T) {
+func TestBashRegistry_UnregisterForeground_BackgroundNotRemoved(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, nil) // IsBackgrounded=true
 	r.UnregisterForeground(job.ID)
 	if _, ok := r.Get(job.ID); !ok {
@@ -750,9 +750,9 @@ func TestBackgroundJobRegistry_UnregisterForeground_BackgroundNotRemoved(t *test
 	}
 }
 
-func TestBackgroundJobRegistry_UnregisterForeground_NotFound(t *testing.T) {
+func TestBashRegistry_UnregisterForeground_NotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.UnregisterForeground("nonexistent") // should not panic
 }
 
@@ -841,7 +841,7 @@ func TestBuildNotificationLocked_UnknownStatus(t *testing.T) {
 
 func TestBuildNotification_Registry(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, nil)
 	n := r.buildNotification(job, "completed")
 	if n == nil {
@@ -858,20 +858,20 @@ func TestBuildNotification_Registry(t *testing.T) {
 
 func TestSendNotification_Nil(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.sendNotification(nil) // should not panic
 }
 
 func TestSendNotification_NilCallback(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.sendNotification(&JobNotification{}) // OnNotify is nil, should not panic
 }
 
 func TestSendNotification_Callback(t *testing.T) {
 	t.Parallel()
 	called := false
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.OnNotify = func(n JobNotification) { called = true }
 	r.sendNotification(&JobNotification{JobID: "bg-1"})
 	if !called {
@@ -1059,9 +1059,9 @@ func TestIsTerminalJobStatus(t *testing.T) {
 //  Kill() must set ExitCode to 137 (SIGKILL = 128+9)
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_Kill_SetsExitCode137(t *testing.T) {
+func TestBashRegistry_Kill_SetsExitCode137(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("sleep 60", 12345, nil)
 
@@ -1085,9 +1085,9 @@ func TestBackgroundJobRegistry_Kill_SetsExitCode137(t *testing.T) {
 //  notification for killed job should include exit code
 // ---------------------------------------------------------------------------
 
-func TestBackgroundJobRegistry_Kill_NotificationIncludesExitCode(t *testing.T) {
+func TestBashRegistry_Kill_NotificationIncludesExitCode(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	var gotNotify JobNotification
 	r.OnNotify = func(n JobNotification) {
@@ -1120,7 +1120,7 @@ func TestBackgroundJobRegistry_Kill_NotificationIncludesExitCode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestJobInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	job := r.Spawn("sleep 60", 12345, nil)
 	if err := r.Kill(job.ID); err != nil {
@@ -1142,7 +1142,7 @@ func TestJobInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 }
 
 func TestBashAdapterKind(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("echo hi", 300, NewStreamingOutput(nil))
 
 	adapter := NewJobInfoAdapter(r)
@@ -1160,7 +1160,7 @@ func TestBashAdapterKind(t *testing.T) {
 // DurationMs zero (elapsed comes from StartedMs instead). Killed jobs get
 // their runtime from the EndTime Kill stamps.
 func TestJobInfoAdapter_TerminalJobDurationMs(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	done := r.Spawn("echo hi", 300, NewStreamingOutput(nil))
 	done.Complete(0, false)
 	// Pin the start deterministically: same-millisecond Spawn→Complete would
@@ -1211,7 +1211,7 @@ func TestJobInfoAdapter_TerminalJobDurationMs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestJobInfoAdapter_GetNotFound(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	info, ok := adapter.Get("nonexistent")
@@ -1224,7 +1224,7 @@ func TestJobInfoAdapter_GetNotFound(t *testing.T) {
 }
 
 func TestJobInfoAdapter_List(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	t1 := r.Spawn("echo a", 100, NewStreamingOutput(nil))
 	t2 := r.Spawn("echo b", 101, NewStreamingOutput(nil))
 
@@ -1251,7 +1251,7 @@ func TestJobInfoAdapter_List(t *testing.T) {
 }
 
 func TestJobInfoAdapter_ListEmpty(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	list := adapter.List()
@@ -1261,7 +1261,7 @@ func TestJobInfoAdapter_ListEmpty(t *testing.T) {
 }
 
 func TestJobInfoAdapter_Wait(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("echo done", 200, NewStreamingOutput(nil))
 
 	// Complete the job so Wait returns immediately
@@ -1278,7 +1278,7 @@ func TestJobInfoAdapter_Wait(t *testing.T) {
 }
 
 func TestJobInfoAdapter_WaitNotFound(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	_, err := adapter.Wait("nonexistent")
@@ -1291,7 +1291,7 @@ func TestJobInfoAdapter_WaitNotFound(t *testing.T) {
 }
 
 func TestJobInfoAdapter_Kill(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	// PID=0 avoids killProcessTree hitting real processes; adapter test is delegation-only
 	job := r.Spawn("sleep 60", 0, NewStreamingOutput(nil))
 
@@ -1310,7 +1310,7 @@ func TestJobInfoAdapter_Kill(t *testing.T) {
 }
 
 func TestJobInfoAdapter_KillNotFound(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	err := adapter.Kill("nonexistent")
@@ -1323,7 +1323,7 @@ func TestJobInfoAdapter_KillNotFound(t *testing.T) {
 }
 
 func TestJobInfoAdapter_KillNotRunning(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("echo x", 400, NewStreamingOutput(nil))
 	job.Complete(0, false)
 
@@ -1338,7 +1338,7 @@ func TestJobInfoAdapter_KillNotRunning(t *testing.T) {
 }
 
 func TestJobInfoAdapter_GetWithOutput(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	s := NewStreamingOutput(nil)
 	if _, err := s.Write([]byte("hello output")); err != nil {
 		t.Fatalf("Write() error: %v", err)
@@ -1363,7 +1363,7 @@ func TestJobInfoAdapter_GetWithOutput(t *testing.T) {
 func TestAutoBackground_StderrNotDropped(t *testing.T) {
 	// Use a fresh registry to avoid polluting global state.
 	orig := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = orig }()
 
@@ -1412,7 +1412,7 @@ func contains(s, substr string) bool {
 
 func TestJobInfoAdapter_KillNotFound_WrapsErrNotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	err := adapter.Kill("nonexistent")
@@ -1426,7 +1426,7 @@ func TestJobInfoAdapter_KillNotFound_WrapsErrNotFound(t *testing.T) {
 
 func TestJobInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	adapter := NewJobInfoAdapter(r)
 
 	_, err := adapter.Wait("nonexistent")
@@ -1443,7 +1443,7 @@ func TestJobInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCleanupCompleted_RemovesExpiredTasks(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	job := reg.Spawn("sleep 1", 0, nil)
 	job.Complete(0, false)
 
@@ -1460,7 +1460,7 @@ func TestCleanupCompleted_RemovesExpiredTasks(t *testing.T) {
 }
 
 func TestCleanupCompleted_KeepsRunningTasks(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	job := reg.Spawn("sleep 60", 0, nil)
 	// Running job — evictAfter is zero
 
@@ -1472,7 +1472,7 @@ func TestCleanupCompleted_KeepsRunningTasks(t *testing.T) {
 }
 
 func TestCleanupCompleted_KeepsTasksWithinGrace(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	job := reg.Spawn("sleep 1", 0, nil)
 	job.Complete(0, false)
 
@@ -1485,7 +1485,7 @@ func TestCleanupCompleted_KeepsTasksWithinGrace(t *testing.T) {
 }
 
 func TestCleanupCompleted_KillSetsEvictAfter(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	job := reg.Spawn("sleep 60", 0, nil)
 
 	if err := reg.Kill(job.ID); err != nil {
@@ -1505,7 +1505,7 @@ func TestCleanupCompleted_KillSetsEvictAfter(t *testing.T) {
 }
 
 func TestCleanupCompleted_CompleteSetsEvictAfter(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	job := reg.Spawn("sleep 1", 0, nil)
 
 	job.Complete(0, false)
@@ -1523,7 +1523,7 @@ func TestCleanupCompleted_CompleteSetsEvictAfter(t *testing.T) {
 }
 
 func TestCleanupCompleted_MultipleTasks(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 
 	expired := reg.Spawn("echo 1", 0, nil)
 	expired.Complete(0, false)
@@ -1552,7 +1552,7 @@ func TestCleanupCompleted_MultipleTasks(t *testing.T) {
 
 func TestAdapter_List_E2E_Eviction(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		reg := NewBackgroundJobRegistry()
+		reg := NewBashRegistry()
 		adapter := NewJobInfoAdapter(reg)
 
 		job := reg.Spawn("echo hello", 0, NewStreamingOutput(nil))
@@ -1587,7 +1587,7 @@ func TestAdapter_List_E2E_Eviction(t *testing.T) {
 // (Backgrounded/StartedMs) on both List and ListSummaries, plus the
 // SummaryLister contract: Output stays empty even when the job has output.
 func TestJobInfoAdapter_PanelFieldsAndSummaries(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	s := NewStreamingOutput(nil)
 	if _, err := s.Write([]byte("line 1\nline 2\n")); err != nil {
 		t.Fatalf("Write() error: %v", err)
@@ -1629,7 +1629,7 @@ func TestJobInfoAdapter_PanelFieldsAndSummaries(t *testing.T) {
 // TestBackgroundJob_Tail verifies the minimal tail accessor: bounded window,
 // nil-output safe.
 func TestBackgroundJob_Tail(t *testing.T) {
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 
 	nilJob := r.Spawn("no output", 0, nil)
 	if got := nilJob.Tail(); got != "" {
@@ -1657,12 +1657,12 @@ func TestBackgroundJob_Tail(t *testing.T) {
 // test observes. Comments state the production consequence, not the mutant.
 // ---------------------------------------------------------------------------
 
-// TestBackgroundJobRegistry_Wait_NotFound_SentinelCode pins the not-found
+// TestBashRegistry_Wait_NotFound_SentinelCode pins the not-found
 // contract: exit code -1 plus the exact ad-hoc error string that
 // isBashNotFound pattern-matches on the adapter side.
-func TestBackgroundJobRegistry_Wait_NotFound_SentinelCode(t *testing.T) {
+func TestBashRegistry_Wait_NotFound_SentinelCode(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	code, err := r.Wait("missing")
 	if err == nil {
 		t.Fatal("Wait on missing job should fail")
@@ -1680,7 +1680,7 @@ func TestBackgroundJobRegistry_Wait_NotFound_SentinelCode(t *testing.T) {
 // wrapping return must preserve the registry's -1, not just the error.
 func TestJobInfoAdapter_WaitNotFound_PassesThroughRegistryCode(t *testing.T) {
 	t.Parallel()
-	adapter := NewJobInfoAdapter(NewBackgroundJobRegistry())
+	adapter := NewJobInfoAdapter(NewBashRegistry())
 	code, err := adapter.Wait("missing")
 	if err == nil {
 		t.Fatal("Wait on missing job should fail")
@@ -1697,7 +1697,7 @@ func TestJobInfoAdapter_WaitNotFound_PassesThroughRegistryCode(t *testing.T) {
 // back the real exit code — engine dispatches on it.
 func TestJobInfoAdapter_Wait_NonZeroExitCode(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("exit 7", 0, nil)
 	job.Complete(7, false)
 	code, err := NewJobInfoAdapter(r).Wait(job.ID)
@@ -1712,7 +1712,7 @@ func TestJobInfoAdapter_Wait_NonZeroExitCode(t *testing.T) {
 // TestJobInfoAdapter_Prefix: MultiRegistry routes IDs by this prefix.
 func TestJobInfoAdapter_Prefix(t *testing.T) {
 	t.Parallel()
-	if got := NewJobInfoAdapter(NewBackgroundJobRegistry()).Prefix(); got != "bg-" {
+	if got := NewJobInfoAdapter(NewBashRegistry()).Prefix(); got != "bg-" {
 		t.Errorf("Prefix() = %q, want bg-", got)
 	}
 }
@@ -1721,7 +1721,7 @@ func TestJobInfoAdapter_Prefix(t *testing.T) {
 // panel renders, on both the Get (full) path and the ListSummaries path.
 func TestJobInfoAdapter_InfoAndSummaryFieldPins(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	s := NewStreamingOutput(nil)
 	if _, err := s.Write([]byte("cap out\n")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -1787,7 +1787,7 @@ func TestJobInfoAdapter_InfoAndSummaryFieldPins(t *testing.T) {
 // it must stay held for as long as the conversion is in flight.
 func TestJobInfoAdapter_GetHoldsJobLockDuringOutputMaterialization(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	s := NewStreamingOutput(nil)
 	if _, err := s.Write([]byte("parked\n")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -1816,7 +1816,7 @@ func TestJobInfoAdapter_GetHoldsJobLockDuringOutputMaterialization(t *testing.T)
 // summaries, so jobs would accumulate forever without it.
 func TestJobInfoAdapter_ListSummariesTriggersEviction(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		reg := NewBackgroundJobRegistry()
+		reg := NewBashRegistry()
 		adapter := NewJobInfoAdapter(reg)
 		job := reg.Spawn("echo hi", 0, NewStreamingOutput(nil))
 		job.Complete(0, false)
@@ -1835,7 +1835,7 @@ func TestJobInfoAdapter_ListSummariesTriggersEviction(t *testing.T) {
 // STOPPED_DISPLAY_MS grace as Complete, not longer.
 func TestKill_EvictsAfterStopDisplayGrace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		reg := NewBackgroundJobRegistry()
+		reg := NewBashRegistry()
 		adapter := NewJobInfoAdapter(reg)
 		job := reg.Spawn("sleep", 0, NewStreamingOutput(nil))
 		if err := reg.Kill(job.ID); err != nil {
@@ -1947,7 +1947,7 @@ func TestBackgroundJob_Complete_FlushesOutput(t *testing.T) {
 // though the registry field itself is never consulted on that path.
 func TestRegistryOnNotifyCopiedAtRegistration(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	var mu sync.Mutex
 	var got []string
 	r.OnNotify = func(n JobNotification) {
@@ -1978,7 +1978,7 @@ func TestRegistryOnNotifyCopiedAtRegistration(t *testing.T) {
 // an empty status makes Kill reject the job and the panel shows epoch 0.
 func TestRegistrationLiterals_PinInitialState(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	bg := r.Spawn("spawned", 0, nil)
 	if bg.Kind != "bash" {
 		t.Errorf("Spawn Kind = %q, want bash (monitor is the only other kind)", bg.Kind)
@@ -1997,7 +1997,7 @@ func TestRegistrationLiterals_PinInitialState(t *testing.T) {
 // already returned. MarkNotified reports "newly marked" and must say no.
 func TestKillAndComplete_MarkJobNotified(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	killed := r.Spawn("to kill", 0, nil)
 	if err := r.Kill(killed.ID); err != nil {
 		t.Fatalf("Kill: %v", err)
@@ -2026,7 +2026,7 @@ func TestKillAndComplete_MarkJobNotified(t *testing.T) {
 // transition on the same job.
 func TestKill_ClearsStallCancel(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, nil)
 	job.SetStallCancel(func() {})
 	if err := r.Kill(job.ID); err != nil {
@@ -2044,7 +2044,7 @@ func TestKill_ClearsStallCancel(t *testing.T) {
 // duration reporting reads it.
 func TestKillAndComplete_StampEndTime(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	killed := r.Spawn("k", 0, nil)
 	if err := r.Kill(killed.ID); err != nil {
 		t.Fatalf("Kill: %v", err)
@@ -2065,7 +2065,7 @@ func TestKillAndComplete_StampEndTime(t *testing.T) {
 // would deadlock otherwise.
 func TestBackground_GuardPathReleasesJobLock(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("already bg", 0, nil) // Spawn marks backgrounded
 	if r.Background(job.ID) {
 		t.Error("Background on already-backgrounded job should return false")
@@ -2081,7 +2081,7 @@ func TestBackground_GuardPathReleasesJobLock(t *testing.T) {
 // the transition path.
 func TestBackground_SuccessPathReleasesJobLock(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("fg", "", nil) // nil output: watchdog start is a no-op
 	if !r.Background(job.ID) {
 		t.Fatal("Background should transition the foreground job")
@@ -2097,7 +2097,7 @@ func TestBackground_SuccessPathReleasesJobLock(t *testing.T) {
 // stall watchdog — without it a prompt-blocked job never surfaces.
 func TestBackground_StartsStallWatchdog(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		r := NewBackgroundJobRegistry()
+		r := NewBashRegistry()
 		out := NewStreamingOutput(nil)
 		mustWriteStream(t, out, []byte("[sudo] password for user:"))
 		ch := make(chan JobNotification, 1)
@@ -2128,7 +2128,7 @@ func TestBackground_StartsStallWatchdog(t *testing.T) {
 // mutex free.
 func TestHasForegroundTasks_ReleasesJobLocks(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	j1 := r.RegisterForeground("a", "", nil)
 	j2 := r.RegisterForeground("b", "", nil)
 	r.HasForegroundTasks()
@@ -2145,7 +2145,7 @@ func TestHasForegroundTasks_ReleasesJobLocks(t *testing.T) {
 // job before deciding; it must also release it before returning.
 func TestUnregisterForeground_ReleasesJobLock(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.RegisterForeground("fg", "", nil)
 	r.UnregisterForeground(job.ID)
 	if !job.mu.TryLock() {
@@ -2159,7 +2159,7 @@ func TestUnregisterForeground_ReleasesJobLock(t *testing.T) {
 // release job.mu.
 func TestKill_NotRunningPathReleasesJobLock(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("done", 0, nil)
 	job.Complete(0, false)
 	if err := r.Kill(job.ID); err == nil {
@@ -2359,7 +2359,7 @@ func TestCleanupCompleted_EvictionLogging(t *testing.T) {
 	slog.SetDefault(slog.New(h))
 	defer slog.SetDefault(prev)
 
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	// Seed fillers so the evicted id is not bg-1: parallel tests with fresh
 	// registries also log bg-1, and filtering is by id.
 	for range 25 {
@@ -2393,13 +2393,13 @@ func TestCleanupCompleted_EvictionLogging(t *testing.T) {
 	}
 }
 
-// TestBackgroundJobRegistry_RegistryMethodsSerialiseMap: every registry
+// TestBashRegistry_RegistryMethodsSerialiseMap: every registry
 // method holds r.mu across its map/nextID access — dropping it lets
 // concurrent registrations produce duplicate ids or corrupt the map
 // (runtime fatal), which CI would surface intermittently.
-func TestBackgroundJobRegistry_RegistryMethodsSerialiseMap(t *testing.T) {
+func TestBashRegistry_RegistryMethodsSerialiseMap(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	const writers, spawnsEach = 4, 12000
 	const fgEach = 3000
 	const unregEach, removeEach = 3000, 4000
@@ -2503,7 +2503,7 @@ func (r *jobEventRecorder) shell(et types.QueryEventType) (types.JobEvent, bool)
 // with the full row shell; a registry without an emitter is unaffected.
 func TestSpawn_EmitsJobStarted(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	rec := &jobEventRecorder{}
 	r.OnJobEvent = rec.onJobEvent
 
@@ -2533,7 +2533,7 @@ func TestSpawn_EmitsJobStarted(t *testing.T) {
 	}
 
 	// Nil emitter: registration must not panic and must not emit.
-	NewBackgroundJobRegistry().Spawn("no emitter", 0, nil)
+	NewBashRegistry().Spawn("no emitter", 0, nil)
 }
 
 // capturedJobEvent preserves emission order across concurrent writers.
@@ -2565,7 +2565,7 @@ func (l *jobEventLog) snapshot() []capturedJobEvent {
 // empty-window gate (len(u.Lines) == 0 emits nothing).
 func TestBackgroundJob_EmitOutputDelta(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	caplog := &jobEventLog{}
 	r.OnJobEvent = caplog.onJobEvent
 
@@ -2631,7 +2631,7 @@ func TestBackgroundJob_EmitOutputDelta(t *testing.T) {
 // receiver must be a no-op (the adapter is a bare method value).
 func TestBackgroundJob_EmitOutputDelta_NoEmitterNoPanic(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	job := r.Spawn("cmd", 0, NewStreamingOutput(nil))
 	if _, err := job.Output.Write([]byte("a\nb\n")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -2646,7 +2646,7 @@ func TestBackgroundJob_EmitOutputDelta_NoEmitterNoPanic(t *testing.T) {
 // output (the wiring-probe shape) must not panic on the wiring.
 func TestBackgroundJob_EmitOutputDelta_NilOutputNoPanic(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	r.OnJobEvent = func(types.QueryEventType, types.JobEvent) {}
 	if job := r.Spawn("cmd", 0, nil); job.Output != nil {
 		t.Fatal("Spawn must store the nil output untouched")
@@ -2667,7 +2667,7 @@ func TestTransitionToBackground_SwitchesProgressToJobLine(t *testing.T) {
 	}
 	s := NewStreamingOutput(foregroundRecorder)
 
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	caplog := &jobEventLog{}
 	r.OnJobEvent = caplog.onJobEvent
 
@@ -2723,7 +2723,7 @@ func TestComplete_EmitsJobTerminated(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := NewBackgroundJobRegistry()
+			r := NewBashRegistry()
 			rec := &jobEventRecorder{}
 			r.OnNotify = rec.onNotify
 			r.OnJobEvent = rec.onJobEvent
@@ -2759,7 +2759,7 @@ func TestComplete_EmitsJobTerminated(t *testing.T) {
 // notification; both reach their callbacks exactly once.
 func TestKill_EmitsJobTerminated(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	rec := &jobEventRecorder{}
 	r.OnNotify = rec.onNotify
 	r.OnJobEvent = rec.onJobEvent
@@ -2789,7 +2789,7 @@ func TestKill_EmitsJobTerminated(t *testing.T) {
 // also suppress a second event — one transition, one terminated emission.
 func TestComplete_TerminalEarlyReturnNoEmit(t *testing.T) {
 	t.Parallel()
-	r := NewBackgroundJobRegistry()
+	r := NewBashRegistry()
 	rec := &jobEventRecorder{}
 	r.OnJobEvent = rec.onJobEvent
 	job := r.Spawn("once only", 0, nil)

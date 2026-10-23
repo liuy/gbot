@@ -53,7 +53,7 @@ func TestRunAgent_BGJobLifecycleEventsOrdered(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 	collector := newEventCollector()
 	parent.SetDispatcher(collector)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 
 	runDone := make(chan struct{})
 	state, err := reg.Spawn(context.Background(),
@@ -64,7 +64,7 @@ func TestRunAgent_BGJobLifecycleEventsOrdered(t *testing.T) {
 				ParentToolUseID: "tu_ordered",
 				AgentType:       "General",
 				Prompt:          "run",
-				BgRegistry:      reg,
+				Registry:        reg,
 				MaxTurns:        1,
 			})
 			return res, err
@@ -145,7 +145,7 @@ func TestWireEngine_AttachesJobEventEmitters(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 	collector := newEventCollector()
 	parent.SetDispatcher(collector)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 
 	state, err := reg.Spawn(context.Background(),
 		func(context.Context, string) (*types.SubQueryResult, error) {
@@ -244,7 +244,7 @@ func TestLateJobEvents_IdleKickPath(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 	collector := newEventCollector()
 	parent.SetDispatcher(collector)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 	resolver := &EngineMessageResolver{mgr: mgr}
 
 	runDone := make(chan struct{})
@@ -256,7 +256,7 @@ func TestLateJobEvents_IdleKickPath(t *testing.T) {
 				ParentToolUseID: "tu_late",
 				AgentType:       "General",
 				Prompt:          "run",
-				BgRegistry:      reg,
+				Registry:        reg,
 				// No MaxTurns: a capped sub exhausts its turn budget before
 				// the idle-kick query can run (see BackgroundAgentMessagesParent).
 			})

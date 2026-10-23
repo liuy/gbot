@@ -351,13 +351,13 @@ func TestBgParentAgent_WokenByOwnBgJobCompletion(t *testing.T) {
 		t.Fatal("spawn returned empty AgentID")
 	}
 	t.Cleanup(func() {
-		parentRefs.Agent.BgRegistry().Cancel(agentID)
-		parentRefs.Agent.BgRegistry().Wait(agentID)
+		parentRefs.Agent.Registry().Cancel(agentID)
+		parentRefs.Agent.Registry().Wait(agentID)
 	})
 
 	var subEng *Engine
 	pollUntil(t, 2*time.Second, "bg parent sink attachment", func() bool {
-		st, ok := parentRefs.Agent.BgRegistry().Get(agentID)
+		st, ok := parentRefs.Agent.Registry().Get(agentID)
 		if !ok || st.Sink == nil {
 			return false
 		}

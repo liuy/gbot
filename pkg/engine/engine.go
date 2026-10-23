@@ -1099,7 +1099,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	subDeps := *e.sharedDeps
 	subDeps.WorkingDir = subWorkingDir
 	// Session-root binding (bash/job side; the Agent side is re-pointed below
-	// via SetBgRegistry): every sidechain engine shares the session root's
+	// via SetRegistry): every sidechain engine shares the session root's
 	// registries so background jobs stay visible/stoppable in the root's job
 	// view, while remaining isolated across slots. ToolRefs stay private —
 	// WireEngine wires the sub's own notification sink into them.
@@ -1172,7 +1172,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	// WireEngine shape — CreateTools injects the Agent tool's registry
 	// unconditionally); bare test engines are built by the test helper
 	// newRunAgentEngine (engine_test.go) which supplies the same shape.
-	subRefs.Agent.SetBgRegistry(e.toolRefs.Agent.BgRegistry())
+	subRefs.Agent.SetRegistry(e.toolRefs.Agent.Registry())
 
 	// Messaging identity: ALWAYS set — background agents address as their
 	// own registry id (opts.AgentID), sync subs fall back to this engine's
@@ -1192,10 +1192,9 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	// which is exactly the sync-sub case ("" is never registered). The sink
 	// goes into the spawning engine's own table — the registry the bg spawn
 	// was created in, handed over via opts.
-	if opts.BgRegistry != nil {
-		opts.BgRegistry.AttachSink(opts.AgentID, subEng)
+	if opts.Registry != nil {
+		opts.Registry.AttachSink(opts.AgentID, subEng)
 	}
-
 	// Fire SubagentStart hook
 	if e.sharedDeps.Hooks != nil {
 		hookInput := &hooks.HookInput{

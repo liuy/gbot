@@ -864,7 +864,7 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	// Swap in a fresh registry so we don't pollute the global one
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundJobRegistry()
+	freshRegistry := NewBashRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -917,7 +917,7 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	// Use a fresh registry to avoid polluting global state
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundJobRegistry()
+	freshRegistry := NewBashRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -966,7 +966,7 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	// Background job should keep running even after the spawning context is cancelled.
 	// Bug 2: taskCtx is derived from parent ctx, so cancelling parent kills the job.
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundJobRegistry()
+	freshRegistry := NewBashRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -1072,7 +1072,7 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -1121,7 +1121,7 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -1204,7 +1204,7 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 
 	// Use a fresh registry
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -1326,7 +1326,7 @@ func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
 
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 

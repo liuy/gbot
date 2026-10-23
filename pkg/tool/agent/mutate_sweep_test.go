@@ -84,13 +84,13 @@ func TestFilterToolsForAgent_DisallowedToolDoesNotEndScan(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BackgroundAgentRegistry — Get hands out an independent result, and every
+// AgentRegistry — Get hands out an independent result, and every
 // map access is serialised by the registry mutex.
 // ---------------------------------------------------------------------------
 
 func TestRegistry_GetResultCopyIsIndependent(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, err := reg.Spawn(context.Background(),
 		func(context.Context, string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "original", TotalTokens: 5}, nil
@@ -138,7 +138,7 @@ func TestIsInForkChild_MarkerOnANonTextBlockIsNotAMarker(t *testing.T) {
 // spawners are done, so the overlap covers the whole Spawn phase instead of
 // whatever slice of it a fixed iteration count happens to land on.
 func TestRegistry_ConcurrentAccessIsSerialized(t *testing.T) {
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	var spawns sync.WaitGroup
 	for range 4 {

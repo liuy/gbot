@@ -837,7 +837,7 @@ func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
 	if id == "" {
 		t.Fatal("spawn returned empty AgentID")
 	}
-	t.Cleanup(func() { _ = refsA.Agent.BgRegistry().Cancel(id) })
+	t.Cleanup(func() { _ = refsA.Agent.Registry().Cancel(id) })
 
 	aJobs := aA.Jobs()
 	if len(aJobs) != 1 || aJobs[0].ID != id {
@@ -863,7 +863,7 @@ func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
 	// (mechanism pinned by pkg/engine's acceptance test 2); spawned directly
 	// on A's registry here, this test pins the panel consequence: the row
 	// surfaces on A's panel (and only A's) and A's kill reaches it.
-	orphan, err := refsA.Agent.BgRegistry().Spawn(context.Background(),
+	orphan, err := refsA.Agent.Registry().Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -871,7 +871,7 @@ func TestEngineAdapter_BgTaskOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn orphan: %v", err)
 	}
-	t.Cleanup(func() { _ = refsA.Agent.BgRegistry().Cancel(orphan.ID) })
+	t.Cleanup(func() { _ = refsA.Agent.Registry().Cancel(orphan.ID) })
 
 	aJobs = aA.Jobs()
 	if len(aJobs) != 1 || aJobs[0].ID != orphan.ID {
@@ -1464,8 +1464,8 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	h2 := hub.NewHub()
 	eng2 := engine.New(&engine.Params{EngineID: "e2", Model: "test-model"})
 	eng2.SetDispatcher(h2)
-	bashReg := bash.NewBackgroundJobRegistry()
-	agentReg := agent.NewBackgroundAgentRegistry()
+	bashReg := bash.NewBashRegistry()
+	agentReg := agent.NewAgentRegistry()
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), agent.NewBackgroundAgentJobAdapter(agentReg))
 	eng2.SetToolRefs(engine.ToolRefs{BashReg: bashReg, JobReg: jobReg})
 	bashReg.OnJobEvent = engine.JobEventEmitter(eng2)
@@ -1484,7 +1484,7 @@ func TestRegisterEngine_SlotFullyWiredForJobs(t *testing.T) {
 	c.RegisterEngine(&engine.EngineViewState{ID: "e2", Name: "agent-2", Engine: eng2})
 
 	// e3: SYSTEM engine with a running job — BusyReport must exclude it.
-	e3Bash := bash.NewBackgroundJobRegistry()
+	e3Bash := bash.NewBashRegistry()
 	bt3 := e3Bash.Spawn("sleep 30", 0, bash.NewStreamingOutput(nil))
 	t.Cleanup(func() { _ = e3Bash.Kill(bt3.ID) })
 	h3 := hub.NewHub()

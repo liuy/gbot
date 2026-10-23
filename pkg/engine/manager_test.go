@@ -140,7 +140,7 @@ func TestEngineManager_NewEngineID_SharesRegistryCounter(t *testing.T) {
 	idm := agenttool.NewIDMinter()
 	m := NewEngineManager()
 	m.SetIDMinter(idm)
-	reg := agenttool.NewBackgroundAgentRegistryWithMinter(idm)
+	reg := agenttool.NewAgentRegistryWithMinter(idm)
 
 	engID := m.NewEngineID()
 	agentState, err := reg.Spawn(context.Background(),
@@ -665,7 +665,7 @@ func (fakeBgSink) EnqueueAttachment(types.QueuedItem) {}
 // spawnHoldingAgent spawns a background agent whose runFn blocks until its
 // context is cancelled; cleanup cancels and reaps the goroutine. Returns the
 // minted id.
-func spawnHoldingAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) string {
+func spawnHoldingAgent(t *testing.T, reg *agenttool.AgentRegistry) string {
 	t.Helper()
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -685,10 +685,10 @@ func spawnHoldingAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) str
 
 // addTableOwner registers a minimal engine whose Agent tool holds reg, so
 // BgAgent can discover the table through the engines map.
-func addTableOwner(t *testing.T, m *EngineManager, engineID string, reg *agenttool.BackgroundAgentRegistry) *Engine {
+func addTableOwner(t *testing.T, m *EngineManager, engineID string, reg *agenttool.AgentRegistry) *Engine {
 	t.Helper()
 	at := agenttool.New()
-	at.SetBgRegistry(reg)
+	at.SetRegistry(reg)
 	eng := New(&Params{Provider: &mockProvider{}, Model: "test", EngineID: engineID})
 	eng.SetToolRefs(ToolRefs{Agent: at})
 	m.Add(&EngineViewState{Engine: eng, ID: engineID})
@@ -698,7 +698,7 @@ func addTableOwner(t *testing.T, m *EngineManager, engineID string, reg *agentto
 
 func TestEngineManager_BgAgent_FindsSpawnedState(t *testing.T) {
 	m := NewEngineManager()
-	reg := agenttool.NewBackgroundAgentRegistry()
+	reg := agenttool.NewAgentRegistry()
 	addTableOwner(t, m, "owner", reg)
 	id := spawnHoldingAgent(t, reg)
 	sink := fakeBgSink{}
@@ -731,7 +731,7 @@ func TestEngineManager_BgAgent_FindsSpawnedState(t *testing.T) {
 
 func TestEngineManager_BgAgent_SearchesAllTables(t *testing.T) {
 	m := NewEngineManager()
-	addTableOwner(t, m, "owner-a", agenttool.NewBackgroundAgentRegistry())
+	addTableOwner(t, m, "owner-a", agenttool.NewAgentRegistry())
 	// Engines the walk must pass WITHOUT stopping: a lazy view (Engine nil),
 	// a bare engine (no SetToolRefs — Agent nil), and a registry-less Agent
 	// tool. All precede the holding owner in walk order, so a guard that
@@ -742,9 +742,9 @@ func TestEngineManager_BgAgent_SearchesAllTables(t *testing.T) {
 	m.Add(&EngineViewState{Engine: bare, ID: "bare"})
 	noRegEng := New(&Params{Provider: &mockProvider{}, Model: "test"})
 	t.Cleanup(func() { noRegEng.Close() })
-	noRegEng.SetToolRefs(ToolRefs{Agent: agenttool.New()}) // no SetBgRegistry — nil BgRegistry()
+	noRegEng.SetToolRefs(ToolRefs{Agent: agenttool.New()}) // no SetRegistry — nil Registry()
 	m.Add(&EngineViewState{Engine: noRegEng, ID: "no-reg"})
-	regB := agenttool.NewBackgroundAgentRegistry()
+	regB := agenttool.NewAgentRegistry()
 	addTableOwner(t, m, "owner-b", regB)
 	id := spawnHoldingAgent(t, regB)
 
@@ -758,7 +758,7 @@ func TestEngineManager_BgAgent_UnknownIDNotFound(t *testing.T) {
 	if got, ok := m.BgAgent("agent-1"); ok || got != nil {
 		t.Errorf("BgAgent on empty manager = (%v, %v), want (nil, false)", got, ok)
 	}
-	addTableOwner(t, m, "owner", agenttool.NewBackgroundAgentRegistry())
+	addTableOwner(t, m, "owner", agenttool.NewAgentRegistry())
 	if got, ok := m.BgAgent("agent-999"); ok || got != nil {
 		t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", got, ok)
 	}
@@ -785,9 +785,9 @@ func TestEngineManager_BgAgent_UnknownIDNotFound(t *testing.T) {
 // resolution.
 func TestEngineManager_RemoveEngine_DropsBgResolution(t *testing.T) {
 	mgr := NewEngineManager()
-	reg := agenttool.NewBackgroundAgentRegistry()
+	reg := agenttool.NewAgentRegistry()
 	addTableOwner(t, mgr, "owner", reg)
-	addTableOwner(t, mgr, "keeper", agenttool.NewBackgroundAgentRegistry())
+	addTableOwner(t, mgr, "keeper", agenttool.NewAgentRegistry())
 	id := spawnHoldingAgent(t, reg)
 
 	if _, ok := mgr.BgAgent(id); !ok {

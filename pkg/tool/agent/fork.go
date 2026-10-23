@@ -53,8 +53,8 @@ type BackgroundAgentState struct {
 	cancel context.CancelFunc
 }
 
-// BackgroundAgentRegistry manages background agent lifecycle.
-type BackgroundAgentRegistry struct {
+// AgentRegistry manages background agent lifecycle.
+type AgentRegistry struct {
 	mu     sync.Mutex
 	agents map[string]*BackgroundAgentState
 	minter *IDMinter
@@ -65,24 +65,24 @@ type BackgroundAgentRegistry struct {
 }
 
 // SetOnJobEvent installs the lifecycle-event emitter (engine wiring).
-func (r *BackgroundAgentRegistry) SetOnJobEvent(fn func(types.QueryEventType, types.JobEvent)) {
+func (r *AgentRegistry) SetOnJobEvent(fn func(types.QueryEventType, types.JobEvent)) {
 	r.onJobEvent = fn
 }
 
-// NewBackgroundAgentRegistry creates a new registry for background agents.
-func NewBackgroundAgentRegistry() *BackgroundAgentRegistry {
-	return NewBackgroundAgentRegistryWithMinter(nil)
+// NewAgentRegistry creates a new registry for background agents.
+func NewAgentRegistry() *AgentRegistry {
+	return NewAgentRegistryWithMinter(nil)
 }
 
-// NewBackgroundAgentRegistryWithMinter creates a registry that mints ids from
+// NewAgentRegistryWithMinter creates a registry that mints ids from
 // the given process-global minter (shared with the EngineManager so engine ids
 // and background agent ids can never collide). A nil minter falls back to a
 // private one — production wiring always shares via app/start.go.
-func NewBackgroundAgentRegistryWithMinter(m *IDMinter) *BackgroundAgentRegistry {
+func NewAgentRegistryWithMinter(m *IDMinter) *AgentRegistry {
 	if m == nil {
 		m = NewIDMinter()
 	}
-	return &BackgroundAgentRegistry{
+	return &AgentRegistry{
 		agents: make(map[string]*BackgroundAgentState),
 		minter: m,
 	}
@@ -97,7 +97,7 @@ func NewBackgroundAgentRegistryWithMinter(m *IDMinter) *BackgroundAgentRegistry 
 // Ids are always "agent-N" from the shared process-global counter — forks and
 // subagents live in one namespace. agentType is the display type surfaced in
 // the jobs panel.
-func (r *BackgroundAgentRegistry) Spawn(
+func (r *AgentRegistry) Spawn(
 	ctx context.Context,
 	runFn func(ctx context.Context, agentID string) (*types.SubQueryResult, error),
 	notifyFn func(agentID string, toolUseID string, result *types.SubQueryResult, err error),
@@ -218,7 +218,7 @@ func agentShellEvent(state *BackgroundAgentState, status string) types.JobEvent 
 // overtake job_terminated. The emitted shell's AgentType override mirrors
 // convertState (adapter.go:129-135): a resolved Result.AgentType wins,
 // otherwise the spawn-time display type stands.
-func (r *BackgroundAgentRegistry) finalize(state *BackgroundAgentState,
+func (r *AgentRegistry) finalize(state *BackgroundAgentState,
 	status BackgroundAgentStatus, result *types.SubQueryResult) {
 	r.mu.Lock()
 	state.Status = status
@@ -255,7 +255,7 @@ func copyState(s *BackgroundAgentState) *BackgroundAgentState {
 }
 
 // Wait blocks until the background agent with the given ID completes.
-func (r *BackgroundAgentRegistry) Wait(id string) (*BackgroundAgentState, bool) {
+func (r *AgentRegistry) Wait(id string) (*BackgroundAgentState, bool) {
 	r.mu.Lock()
 	state, ok := r.agents[id]
 	r.mu.Unlock()
@@ -273,7 +273,7 @@ func (r *BackgroundAgentRegistry) Wait(id string) (*BackgroundAgentState, bool) 
 
 // Cancel cancels the background agent with the given ID. Reports whether the
 // id was found.
-func (r *BackgroundAgentRegistry) Cancel(id string) bool {
+func (r *AgentRegistry) Cancel(id string) bool {
 	r.mu.Lock()
 	state, ok := r.agents[id]
 	r.mu.Unlock()
@@ -286,7 +286,7 @@ func (r *BackgroundAgentRegistry) Cancel(id string) bool {
 
 // Get returns a snapshot of the background agent state with the given ID.
 // Returns a copy — callers can safely read fields without mutex concerns.
-func (r *BackgroundAgentRegistry) Get(id string) (*BackgroundAgentState, bool) {
+func (r *AgentRegistry) Get(id string) (*BackgroundAgentState, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	state, ok := r.agents[id]
@@ -302,7 +302,7 @@ func (r *BackgroundAgentRegistry) Get(id string) (*BackgroundAgentState, bool) {
 // may have removed a just-finished entry. Explicit Unlock rather than defer:
 // the body has no panic-capable call, and a dropped unlock deadlocks the
 // next registry call instead of silently widening the critical section.
-func (r *BackgroundAgentRegistry) AttachSink(id string, sink SubEngine) {
+func (r *AgentRegistry) AttachSink(id string, sink SubEngine) {
 	r.mu.Lock()
 	if state, ok := r.agents[id]; ok {
 		state.Sink = sink
@@ -312,7 +312,7 @@ func (r *BackgroundAgentRegistry) AttachSink(id string, sink SubEngine) {
 
 // List returns snapshots of all background agents. Returns copies — callers
 // can safely read fields without mutex concerns.
-func (r *BackgroundAgentRegistry) List() []*BackgroundAgentState {
+func (r *AgentRegistry) List() []*BackgroundAgentState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result := make([]*BackgroundAgentState, 0, len(r.agents))
@@ -325,7 +325,7 @@ func (r *BackgroundAgentRegistry) List() []*BackgroundAgentState {
 // CleanupCompleted removes all agents in terminal states (completed, failed,
 // cancelled). Call after processing results to prevent unbounded memory
 // growth.
-func (r *BackgroundAgentRegistry) CleanupCompleted() {
+func (r *AgentRegistry) CleanupCompleted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, state := range r.agents {

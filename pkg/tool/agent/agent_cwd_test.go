@@ -65,7 +65,7 @@ func TestCall_PassesCwdToRunAgent(t *testing.T) {
 func TestCall_ForkPassesCwdToRunAgent(t *testing.T) {
 	var captured AgentOpts
 	at := New()
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		captured = opts
@@ -102,14 +102,14 @@ func TestCall_NoCwd_LeavesOverrideEmpty(t *testing.T) {
 // TestCall_BackgroundPassesCwdToRunAgent pins the background half of the hand-off.
 // Call builds one AgentOpts literal for both the sync and the background path, so
 // the spawn is field-identical to the sync call — but the background route goes
-// through BackgroundAgentRegistry.Spawn, whose goroutine mutates opts before
+// through AgentRegistry.Spawn, whose goroutine mutates opts before
 // RunAgent, a second chance to drop the override. Only the engine is mocked here;
 // the registry, its goroutine and the completion notification are real.
 func TestCall_BackgroundPassesCwdToRunAgent(t *testing.T) {
 	captured := make(chan AgentOpts, 1)
 	done := make(chan struct{})
 	at := New()
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(string) { close(done) }, func() string { return "" })
 	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		captured <- opts

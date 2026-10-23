@@ -35,14 +35,14 @@ func TestStart_AllEnginesShareIDMinter(t *testing.T) {
 
 	type bgTable struct {
 		owner string
-		reg   *agenttool.BackgroundAgentRegistry
+		reg   *agenttool.AgentRegistry
 	}
-	tables := []bgTable{{"MainRefs", inst.MainRefs.Agent.BgRegistry()}}
+	tables := []bgTable{{"MainRefs", inst.MainRefs.Agent.Registry()}}
 	for _, vs := range inst.EngineMgr.List() {
 		if vs.Engine == nil || vs.Engine.ToolRefs().Agent == nil {
 			continue
 		}
-		tables = append(tables, bgTable{owner: vs.ID, reg: vs.Engine.ToolRefs().Agent.BgRegistry()})
+		tables = append(tables, bgTable{owner: vs.ID, reg: vs.Engine.ToolRefs().Agent.Registry()})
 	}
 	if len(tables) < 3 {
 		t.Fatalf("probed %d background tables, want at least 3 (MainRefs, main, dream)", len(tables))

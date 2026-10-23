@@ -163,7 +163,7 @@ func TestCdPersistence_BackgroundNoUpdate(t *testing.T) {
 	defer func() { ptySupported = orig }()
 
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -401,7 +401,7 @@ func TestCwdFile_CleanedAfterTimeoutTransitionCompletes(t *testing.T) {
 	defer func() { ptySupported = orig }()
 
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -435,7 +435,7 @@ func TestCwdFile_CleanedAfterTimeoutTransitionCompletes_PTY(t *testing.T) {
 	}
 	// no t.Parallel: mutates defaultRegistry, TMPDIR
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -582,7 +582,7 @@ func TestCdPersistence_TimeoutTransitionNoUpdate(t *testing.T) {
 	defer func() { ptySupported = orig }()
 
 	origReg := defaultRegistry
-	freshReg := NewBackgroundJobRegistry()
+	freshReg := NewBashRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 

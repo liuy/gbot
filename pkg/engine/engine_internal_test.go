@@ -7586,8 +7586,8 @@ func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
 	bash.SetDrainStallThreshold(100 * time.Millisecond)
 	t.Cleanup(func() { bash.SetDrainStallThreshold(3 * time.Second) })
 
-	// Real Bash tool with a real BackgroundJobRegistry
-	registry := bash.NewBackgroundJobRegistry()
+	// Real Bash tool with a real BashRegistry
+	registry := bash.NewBashRegistry()
 	bashTool := bash.New(registry)
 
 	// Capture AskEvent

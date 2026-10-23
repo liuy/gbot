@@ -7,17 +7,17 @@ import (
 	"github.com/liuy/gbot/pkg/tool/job"
 )
 
-// JobInfoAdapter adapts BackgroundJobRegistry to the job.Registry interface.
+// JobInfoAdapter adapts BashRegistry to the job.Registry interface.
 // This is the bridge between the bash package's internal BackgroundJob type
 // and the job package's public TaskInfo type.
 type JobInfoAdapter struct {
-	reg *BackgroundJobRegistry
+	reg *BashRegistry
 }
 
 var _ job.SummaryLister = (*JobInfoAdapter)(nil)
 
-// NewJobInfoAdapter creates an adapter wrapping a BackgroundJobRegistry.
-func NewJobInfoAdapter(reg *BackgroundJobRegistry) *JobInfoAdapter {
+// NewJobInfoAdapter creates an adapter wrapping a BashRegistry.
+func NewJobInfoAdapter(reg *BashRegistry) *JobInfoAdapter {
 	return &JobInfoAdapter{reg: reg}
 }
 
@@ -43,7 +43,7 @@ func (a *JobInfoAdapter) Kill(id string) error {
 
 // List returns all tasks.
 func (a *JobInfoAdapter) List() []*job.JobInfo {
-	a.reg.CleanupCompleted() // Lazy cleanup — matches BackgroundAgentRegistry pattern
+	a.reg.CleanupCompleted() // Lazy cleanup — matches AgentRegistry pattern
 	tasks := a.reg.List()
 	result := make([]*job.JobInfo, len(tasks))
 	for i, bt := range tasks {
@@ -63,7 +63,7 @@ func (a *JobInfoAdapter) Wait(id string) (int, error) {
 }
 
 // isBashNotFound detects the bash registry's ad-hoc "job X not found" error.
-// BackgroundJobRegistry doesn't import the job package, so it uses
+// BashRegistry doesn't import the job package, so it uses
 // fmt.Errorf("job %q not found") instead of wrapping job.ErrNotFound.
 func isBashNotFound(err error) bool {
 	return strings.Contains(err.Error(), "not found")

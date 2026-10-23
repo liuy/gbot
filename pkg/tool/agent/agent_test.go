@@ -430,7 +430,7 @@ func TestJobAdapter_NilForkReg(t *testing.T) {
 
 func TestJobAdapter_NonNilForkReg(t *testing.T) {
 	at := New()
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	if got := at.JobAdapter(); got == nil {
 		t.Error("JobAdapter() should return non-nil when bgReg is set")
@@ -438,7 +438,7 @@ func TestJobAdapter_NonNilForkReg(t *testing.T) {
 }
 
 func TestBackgroundAgentJobAdapter_Prefix(t *testing.T) {
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	a := NewBackgroundAgentJobAdapter(reg)
 	if got := a.Prefix(); got != "agent-" {
 		t.Errorf("Prefix() = %q, want %q", got, "agent-")
@@ -634,7 +634,7 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	_ = makeTestTools("Bash", "Read")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"bg task","prompt":"search code","fork":true,"run_in_background":true}`)
@@ -693,7 +693,7 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 	_ = makeTestTools("Bash")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	// subagent_type="Explore" should override default "fork"
@@ -724,7 +724,7 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 	_ = makeTestTools("Bash")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	// name does NOT override subagent_type — name is only a display label
@@ -786,7 +786,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 	_ = makeTestTools("Bash")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(
 		func(xml string) {
 			mu.Lock()
@@ -817,7 +817,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 }
 
 // Bare SetNotifyFn must not mint a registry: background and fork spawns stay
-// rejected until SetBgRegistry injects one, so a half-wired tool cannot fork
+// rejected until SetRegistry injects one, so a half-wired tool cannot fork
 // ids off a private counter.
 func TestSetNotifyFn_DoesNotCreateRegistry(t *testing.T) {
 	t.Parallel()
@@ -827,7 +827,7 @@ func TestSetNotifyFn_DoesNotCreateRegistry(t *testing.T) {
 	}
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 	if at.bgReg != nil {
-		t.Error("bgReg should stay nil after bare SetNotifyFn — only SetBgRegistry sets it")
+		t.Error("bgReg should stay nil after bare SetNotifyFn — only SetRegistry sets it")
 	}
 }
 
@@ -1489,7 +1489,7 @@ func TestForkSync_InheritsContext(t *testing.T) {
 	_ = makeTestTools("Bash", "Read", "Grep")
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "parent system prompt" })
 
 	assistantMsg := types.Message{
@@ -1607,7 +1607,7 @@ func TestCallSubagent_BackgroundReturnsImmediately(t *testing.T) {
 
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"bg","prompt":"p","subagent_type":"General","run_in_background":true}`)
@@ -1678,7 +1678,7 @@ func TestCallSubagent_BackgroundNotificationDelivered(t *testing.T) {
 
 		at := New()
 		at.SetEngine(&mockSubEngine{runFn: factory})
-		at.SetBgRegistry(NewBackgroundAgentRegistry())
+		at.SetRegistry(NewAgentRegistry())
 		at.SetNotifyFn(func(xml string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1718,7 +1718,7 @@ func TestCallSubagent_BackgroundNotificationDelivered(t *testing.T) {
 
 		at := New()
 		at.SetEngine(&mockSubEngine{runFn: factory})
-		at.SetBgRegistry(NewBackgroundAgentRegistry())
+		at.SetRegistry(NewAgentRegistry())
 		at.SetNotifyFn(func(xml string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1750,7 +1750,7 @@ func TestCallSubagent_BackgroundJobListShowsAgent(t *testing.T) {
 
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"bg search","prompt":"p","subagent_type":"General","run_in_background":true}`)
@@ -1815,8 +1815,8 @@ func TestSpawnBackground_PassesRegistryInOpts(t *testing.T) {
 		mu.Unlock()
 		return &types.SubQueryResult{Content: "done"}, nil
 	}})
-	reg := NewBackgroundAgentRegistry()
-	at.SetBgRegistry(reg)
+	reg := NewAgentRegistry()
+	at.SetRegistry(reg)
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	input := json.RawMessage(`{"description":"bg","prompt":"p","subagent_type":"General","run_in_background":true}`)
 	sqr := launchBackground(t, at, input, &tool.ToolUseContext{ToolUseID: "call_reg"})
@@ -1826,8 +1826,8 @@ func TestSpawnBackground_PassesRegistryInOpts(t *testing.T) {
 	if captured.AgentID != sqr.AgentID {
 		t.Fatalf("captured AgentID = %q, want %q", captured.AgentID, sqr.AgentID)
 	}
-	if captured.BgRegistry != reg {
-		t.Fatal("opts.BgRegistry is not the injected registry — RunAgent would attach the sink into the wrong table")
+	if captured.Registry != reg {
+		t.Fatal("opts.Registry is not the injected registry — RunAgent would attach the sink into the wrong table")
 	}
 }
 
@@ -1842,7 +1842,7 @@ func TestCallSubagent_BackgroundStopKillsAgent(t *testing.T) {
 
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"long bg","prompt":"p","subagent_type":"General","run_in_background":true}`)
@@ -1890,7 +1890,7 @@ func TestCallSubagent_BackgroundErrorSurfacesInNotification(t *testing.T) {
 
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1964,7 +1964,7 @@ func TestCallSubagent_BackgroundDefaultsToGeneral(t *testing.T) {
 
 	at := New()
 	at.SetEngine(&mockSubEngine{runFn: factory})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {
 		mu.Lock()
 		defer mu.Unlock()

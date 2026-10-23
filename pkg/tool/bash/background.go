@@ -152,12 +152,12 @@ type BackgroundJob struct {
 }
 
 // ---------------------------------------------------------------------------
-// BackgroundJobRegistry — source: AppState.jobs map in AppStateStore.ts:160
+// BashRegistry — source: AppState.jobs map in AppStateStore.ts:160
 // ---------------------------------------------------------------------------
 
-// BackgroundJobRegistry manages background shell tasks.
+// BashRegistry manages background shell tasks.
 // Source: AppState.jobs map in AppStateStore.ts:160
-type BackgroundJobRegistry struct {
+type BashRegistry struct {
 	mu     sync.Mutex
 	jobs   map[string]*BackgroundJob
 	nextID int
@@ -172,18 +172,18 @@ type BackgroundJobRegistry struct {
 	OnJobEvent func(types.QueryEventType, types.JobEvent)
 }
 
-// NewBackgroundJobRegistry creates a new registry.
-func NewBackgroundJobRegistry() *BackgroundJobRegistry {
-	return &BackgroundJobRegistry{
+// NewBashRegistry creates a new registry.
+func NewBashRegistry() *BashRegistry {
+	return &BashRegistry{
 		jobs: make(map[string]*BackgroundJob),
 	}
 }
 
 // defaultRegistry is the global background job registry.
-var defaultRegistry = NewBackgroundJobRegistry()
+var defaultRegistry = NewBashRegistry()
 
 // DefaultRegistry returns the global background job registry.
-func DefaultRegistry() *BackgroundJobRegistry {
+func DefaultRegistry() *BashRegistry {
 	return defaultRegistry
 }
 
@@ -196,7 +196,7 @@ func DefaultRegistry() *BackgroundJobRegistry {
 //
 // Source: LocalShellTask.tsx:180-252 — spawnShellTask()
 // TS sets isBackgrounded=true at line 212.
-func (r *BackgroundJobRegistry) Spawn(command string, pid int, output *StreamingOutput) *BackgroundJob {
+func (r *BashRegistry) Spawn(command string, pid int, output *StreamingOutput) *BackgroundJob {
 	r.mu.Lock()
 
 	r.nextID++
@@ -243,7 +243,7 @@ func (r *BackgroundJobRegistry) Spawn(command string, pid int, output *Streaming
 // No stall watchdog is started — that happens when the job is transitioned to background.
 //
 // Source: LocalShellTask.tsx:259-287 — registerForeground
-func (r *BackgroundJobRegistry) RegisterForeground(command, description string, output *StreamingOutput) *BackgroundJob {
+func (r *BashRegistry) RegisterForeground(command, description string, output *StreamingOutput) *BackgroundJob {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -276,7 +276,7 @@ func (r *BackgroundJobRegistry) RegisterForeground(command, description string, 
 // Returns true if the transition was successful.
 //
 // Source: LocalShellTask.tsx:293-368 — backgroundTask
-func (r *BackgroundJobRegistry) Background(id string) bool {
+func (r *BashRegistry) Background(id string) bool {
 	r.mu.Lock()
 	job, ok := r.jobs[id]
 	r.mu.Unlock()
@@ -310,7 +310,7 @@ func (r *BackgroundJobRegistry) Background(id string) bool {
 // Returns the IDs of tasks that were successfully transitioned.
 //
 // Source: LocalShellTask.tsx:390-410 — backgroundAll
-func (r *BackgroundJobRegistry) BackgroundAll() []string {
+func (r *BashRegistry) BackgroundAll() []string {
 	r.mu.Lock()
 	var foregroundIDs []string
 	for id, job := range r.jobs {
@@ -340,7 +340,7 @@ func (r *BackgroundJobRegistry) BackgroundAll() []string {
 // on the existing registration.
 //
 // Source: LocalShellTask.tsx:420-474 — backgroundExistingForegroundTask
-func (r *BackgroundJobRegistry) BackgroundExistingForegroundTask(id string) bool {
+func (r *BashRegistry) BackgroundExistingForegroundTask(id string) bool {
 	return r.Background(id)
 }
 
@@ -350,7 +350,7 @@ func (r *BackgroundJobRegistry) BackgroundExistingForegroundTask(id string) bool
 
 // HasForegroundTasks returns true if there are foreground (non-backgrounded) running tasks.
 // Source: LocalShellTask.tsx:378-389 — hasForegroundTasks
-func (r *BackgroundJobRegistry) HasForegroundTasks() bool {
+func (r *BashRegistry) HasForegroundTasks() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -375,7 +375,7 @@ func (r *BackgroundJobRegistry) HasForegroundTasks() bool {
 // Returns true if it was newly marked (was not already notified).
 //
 // Source: LocalShellTask.tsx:481-486 — markTaskNotified
-func (r *BackgroundJobRegistry) MarkNotified(id string) bool {
+func (r *BashRegistry) MarkNotified(id string) bool {
 	r.mu.Lock()
 	job, ok := r.jobs[id]
 	r.mu.Unlock()
@@ -402,7 +402,7 @@ func (r *BackgroundJobRegistry) MarkNotified(id string) bool {
 // Only removes tasks that are NOT backgrounded.
 //
 // Source: LocalShellTask.tsx:491-514 — unregisterForeground
-func (r *BackgroundJobRegistry) UnregisterForeground(id string) {
+func (r *BashRegistry) UnregisterForeground(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -429,7 +429,7 @@ func (r *BackgroundJobRegistry) UnregisterForeground(id string) {
 
 // Kill terminates a background job by sending SIGKILL to its process tree.
 // Source: killShellTasks.ts:16-46 — killTask()
-func (r *BackgroundJobRegistry) Kill(id string) error {
+func (r *BashRegistry) Kill(id string) error {
 	r.mu.Lock()
 	job, ok := r.jobs[id]
 	r.mu.Unlock()
@@ -622,14 +622,14 @@ func (t *BackgroundJob) buildNotificationLocked(status string) *JobNotification 
 }
 
 // buildNotification creates a JobNotification for the registry-level methods.
-func (r *BackgroundJobRegistry) buildNotification(job *BackgroundJob, status string) *JobNotification {
+func (r *BashRegistry) buildNotification(job *BackgroundJob, status string) *JobNotification {
 	job.mu.Lock()
 	defer job.mu.Unlock()
 	return job.buildNotificationLocked(status)
 }
 
 // sendNotification sends a notification via the registry's OnNotify callback.
-func (r *BackgroundJobRegistry) sendNotification(notify *JobNotification) {
+func (r *BashRegistry) sendNotification(notify *JobNotification) {
 	if notify == nil || r.OnNotify == nil {
 		return
 	}
@@ -713,7 +713,7 @@ func (t *BackgroundJob) Tail() string {
 
 // List returns all background jobs.
 // Source: framework.ts:149-152 — getRunningTasks()
-func (r *BackgroundJobRegistry) List() []*BackgroundJob {
+func (r *BashRegistry) List() []*BackgroundJob {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -727,7 +727,7 @@ func (r *BackgroundJobRegistry) List() []*BackgroundJob {
 // Wait blocks until the job completes, is killed, or fails.
 // Returns the job's exit code.
 // Source: ShellCommand.result Promise pattern
-func (r *BackgroundJobRegistry) Wait(id string) (int, error) {
+func (r *BashRegistry) Wait(id string) (int, error) {
 	r.mu.Lock()
 	job, ok := r.jobs[id]
 	r.mu.Unlock()
@@ -744,7 +744,7 @@ func (r *BackgroundJobRegistry) Wait(id string) (int, error) {
 }
 
 // Get returns a specific job by ID.
-func (r *BackgroundJobRegistry) Get(id string) (*BackgroundJob, bool) {
+func (r *BashRegistry) Get(id string) (*BackgroundJob, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -753,7 +753,7 @@ func (r *BackgroundJobRegistry) Get(id string) (*BackgroundJob, bool) {
 }
 
 // Remove removes a completed/killed/failed job from the registry.
-func (r *BackgroundJobRegistry) Remove(id string) {
+func (r *BashRegistry) Remove(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.jobs, id)
@@ -762,7 +762,7 @@ func (r *BackgroundJobRegistry) Remove(id string) {
 // CleanupCompleted removes terminal tasks whose evictAfter deadline has passed.
 // Called lazily from the job adapter's List() method.
 // Source: utils/job/framework.ts:213-249 — applyTaskOffsetsAndEvictions
-func (r *BackgroundJobRegistry) CleanupCompleted() {
+func (r *BashRegistry) CleanupCompleted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()

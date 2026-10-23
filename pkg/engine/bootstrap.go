@@ -78,7 +78,7 @@ type SharedDeps struct {
 type ToolRefs struct {
 	Reg     *tool.Registry
 	Bash    *bash.Bash
-	BashReg *bash.BackgroundJobRegistry
+	BashReg *bash.BashRegistry
 	Agent   *agenttool.AgentTool
 	REPL    *repl.REPLTool
 	JobReg  *job.MultiRegistry
@@ -116,7 +116,7 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 		root = nil
 	}
 
-	bashReg := bash.NewBackgroundJobRegistry()
+	bashReg := bash.NewBashRegistry()
 	// Root binding swaps only the registries the TOOLS see; the returned
 	// ToolRefs keeps the private ones because WireEngine writes its own
 	// engine's sink into refs.BashReg.OnNotify — returning the shared root
@@ -140,8 +140,8 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 	// agent-N ids stay globally unique. Injection is unconditional: a nil
 	// IDMinter makes the registry fall back to a private counter (harvest
 	// toolsets, tests).
-	bgReg := agenttool.NewBackgroundAgentRegistryWithMinter(deps.IDMinter)
-	at.SetBgRegistry(bgReg)
+	bgReg := agenttool.NewAgentRegistryWithMinter(deps.IDMinter)
+	at.SetRegistry(bgReg)
 	// Stub notification callbacks — WireEngine overrides them with the real
 	// engine attachment path. Harmless on toolsets that never get wired.
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
@@ -281,7 +281,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		// wired by their own WireEngine call with the same shape.
 		emitJob := JobEventEmitter(eng)
 		refs.BashReg.OnJobEvent = emitJob
-		refs.Agent.BgRegistry().SetOnJobEvent(emitJob)
+		refs.Agent.Registry().SetOnJobEvent(emitJob)
 	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).

@@ -27,7 +27,7 @@ import (
 // reachable it must be attached to an owner engine via addTableOwner; wired
 // engines mint their own per-engine table inside CreateTools — deps carries
 // no shared registry).
-func msgDeps(t *testing.T) (SharedDeps, *EngineManager, *agenttool.BackgroundAgentRegistry) {
+func msgDeps(t *testing.T) (SharedDeps, *EngineManager, *agenttool.AgentRegistry) {
 	t.Helper()
 	mgr := NewEngineManager()
 	deps := SharedDeps{
@@ -37,12 +37,12 @@ func msgDeps(t *testing.T) (SharedDeps, *EngineManager, *agenttool.BackgroundAge
 		EngineMgr:  mgr,
 		IDMinter:   agenttool.NewIDMinter(),
 	}
-	return deps, mgr, agenttool.NewBackgroundAgentRegistry()
+	return deps, mgr, agenttool.NewAgentRegistry()
 }
 
 // spawnRunningAgent pre-seeds the registry with a running agent whose runFn
-// blocks until the test cleans up, so its status stays AgentRunning.
-func spawnRunningAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) string {
+// blocks until the test cleans up, so its status stays
+func spawnRunningAgent(t *testing.T, reg *agenttool.AgentRegistry) string {
 	t.Helper()
 	blocked := make(chan struct{})
 	t.Cleanup(func() { close(blocked) })
@@ -397,10 +397,10 @@ func TestRunAgent_BackgroundWiring(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: eng, ID: "main"})
 
 	result, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:     "run",
-		AgentID:    id,
-		MaxTurns:   1,
-		BgRegistry: reg,
+		Prompt:   "run",
+		AgentID:  id,
+		MaxTurns: 1,
+		Registry: reg,
 	})
 	if err != nil {
 		t.Fatalf("RunAgent: %v", err)
@@ -446,7 +446,7 @@ func TestEngine_BackgroundAgentMessagesParent(t *testing.T) {
 
 	mp := &mockProvider{}
 	parent, refs := msgWiredParent(t, mp, "main", deps)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 	id := spawnRunningAgent(t, reg) // agent exists before RunAgent attaches its sink
 
 	mp.addResponse(toolUseStreamEvents("test", "t1", "Message", `{"to":"main","message":"hello main"}`), nil)
@@ -457,10 +457,9 @@ func TestEngine_BackgroundAgentMessagesParent(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:     "report to base",
-		AgentID:    id,
-		MaxTurns:   2,
-		BgRegistry: reg,
+		Prompt:   "report to base",
+		AgentID:  id,
+		Registry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
@@ -482,7 +481,7 @@ func TestEngine_BackgroundAgentSelfSendRejected(t *testing.T) {
 
 	mp := &mockProvider{}
 	parent, refs := msgWiredParent(t, mp, "main", deps)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 	id := spawnRunningAgent(t, reg) // pre-seed so the sink attach fires
 
 	mp.addResponse(toolUseStreamEvents("test", "t1", "Message", fmt.Sprintf(`{"to":%q,"message":"note to self"}`, id)), nil)
@@ -491,10 +490,9 @@ func TestEngine_BackgroundAgentSelfSendRejected(t *testing.T) {
 	mgr.Add(&EngineViewState{Engine: parent, ID: "main"})
 
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:     "talk to yourself",
-		AgentID:    id,
-		MaxTurns:   2,
-		BgRegistry: reg,
+		Prompt:   "talk to yourself",
+		AgentID:  id,
+		Registry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}
@@ -514,7 +512,7 @@ func TestEngine_ParentMessagesBackgroundAgent(t *testing.T) {
 
 	mp := &mockProvider{}
 	parent, refs := msgWiredParent(t, mp, "main", deps)
-	reg := refs.Agent.BgRegistry()
+	reg := refs.Agent.Registry()
 	id := spawnRunningAgent(t, reg) // agent exists before RunAgent attaches its sink
 
 	mp.addResponse(textStreamEvents("test", "first sub run"), nil)
@@ -526,9 +524,9 @@ func TestEngine_ParentMessagesBackgroundAgent(t *testing.T) {
 	// MaxTurns stays unset — a capped sub would hit its turn limit before
 	// the auto-turn triggered by the incoming message can run.
 	if _, err := parent.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:     "one shot",
-		AgentID:    id,
-		BgRegistry: reg,
+		Prompt:   "one shot",
+		AgentID:  id,
+		Registry: reg,
 	}); err != nil {
 		t.Fatalf("RunAgent: %v", err)
 	}

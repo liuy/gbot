@@ -63,11 +63,11 @@ type AgentOpts struct {
 	// by spawnBackground before the goroutine reads opts. Empty for sync
 	// spawns — RunAgent falls back to the parent engine id for those.
 	AgentID string
-	// BgRegistry is the registry this background spawn lives in, set by
+	// Registry is the registry this background spawn lives in, set by
 	// spawnBackground next to AgentID before the goroutine reads opts.
 	// RunAgent consumes it to attach the sub-engine as the agent's message
 	// sink — the spawning engine's own table, not a shared one.
-	BgRegistry *BackgroundAgentRegistry
+	Registry *AgentRegistry
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +77,8 @@ type AgentOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	engine      SubagentEngine           // shared sub-agent engine (engine.Engine)
-	bgReg       *BackgroundAgentRegistry // nil = background agents disabled
+	engine      SubagentEngine // shared sub-agent engine (engine.Engine)
+	bgReg       *AgentRegistry // nil = background agents disabled
 	notifyFn    func(xml string)
 	sysPromptFn func() string
 	mcpConnect  McpConnectFunc
@@ -112,7 +112,7 @@ func (t *AgentTool) SubagentDeps() *SubagentDeps {
 }
 
 // SetNotifyFn sets the background-agent notification callbacks. The registry
-// itself comes only from SetBgRegistry — Call rejects background/fork spawns
+// itself comes only from SetRegistry — Call rejects background/fork spawns
 // while bgReg is nil, so a tool used without a registry stays spawn-safe.
 func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() string) {
 	t.notifyFn = notifyFn
@@ -127,17 +127,17 @@ func (t *AgentTool) SetEngineID(id string) { t.engineID = id }
 // cross-package wiring tests (package engine) cannot read the unexported field.
 func (t *AgentTool) EngineID() string { return t.engineID }
 
-// SetBgRegistry injects this engine's background-agent registry. CreateTools
+// SetRegistry injects this engine's background-agent registry. CreateTools
 // gives every engine a table; RunAgent then re-points sub tools at the root's
 // table, so sub-engine spawns land there instead of in their own engine's
 // (permanently empty) table. The shared IDMinter keeps agent-N ids unique
 // across engines.
-func (t *AgentTool) SetBgRegistry(reg *BackgroundAgentRegistry) { t.bgReg = reg }
+func (t *AgentTool) SetRegistry(reg *AgentRegistry) { t.bgReg = reg }
 
-// BgRegistry returns the injected registry. RunAgent reads it to route
+// Registry returns the injected registry. RunAgent reads it to route
 // sub-engine spawns to the root's table, and the EngineManager discovers it
-// through the engine's toolRefs; nil when SetBgRegistry was never called.
-func (t *AgentTool) BgRegistry() *BackgroundAgentRegistry { return t.bgReg }
+// through the engine's toolRefs; nil when SetRegistry was never called.
+func (t *AgentTool) Registry() *AgentRegistry { return t.bgReg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
 func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
@@ -146,7 +146,7 @@ func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
 func (t *AgentTool) McpConnectFn() McpConnectFunc { return t.mcpConnect }
 
 // JobAdapter returns a job.Registry wrapping the background agent registry.
-// Returns nil if SetBgRegistry was never called.
+// Returns nil if SetRegistry was never called.
 func (t *AgentTool) JobAdapter() job.Registry {
 	if t.bgReg == nil {
 		return nil
@@ -434,7 +434,7 @@ func (t *AgentTool) spawnBackground(opts AgentOpts, input types.AgentInput, disp
 		// Identity must be complete before the goroutine below reads opts —
 		// mutating after Spawn returns would race the registry snapshot.
 		opts.AgentID = agentID
-		opts.BgRegistry = t.bgReg
+		opts.Registry = t.bgReg
 		opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{

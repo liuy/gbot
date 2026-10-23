@@ -191,7 +191,7 @@ func TestBgTask_SubAgentTaskSurvivesSubEngineEnd(t *testing.T) {
 	var id string
 	spawnDeadline := time.Now().Add(2 * time.Second) // REAL-TIME: bounded poll for async spawn landing
 	for {
-		list := parentRefs.Agent.BgRegistry().List()
+		list := parentRefs.Agent.Registry().List()
 		if len(list) == 1 && list[0].Status == agenttool.AgentRunning {
 			id = list[0].ID
 			break
@@ -217,7 +217,7 @@ func TestBgTask_SubAgentTaskSurvivesSubEngineEnd(t *testing.T) {
 
 	// The sub ended and changed nothing: the row is still exactly where it
 	// was — the root's registry, running.
-	orphans := parentRefs.Agent.BgRegistry().List()
+	orphans := parentRefs.Agent.Registry().List()
 	if len(orphans) != 1 {
 		t.Fatalf("parent bg registry holds %d agents after the sub ended, want 1", len(orphans))
 	}

@@ -41,7 +41,7 @@ func (s *notifySink) first() (JobNotification, bool) {
 // through the tool notify the tool's hook, not the table owner.
 func TestBash_SetJobNotifyFn_OverridesRegistryNotify(t *testing.T) {
 	forceNonPTY(t)
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	regSink := &notifySink{}
 	reg.OnNotify = regSink.receive
 	toolSink := &notifySink{}
@@ -90,7 +90,7 @@ func TestBash_SetJobNotifyFn_OverridesRegistryNotify(t *testing.T) {
 // transitionToBackground must apply the same override — it is the second
 // production registration point (auto-background on timeout).
 func TestTransitionToBackground_AppliesJobNotifyOverride(t *testing.T) {
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	regSink := &notifySink{}
 	reg.OnNotify = regSink.receive
 	toolSink := &notifySink{}

@@ -21,7 +21,7 @@ func IsReservedAgentID(name string) bool {
 // IDMinter is the process-global counter behind every agent-N id: engine ids,
 // subagent ids and fork ids all come from one minter so the namespaces can
 // never collide. Created once in app/start.go and injected into both the
-// BackgroundAgentRegistry and the EngineManager.
+// AgentRegistry and the EngineManager.
 type IDMinter struct {
 	mu   sync.Mutex
 	next int

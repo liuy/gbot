@@ -28,10 +28,10 @@ import (
 
 // withFreshRegistry swaps the global default registry for an isolated one so
 // job IDs never collide with tests that use the real default.
-func withFreshRegistry(t *testing.T) *BackgroundJobRegistry {
+func withFreshRegistry(t *testing.T) *BashRegistry {
 	t.Helper()
 	orig := defaultRegistry
-	fresh := NewBackgroundJobRegistry()
+	fresh := NewBashRegistry()
 	defaultRegistry = fresh
 	t.Cleanup(func() { defaultRegistry = orig })
 	return fresh
@@ -76,7 +76,7 @@ func (r *askRecorder) snapshot() (calls int, masked bool, delta time.Duration, a
 
 // waitJobDone waits for a job to reach a terminal state, failing the test on
 // timeout instead of hanging the whole suite.
-func waitJobDone(t *testing.T, reg *BackgroundJobRegistry, id string) {
+func waitJobDone(t *testing.T, reg *BashRegistry, id string) {
 	t.Helper()
 	job, found := reg.Get(id)
 	if !found {
@@ -1190,7 +1190,7 @@ func TestSpawnBackground_NonPTY_CompletesUninterrupted(t *testing.T) {
 // A failed spawn (dead cwd) completes the job with -1, not interrupted.
 func TestSpawnBackground_NonPTY_StartErrorCompletesMinusOne(t *testing.T) {
 	forceNonPTY(t)
-	reg := NewBackgroundJobRegistry()
+	reg := NewBashRegistry()
 	dead := filepath.Join(t.TempDir(), "no-such-dir")
 	res, err := spawnBackground(Input{Command: "echo nope"}, dead, 10*time.Second, reg, nil, nil)
 	if err != nil {

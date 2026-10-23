@@ -32,7 +32,7 @@ func identityTool(t *testing.T, engineID string) (*AgentTool, *mockSubEngine) {
 	at.SetEngineID(engineID)
 	eng := &mockSubEngine{}
 	at.SetEngine(eng)
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	return at, eng
 }
@@ -44,7 +44,7 @@ func TestSpawnPassesIDToRunFn(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	var gotID string
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, err := reg.Spawn(
 		context.Background(),
 		func(ctx context.Context, agentID string) (*types.SubQueryResult, error) {
@@ -146,7 +146,7 @@ func TestAttachSink(t *testing.T) {
 	t.Parallel()
 	blocked := make(chan struct{})
 	defer close(blocked)
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, err := reg.Spawn(
 		context.Background(),
 		func(ctx context.Context, agentID string) (*types.SubQueryResult, error) {
@@ -193,7 +193,7 @@ func TestAttachSink(t *testing.T) {
 // back-to-back deletes — far wider than Spawn's one-entry write.
 func TestAttachSink_ConcurrentWithCleanup(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	for range 200 {
 		state, err := reg.Spawn(context.Background(),
 			func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -226,15 +226,15 @@ func TestAttachSink_ConcurrentWithCleanup(t *testing.T) {
 	<-done
 }
 
-// SetBgRegistry shares one process-global registry; SetNotifyFn must keep
+// SetRegistry shares one process-global registry; SetNotifyFn must keep
 // that registry instead of minting its own.
-func TestSetBgRegistry_SharedRegistryWins(t *testing.T) {
+func TestSetRegistry_SharedRegistryWins(t *testing.T) {
 	t.Parallel()
 	at := New()
-	reg := NewBackgroundAgentRegistry()
-	at.SetBgRegistry(reg)
+	reg := NewAgentRegistry()
+	at.SetRegistry(reg)
 	if at.bgReg != reg {
-		t.Fatal("SetBgRegistry did not store the shared registry")
+		t.Fatal("SetRegistry did not store the shared registry")
 	}
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	if at.bgReg != reg {
@@ -246,20 +246,20 @@ func TestSetBgRegistry_SharedRegistryWins(t *testing.T) {
 }
 
 // The getter is the wiring seam: the manager's BgAgent reads
-// t.BgRegistry() from each live engine's toolRefs and RunAgent reads a
+// t.Registry() from each live engine's toolRefs and RunAgent reads a
 // sub-engine's table through it. A getter that returns anything but the
 // injected registry silently makes the engine's spawns invisible to
 // cross-engine message resolution.
-func TestBgRegistryGetter_ReturnsInjected(t *testing.T) {
+func TestRegistryGetter_ReturnsInjected(t *testing.T) {
 	t.Parallel()
 	at := New()
-	if got := at.BgRegistry(); got != nil {
-		t.Fatalf("BgRegistry() = %v before SetBgRegistry, want nil", got)
+	if got := at.Registry(); got != nil {
+		t.Fatalf("Registry() = %v before SetRegistry, want nil", got)
 	}
-	reg := NewBackgroundAgentRegistry()
-	at.SetBgRegistry(reg)
-	if got := at.BgRegistry(); got != reg {
-		t.Fatal("BgRegistry() did not return the exact injected registry")
+	reg := NewAgentRegistry()
+	at.SetRegistry(reg)
+	if got := at.Registry(); got != reg {
+		t.Fatal("Registry() did not return the exact injected registry")
 	}
 }
 

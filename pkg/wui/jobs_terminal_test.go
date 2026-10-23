@@ -207,7 +207,7 @@ func TestJobTerminated_LateIdleKickEventsDropped(t *testing.T) {
 	unsub := h.Subscribe(rec)
 	t.Cleanup(unsub)
 
-	reg := agent.NewBackgroundAgentRegistry()
+	reg := agent.NewAgentRegistry()
 	reg.SetOnJobEvent(func(et types.QueryEventType, ev types.JobEvent) {
 		h.Dispatch(types.QueryEvent{Type: et, Job: &ev})
 	})

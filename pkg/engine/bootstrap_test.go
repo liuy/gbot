@@ -1484,14 +1484,14 @@ func TestWireEngine_SubPrivateTableNotManagerReachable(t *testing.T) {
 	subEng := newWiredTestEngine(t)
 	WireEngine(subEng, subRefs, deps)
 
-	subID := spawnHoldingAgent(t, subRefs.Agent.BgRegistry())
-	subRefs.Agent.SetBgRegistry(rootRefs.Agent.BgRegistry())
+	subID := spawnHoldingAgent(t, subRefs.Agent.Registry())
+	subRefs.Agent.SetRegistry(rootRefs.Agent.Registry())
 
 	if got, ok := mgr.BgAgent(subID); ok || got != nil {
 		t.Errorf("BgAgent(sub private id %q) = (%v, %v), want (nil, false): a sub engine's private table must not be manager-reachable", subID, got, ok)
 	}
 
-	rootID := spawnHoldingAgent(t, rootRefs.Agent.BgRegistry())
+	rootID := spawnHoldingAgent(t, rootRefs.Agent.Registry())
 	if _, ok := mgr.BgAgent(rootID); !ok {
 		t.Errorf("BgAgent(root id %q) not found: the root engine is in the manager, its table must resolve", rootID)
 	}

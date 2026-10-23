@@ -181,7 +181,7 @@ func (m *EngineManager) BgAgent(id string) (*agenttool.BackgroundAgentState, boo
 		if at == nil {
 			continue
 		}
-		reg := at.BgRegistry()
+		reg := at.Registry()
 		if reg == nil {
 			continue
 		}

@@ -74,12 +74,12 @@ func newDreamMsgFixture(t *testing.T) *dreamMsgFixture {
 	t.Cleanup(func() { peer.Close() })
 	mgr.Add(&engine.EngineViewState{Engine: peer, ID: "e2"})
 
-	reg := agenttool.NewBackgroundAgentRegistry()
+	reg := agenttool.NewAgentRegistry()
 	// Owner engine so the manager's BgAgent walk can discover the table
 	// through the engines map (engines without wired Agent tools are
 	// skipped, so the table must ride on one).
 	ownerAt := agenttool.New()
-	ownerAt.SetBgRegistry(reg)
+	ownerAt.SetRegistry(reg)
 	owner := engine.New(&engine.Params{Provider: spy, Model: "m", EngineID: "bg-owner"})
 	t.Cleanup(func() { owner.Close() })
 	owner.SetToolRefs(engine.ToolRefs{Agent: ownerAt})

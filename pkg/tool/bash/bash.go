@@ -104,7 +104,7 @@ func (b *Bash) JobNotifyFn() func(JobNotification) {
 // New creates the Bash tool.
 // Source: tools/BashTool/BashTool.ts
 // New creates a Bash tool. If registry is nil, uses DefaultRegistry().
-func New(registry *BackgroundJobRegistry) *Bash {
+func New(registry *BashRegistry) *Bash {
 	if registry == nil {
 		registry = DefaultRegistry()
 	}
@@ -298,7 +298,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 // through tctx.OnProgress.
 //
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
-func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, registry *BackgroundJobRegistry, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, registry *BashRegistry, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -397,7 +397,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background job instead of being killed.
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
-func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BashRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
 
 	baseEnv := os.Environ()
@@ -470,7 +470,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 //
 // Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
 // the actual timeout via a timer. When timeout fires, transitions to background.
-func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BashRegistry, wrappedCmd string, cwdFile string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	ptyDone := make(chan struct{})
@@ -533,7 +533,7 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 // executeNonPTY runs a command without PTY (fallback mode) with streaming output capture.
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background job instead of being killed.
-func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BashRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	if shouldAutoBg {
 		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap, tctx, jobNotify)
 	}
@@ -608,7 +608,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 // When timeout fires, the process transitions to a background job instead of
 // being killed. The foreground result returns immediately with BackgroundJobID set.
 // The process continues running; when it exits, job.Complete is called.
-func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundJobRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BashRegistry, outputCap int64, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	taskCtx, taskCancel := context.WithCancel(context.Background())
@@ -887,11 +887,11 @@ func truncate(s string, maxLen int) string {
 
 // spawnBackground starts a command in the background and returns immediately
 // with a job ID. The command runs asynchronously; its completion is tracked
-// in the BackgroundJobRegistry.
+// in the BashRegistry.
 //
 // Source: BashTool.tsx:904-921 — spawnBackgroundJob()
 // Source: LocalShellTask.tsx:180-252 — spawnShellTask()
-func spawnBackground(in Input, cwd string, timeout time.Duration, registry *BackgroundJobRegistry, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func spawnBackground(in Input, cwd string, timeout time.Duration, registry *BashRegistry, tctx *tool.ToolUseContext, jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	s := NewStreamingOutput(nil)
 
 	// Build emitAskInput callback from tctx.OnAskInput (if available).
@@ -1039,7 +1039,7 @@ func spawnBackground(in Input, cwd string, timeout time.Duration, registry *Back
 // wait for the process to exit and call job.Complete().
 //
 // Source: BashTool.tsx:924-963 — startBackgrounding
-func transitionToBackground(registry *BackgroundJobRegistry, command string, pid int, s *StreamingOutput, in Input, cwd string, completionFunc func(*BackgroundJob), jobNotify func(JobNotification)) (*tool.ToolResult, error) {
+func transitionToBackground(registry *BashRegistry, command string, pid int, s *StreamingOutput, in Input, cwd string, completionFunc func(*BackgroundJob), jobNotify func(JobNotification)) (*tool.ToolResult, error) {
 	job := registry.Spawn(command, pid, s)
 	job.CWD = cwd
 	job.Description = in.Description

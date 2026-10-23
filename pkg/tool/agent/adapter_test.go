@@ -94,7 +94,7 @@ func TestJobAdapter_Prefix(t *testing.T) {
 // adapter ever seeing them.
 func TestJobAdapter_MultiRegistryRoutesAgentIDs(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	release := make(chan struct{})
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -197,7 +197,7 @@ func TestConvertState_Cancelled_MapsToKilled(t *testing.T) {
 
 func TestAdapter_GetCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{
@@ -235,7 +235,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 
 func TestAdapter_GetRunning(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -263,7 +263,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 
 func TestAdapter_GetFailed(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("boom")
@@ -287,7 +287,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 
 func TestAdapter_GetNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	adapter := NewBackgroundAgentJobAdapter(reg)
 	_, ok := adapter.Get("nonexistent")
 	if ok {
@@ -297,7 +297,7 @@ func TestAdapter_GetNotFound(t *testing.T) {
 
 func TestAdapter_List(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	s1, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "a"}, nil
@@ -332,7 +332,7 @@ func TestAdapter_List(t *testing.T) {
 
 func TestAdapter_List_TriggerCleanup(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
@@ -354,7 +354,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 
 func TestAdapter_KillSuccess(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -375,7 +375,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 
 func TestAdapter_KillNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	adapter := NewBackgroundAgentJobAdapter(reg)
 	err := adapter.Kill("nonexistent")
 	if err == nil {
@@ -388,7 +388,7 @@ func TestAdapter_KillNotFound(t *testing.T) {
 
 func TestAdapter_WaitCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "done"}, nil
@@ -408,7 +408,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 
 func TestAdapter_WaitFailed(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return nil, errors.New("crash")
@@ -428,7 +428,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 
 func TestAdapter_WaitNotFound(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	adapter := NewBackgroundAgentJobAdapter(reg)
 	_, err := adapter.Wait("nonexistent")
 	if err == nil {
@@ -465,7 +465,7 @@ func TestAdapter_NilRegistry(t *testing.T) {
 
 func TestConvertState_ExposesParentToolUseIDAndAgentType(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {

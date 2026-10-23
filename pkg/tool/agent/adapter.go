@@ -10,15 +10,15 @@ import (
 var _ job.Registry = (*BackgroundAgentJobAdapter)(nil)
 var _ job.SummaryLister = (*BackgroundAgentJobAdapter)(nil)
 
-// BackgroundAgentJobAdapter adapts BackgroundAgentRegistry to the job.Registry interface.
+// BackgroundAgentJobAdapter adapts AgentRegistry to the job.Registry interface.
 // This enables TaskOutput/TaskStop to manage background agent tasks alongside bash tasks.
 type BackgroundAgentJobAdapter struct {
-	reg *BackgroundAgentRegistry
+	reg *AgentRegistry
 }
 
-// NewBackgroundAgentJobAdapter creates an adapter wrapping a BackgroundAgentRegistry.
+// NewBackgroundAgentJobAdapter creates an adapter wrapping a AgentRegistry.
 // If reg is nil, all methods return not-found.
-func NewBackgroundAgentJobAdapter(reg *BackgroundAgentRegistry) *BackgroundAgentJobAdapter {
+func NewBackgroundAgentJobAdapter(reg *AgentRegistry) *BackgroundAgentJobAdapter {
 	return &BackgroundAgentJobAdapter{reg: reg}
 }
 
@@ -79,7 +79,7 @@ func (a *BackgroundAgentJobAdapter) ListSummaries() []*job.JobInfo {
 }
 
 // Wait blocks until the background agent completes, returning an exit code.
-// BackgroundAgentRegistry.Wait blocks on <-state.done which is closed after the
+// AgentRegistry.Wait blocks on <-state.done which is closed after the
 // goroutine updates Status and Result, so the copy reflects the final state.
 func (a *BackgroundAgentJobAdapter) Wait(id string) (int, error) {
 	if a.reg == nil {

@@ -6845,7 +6845,7 @@ func TestQueryOnClosedEngine(t *testing.T) {
 func newRunAgentEngine(params *Params) *Engine {
 	eng := New(params)
 	at := agenttool.New()
-	at.SetBgRegistry(agenttool.NewBackgroundAgentRegistry())
+	at.SetRegistry(agenttool.NewAgentRegistry())
 	eng.SetToolRefs(ToolRefs{Agent: at})
 	return eng
 }

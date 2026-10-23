@@ -13,7 +13,7 @@ import (
 
 func TestForkRegistry_SpawnAndWait(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -42,7 +42,7 @@ func TestForkRegistry_SpawnAndWait(t *testing.T) {
 
 func TestForkRegistry_SpawnWithError(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -59,7 +59,7 @@ func TestForkRegistry_SpawnWithError(t *testing.T) {
 
 func TestForkRegistry_Cancel(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	started := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
@@ -85,7 +85,7 @@ func TestForkRegistry_Cancel(t *testing.T) {
 
 func TestForkRegistry_CancelNonexistent(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	if reg.Cancel("nonexistent") {
 		t.Error("Cancel should return false for nonexistent agent")
 	}
@@ -93,7 +93,7 @@ func TestForkRegistry_CancelNonexistent(t *testing.T) {
 
 func TestForkRegistry_Get(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -118,7 +118,7 @@ func TestForkRegistry_Get(t *testing.T) {
 
 func TestForkRegistry_List(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	// Block agents on channels so they stay running until we check List
 	unblockA := make(chan struct{})
@@ -156,7 +156,7 @@ func TestForkRegistry_List(t *testing.T) {
 
 func TestForkRegistry_NotifyCalled(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	var mu sync.Mutex
 	var notifiedID, notifiedToolUseID string
@@ -198,7 +198,7 @@ func TestForkRegistry_NotifyCalled(t *testing.T) {
 
 func TestForkRegistry_NotifyOnError(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	var mu sync.Mutex
 	var notifiedErr error
@@ -229,7 +229,7 @@ func TestForkRegistry_NotifyOnError(t *testing.T) {
 
 func TestForkRegistry_ContextCancellation(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -333,7 +333,7 @@ func TestBuildForkNotificationXML_EscapesSpecialChars(t *testing.T) {
 
 func TestForkRegistry_SpawnNilRunFn(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	_, err := reg.Spawn(context.Background(), nil, nil, "test", "call_1", "fork")
 	if err == nil {
 		t.Fatal("expected error for nil runFn, got nil")
@@ -345,7 +345,7 @@ func TestForkRegistry_SpawnNilRunFn(t *testing.T) {
 
 func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	unblock := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
@@ -381,7 +381,7 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 
 func TestForkRegistry_CleanupCompleted(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	// Spawn two agents that complete quickly
 	s1, _ := reg.Spawn(context.Background(),
@@ -482,7 +482,7 @@ func TestIsInForkChild_EmptyMessages(t *testing.T) {
 
 func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	var notified bool
 	var notifyErr error
@@ -519,7 +519,7 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 
 func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -553,7 +553,7 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 
 func TestBackgroundAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	adapter := NewBackgroundAgentJobAdapter(reg)
 
 	// Spawn and complete a fork agent
@@ -580,7 +580,7 @@ func TestBackgroundAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T)
 
 func TestSpawn_UnifiedAgentIDs(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	s1, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -661,7 +661,7 @@ func (r *agentEventRecorder) shell(et types.QueryEventType) (types.JobEvent, boo
 // before the run goroutine starts; nil emitter is a no-op.
 func TestSpawn_EmitsJobStarted(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	rec := &agentEventRecorder{}
 	reg.SetOnJobEvent(rec.onJobEvent)
 	release := make(chan struct{})
@@ -711,7 +711,7 @@ func TestSpawn_EmitsJobStarted(t *testing.T) {
 	}
 
 	// Nil emitter: Spawn must not panic, must not emit, and must register.
-	quiet := NewBackgroundAgentRegistry()
+	quiet := NewAgentRegistry()
 	if _, err := quiet.Spawn(context.Background(),
 		func(context.Context, string) (*types.SubQueryResult, error) { return &types.SubQueryResult{}, nil },
 		nil, "nil emitter", "tu_n", "General"); err != nil {
@@ -724,7 +724,7 @@ func TestSpawn_EmitsJobStarted(t *testing.T) {
 // closes done (Wait returns).
 func TestSpawnPanic_EmitsTerminatedFailed(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	rec := &agentEventRecorder{}
 	reg.SetOnJobEvent(rec.onJobEvent)
 
@@ -768,7 +768,7 @@ func TestFinalize_AllBranches(t *testing.T) {
 	t.Parallel()
 	t.Run("completed", func(t *testing.T) {
 		t.Parallel()
-		reg := NewBackgroundAgentRegistry()
+		reg := NewAgentRegistry()
 		rec := &agentEventRecorder{}
 		reg.SetOnJobEvent(rec.onJobEvent)
 
@@ -801,7 +801,7 @@ func TestFinalize_AllBranches(t *testing.T) {
 
 	t.Run("failed", func(t *testing.T) {
 		t.Parallel()
-		reg := NewBackgroundAgentRegistry()
+		reg := NewAgentRegistry()
 		rec := &agentEventRecorder{}
 		reg.SetOnJobEvent(rec.onJobEvent)
 
@@ -831,7 +831,7 @@ func TestFinalize_AllBranches(t *testing.T) {
 
 	t.Run("cancelled", func(t *testing.T) {
 		t.Parallel()
-		reg := NewBackgroundAgentRegistry()
+		reg := NewAgentRegistry()
 		rec := &agentEventRecorder{}
 		reg.SetOnJobEvent(rec.onJobEvent)
 

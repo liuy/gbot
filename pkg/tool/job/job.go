@@ -63,7 +63,7 @@ type JobInfo struct {
 }
 
 // Registry is the interface for querying and managing background jobs.
-// bash.BackgroundJobRegistry satisfies this interface via JobInfoAdapter.
+// bash.BashRegistry satisfies this interface via JobInfoAdapter.
 type Registry interface {
 	// Get returns job info by ID. Returns (nil, false) if not found.
 	Get(id string) (*JobInfo, bool)

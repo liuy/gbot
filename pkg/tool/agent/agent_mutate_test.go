@@ -96,7 +96,7 @@ func TestCallFork_SyncErrorWrapShape(t *testing.T) {
 	at.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return nil, sentinel
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	_, err := at.Call(context.Background(), json.RawMessage(`{"description":"d","prompt":"p","fork":true}`), nil)
@@ -127,7 +127,7 @@ func TestCallFork_IgnoresStaleModelKey(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	for _, in := range []string{
@@ -153,7 +153,7 @@ func TestCallFork_AssistantContentBuildsTriggerPair(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	tctx := &tool.ToolUseContext{
@@ -192,7 +192,7 @@ func TestCallFork_EmptyAssistantContentUsesHistoryOnly(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	tctx := &tool.ToolUseContext{
@@ -223,7 +223,7 @@ func TestCallFork_EmptyAssistantContentUsesHistoryOnly(t *testing.T) {
 
 func TestJobAdapter_WaitUnknownIDErrorShape(t *testing.T) {
 	t.Parallel()
-	adapter := NewBackgroundAgentJobAdapter(NewBackgroundAgentRegistry())
+	adapter := NewBackgroundAgentJobAdapter(NewAgentRegistry())
 
 	code, err := adapter.Wait("agent-404")
 	if code != -1 {
@@ -272,12 +272,12 @@ func TestJobAdapter_NilRegistryErrorShapes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BackgroundAgentRegistry.CleanupCompleted — terminal-status disjunction
+// AgentRegistry.CleanupCompleted — terminal-status disjunction
 // ---------------------------------------------------------------------------
 
 func TestCleanupCompleted_RemovesEveryTerminalStatusAndKeepsRunning(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 
 	release := make(chan struct{})
 	running, err := reg.Spawn(context.Background(),
@@ -848,7 +848,7 @@ func TestCallFork_CarriesParentToolUseIDAndSystemPrompt(t *testing.T) {
 		captured = opts
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "rendered parent prompt" })
 	at.SetMcpConnect(func(ctx context.Context, agentID string, raw []json.RawMessage) (*McpConnectResult, error) {
 		return nil, nil
@@ -926,12 +926,12 @@ func TestFormatWireBlocks_OneShotAsyncSkipsTrailer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BackgroundAgentRegistry — snapshots and notification XML
+// AgentRegistry — snapshots and notification XML
 // ---------------------------------------------------------------------------
 
 func TestSpawn_SnapshotReportsRunningState(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	release := make(chan struct{})
 	snapshot, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -959,7 +959,7 @@ func TestSpawn_SnapshotReportsRunningState(t *testing.T) {
 
 func TestWait_ResultCopyIsIndependent(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	state, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "original", TotalTokens: 7}, nil
@@ -1064,7 +1064,7 @@ func TestFilterIncompleteToolCalls_AssistantToolResultDoesNotComplete(t *testing
 
 func TestJobAdapter_ListKeepsRunningAgents(t *testing.T) {
 	t.Parallel()
-	reg := NewBackgroundAgentRegistry()
+	reg := NewAgentRegistry()
 	release := make(chan struct{})
 	running, err := reg.Spawn(context.Background(),
 		func(ctx context.Context, _ string) (*types.SubQueryResult, error) {
@@ -1302,7 +1302,7 @@ func TestCallFork_SyncPathPropagatesCallerContext(t *testing.T) {
 		seen = ctx.Value(parentCtxKey{})
 		return &types.SubQueryResult{Content: "ok"}, nil
 	}})
-	at.SetBgRegistry(NewBackgroundAgentRegistry())
+	at.SetRegistry(NewAgentRegistry())
 	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	ctx := context.WithValue(context.Background(), parentCtxKey{}, "parent-value")

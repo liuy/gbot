@@ -84,7 +84,7 @@ func textStreamEvents(model, text string) []llm.StreamEvent {
 // newTestApp creates an App with a mock engine and Hub for testing.
 // Uses empty history path to avoid writing to production history file.
 // The Agent tool assembly satisfies RunAgent's re-point contract (it reads
-// e.toolRefs.Agent.BgRegistry() unconditionally); fork-skill tests ride on it.
+// e.toolRefs.Agent.Registry() unconditionally); fork-skill tests ride on it.
 func newTestApp(provider *tuiMockProvider) *App {
 	h := hub.NewHub()
 	eng := engine.New(&engine.Params{
@@ -93,7 +93,7 @@ func newTestApp(provider *tuiMockProvider) *App {
 		Dispatcher: h,
 	})
 	at := agenttool.New()
-	at.SetBgRegistry(agenttool.NewBackgroundAgentRegistry())
+	at.SetRegistry(agenttool.NewAgentRegistry())
 	eng.SetToolRefs(engine.ToolRefs{Agent: at})
 	app := NewApp(eng, "test system prompt", h)
 	app.history = NewHistory("") // in-memory only, no file I/O
