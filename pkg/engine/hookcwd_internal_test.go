@@ -68,7 +68,7 @@ func TestRunAgent_HookInputCwd_FollowsOverride(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,

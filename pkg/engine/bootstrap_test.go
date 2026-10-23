@@ -255,6 +255,7 @@ func TestWireEngine_ProducerOrigins(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	if _, err := refs.Agent.Call(context.Background(),
 		json.RawMessage(`{"prompt":"do it","description":"producer origin probe","run_in_background":true}`),
@@ -467,6 +468,7 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	// Trigger the factory via AgentTool.Run
 	agentInput, _ := json.Marshal(map[string]any{
@@ -514,6 +516,7 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	// Trigger factory with fork=true (which sets opts.ForkMessages via callFork)
 	agentInput, _ := json.Marshal(map[string]any{
@@ -592,6 +595,7 @@ func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately to trigger ctx.Err() path
@@ -642,6 +646,10 @@ func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	// The Agent tool's factory calls eng.RunAgent, whose root-table re-point
+	// reads toolRefs — WireEngine alone leaves it empty (production wiring
+	// always pairs the two).
+	eng.SetToolRefs(refs)
 
 	// Trigger factory with a restricted tool set
 	agentInput, _ := json.Marshal(map[string]any{
@@ -773,6 +781,7 @@ func TestWireEngine_AgentFactory_GeneralSpawn(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	// Plain spawn through the wired Agent tool: no fork messages, no caller
 	// context messages and no skills, so RunAgent assembles only the prompt
@@ -847,6 +856,7 @@ func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	agentInput, _ := json.Marshal(map[string]any{
 		"prompt":        "trigger error",
@@ -939,6 +949,7 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	// Verify the McpConnect callback was registered on the agent.
 	mcpFn := refs.Agent.McpConnectFn()
@@ -1006,6 +1017,7 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 
 	// Trigger the factory — SubagentStart hook should fire and inject context.
 	agentInput, _ := json.Marshal(map[string]any{
@@ -1138,6 +1150,7 @@ func TestAgentBackgroundSubagentEndToEnd(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
 	// The notification auto-turn requires a non-empty system prompt
 	// (startProcessAttachmentsIfIdle bails on empty).
 	eng.SetSystemPrompt("parent system prompt")
@@ -1453,5 +1466,33 @@ func TestWireEngine_SetsBashJobNotify(t *testing.T) {
 	refs.Bash.JobNotifyFn()(bash.JobNotification{JobID: "bg-9", Status: "completed", Summary: "hook probe"})
 	if got := eng.AttachmentsLen(); got != 1 {
 		t.Fatalf("AttachmentsLen after JobNotifyFn fire = %d, want 1", got)
+	}
+}
+
+// A RunAgent sub-engine's private background table must stay
+// manager-invisible: the sub never enters mgr.engines, so its spawns resolve
+// only through the root engine's table. Mirrors RunAgent's three-step wiring:
+// CreateTools(root refs) → WireEngine → re-point to the root table.
+func TestWireEngine_SubPrivateTableNotManagerReachable(t *testing.T) {
+	mp := &mockProvider{}
+	deps, mgr, _ := msgDeps(t)
+
+	rootEng, rootRefs := msgWiredParent(t, mp, "root", deps)
+	mgr.Add(&EngineViewState{Engine: rootEng, ID: "root"})
+
+	subRefs := CreateTools(deps, task.NewList(""), WithSessionRootRefs(&rootRefs))
+	subEng := newWiredTestEngine(t)
+	WireEngine(subEng, subRefs, deps)
+
+	subID := spawnHoldingAgent(t, subRefs.Agent.BgRegistry())
+	subRefs.Agent.SetBgRegistry(rootRefs.Agent.BgRegistry())
+
+	if got, ok := mgr.BgAgent(subID); ok || got != nil {
+		t.Errorf("BgAgent(sub private id %q) = (%v, %v), want (nil, false): a sub engine's private table must not be manager-reachable", subID, got, ok)
+	}
+
+	rootID := spawnHoldingAgent(t, rootRefs.Agent.BgRegistry())
+	if _, ok := mgr.BgAgent(rootID); !ok {
+		t.Errorf("BgAgent(root id %q) not found: the root engine is in the manager, its table must resolve", rootID)
 	}
 }

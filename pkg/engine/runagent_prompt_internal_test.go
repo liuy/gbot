@@ -38,7 +38,7 @@ func subAgentSystemPrompt(t *testing.T, workingDir, suppliedPrompt string) strin
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 	bt := bash.New(nil)
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: workingDir,

@@ -245,10 +245,11 @@ func TestSetBgRegistry_SharedRegistryWins(t *testing.T) {
 	}
 }
 
-// The getter is the wiring seam: WireEngine registers t.BgRegistry() in the
-// EngineManager and RunAgent reads a sub-engine's table through it. A getter
-// that returns anything but the injected registry silently unregisters the
-// engine's spawns from cross-engine message resolution.
+// The getter is the wiring seam: the manager's BgAgent reads
+// t.BgRegistry() from each live engine's toolRefs and RunAgent reads a
+// sub-engine's table through it. A getter that returns anything but the
+// injected registry silently makes the engine's spawns invisible to
+// cross-engine message resolution.
 func TestBgRegistryGetter_ReturnsInjected(t *testing.T) {
 	t.Parallel()
 	at := New()

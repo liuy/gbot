@@ -24,8 +24,9 @@ import (
 
 // msgDeps builds SharedDeps carrying the resolver's manager plus a shared id
 // minter, plus a standalone registry for direct resolver-literal tests (to be
-// registered via mgr.AddBgTable). Wired engines mint their own per-engine
-// table inside CreateTools — deps carries no shared registry.
+// reachable it must be attached to an owner engine via addTableOwner; wired
+// engines mint their own per-engine table inside CreateTools — deps carries
+// no shared registry).
 func msgDeps(t *testing.T) (SharedDeps, *EngineManager, *agenttool.BackgroundAgentRegistry) {
 	t.Helper()
 	mgr := NewEngineManager()
@@ -88,7 +89,7 @@ func msgWiredParent(t *testing.T, mp *mockProvider, engineID string, deps Shared
 func TestEngineMessageResolver_AgentRegistryFirst(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
-	mgr.AddBgTable(reg)
+	addTableOwner(t, mgr, "bg-owner", reg)
 	id := spawnRunningAgent(t, reg)
 	sink := &msgSpyTarget{}
 	reg.AttachSink(id, sink)
@@ -134,7 +135,7 @@ func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 	t.Parallel()
 	for _, want := range []string{"completed", "failed", "cancelled"} {
 		_, mgr, reg := msgDeps(t)
-		mgr.AddBgTable(reg)
+		addTableOwner(t, mgr, "bg-owner", reg)
 		var cancel context.CancelFunc
 		ctx := context.Background()
 		if want == "cancelled" {
@@ -186,7 +187,7 @@ func TestEngineMessageResolver_TerminalAgent(t *testing.T) {
 func TestEngineMessageResolver_StartingAgent(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
-	mgr.AddBgTable(reg)
+	addTableOwner(t, mgr, "bg-owner", reg)
 	id := spawnRunningAgent(t, reg) // no AttachSink — still starting
 
 	r := &EngineMessageResolver{mgr: mgr}
@@ -260,7 +261,7 @@ func TestEngineMessageResolver_IDBeatsName(t *testing.T) {
 func TestEngineMessageResolver_RegistryIDBeatsEngineName(t *testing.T) {
 	t.Parallel()
 	_, mgr, reg := msgDeps(t)
-	mgr.AddBgTable(reg)
+	addTableOwner(t, mgr, "bg-owner", reg)
 	id := spawnRunningAgent(t, reg)
 	sink := &msgSpyTarget{}
 	reg.AttachSink(id, sink)
@@ -381,23 +382,6 @@ func TestWireEngine_SetsSelfIDAndEngineID(t *testing.T) {
 	}
 }
 
-// WireEngine must register the engine's background table with the manager:
-// mgr.BgAgent is the message resolver's only path to any engine's spawns.
-func TestWireEngine_RegistersBgTable(t *testing.T) {
-	t.Parallel()
-	deps, mgr, _ := msgDeps(t)
-	_, refs := msgWiredParent(t, &mockProvider{}, "e2", deps)
-
-	id := spawnRunningAgent(t, refs.Agent.BgRegistry())
-	st, ok := mgr.BgAgent(id)
-	if !ok {
-		t.Fatal("mgr.BgAgent missed an agent spawned in the wired engine's own registry — WireEngine never registered the table")
-	}
-	if st.Status != agenttool.AgentRunning {
-		t.Errorf("status = %q, want running", st.Status)
-	}
-}
-
 // RunAgent must attach the freshly built sub-engine as the background
 // agent's sink, so the registry entry becomes deliverable.
 func TestRunAgent_BackgroundWiring(t *testing.T) {
@@ -407,7 +391,7 @@ func TestRunAgent_BackgroundWiring(t *testing.T) {
 
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "sub done"), nil)
-	eng := New(&Params{Provider: mp, Model: "test", EngineID: "main"})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "test", EngineID: "main"})
 	defer eng.Close()
 	eng.SetSharedDeps(&deps)
 	mgr.Add(&EngineViewState{Engine: eng, ID: "main"})

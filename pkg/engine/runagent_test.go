@@ -34,7 +34,7 @@ func TestEngine_RunAgent_General(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "sub-agent did the thing"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -76,7 +76,7 @@ func TestEngine_RunAgent_EmptyAgentType_DefaultsToGeneral(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "ok"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -109,7 +109,7 @@ func TestEngine_RunAgent_ForkType_ResolvesToGeneral(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "fork result"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -136,7 +136,7 @@ func TestEngine_RunAgent_UnknownAgentType_Errors(t *testing.T) {
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: &mockProvider{},
 		Model:    "test",
 	})
@@ -169,7 +169,7 @@ func TestEngine_RunAgent_MaxTurnsOverride(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "done"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -193,7 +193,7 @@ func TestEngine_RunAgent_MaxTurnsOverride(t *testing.T) {
 func TestEngine_RunAgent_NilSharedDeps_Errors(t *testing.T) {
 	t.Parallel()
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: &mockProvider{},
 		Model:    "test",
 	})
@@ -228,7 +228,7 @@ func TestEngine_RunAgent_HookFires(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "ok"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -280,7 +280,7 @@ func TestEngine_RunAgent_ParentToolUseID_DispatchesSubAgentEvents(t *testing.T) 
 	mp.addResponse(textStreamEvents("test", "all done"), nil)
 
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 		ToolsProvider: func() map[string]tool.Tool {
@@ -411,7 +411,7 @@ func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
 	// (AgentTool.Call → engine.RunAgent) at the sub-engine level. SetEngine
 	// wires the parent engine so AgentTool.Call can reach RunAgent.
 	agentTool := agenttool.New()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 		ToolsProvider: func() map[string]tool.Tool {
@@ -474,7 +474,7 @@ func TestRunAgent_NoContentCancel_ReturnsInterrupted(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(nil, nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 	})
@@ -540,7 +540,7 @@ func TestEngine_RunAgent_ClaudeMdInjectedOnce(t *testing.T) {
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -591,7 +591,7 @@ func TestEngine_RunAgent_ExploreOmitsClaudeMd(t *testing.T) {
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -655,7 +655,7 @@ func TestEngine_RunAgent_ExploreWithContextOmitsClaudeMd(t *testing.T) {
 			},
 		}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -755,7 +755,7 @@ func TestEngine_RunAgent_SubagentEmitsNoQueryStart(t *testing.T) {
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -836,7 +836,7 @@ func TestEngine_RunAgent_EmptyPromptHookContext_UsesForkedQuery(t *testing.T) {
 			},
 		}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -909,7 +909,7 @@ func TestEngine_RunAgent_EmptyPromptNoContext_UsesForkedQuery(t *testing.T) {
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: tmpDir,
@@ -992,7 +992,7 @@ func TestRunAgent_ResolvesProviderModelComposite(t *testing.T) {
 	d.Cfg, d.Providers = cfg, config.ProviderMap{"zhipu": target}
 	// No scripted responses: any parent Stream call is a bug by itself.
 	parent := &mockProvider{}
-	eng := New(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
 	defer eng.Close()
 	eng.SetSharedDeps(&d)
 
@@ -1082,7 +1082,7 @@ func TestRunAgent_InvalidModelHardFails(t *testing.T) {
 		parent.addResponse(textStreamEvents("test", "ok"), nil)
 		d := runAgentDeps(t)
 		tc.setDeps(&d)
-		eng := New(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
+		eng := newRunAgentEngine(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
 		eng.SetSharedDeps(&d)
 		_, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
 			Prompt: "p", AgentType: "General", Model: tc.model, ParentToolUseID: "tu-b"})

@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,12 +74,6 @@ type EngineManager struct {
 	activeID string
 	order    []string // creation order, stable for picker display
 	minter   *agenttool.IDMinter
-	// bgTables holds each live engine's background-agent registry in wire
-	// order, deduped by pointer. Lock order is always mgr.mu → reg.mu:
-	// BgAgent enters registries while holding the manager lock, and
-	// registries never call back into the manager, so the reverse nesting
-	// cannot arise.
-	bgTables []*agenttool.BackgroundAgentRegistry
 	// nextID backs the fallback counter when no minter was injected
 	// (standalone managers in tests); production always injects via
 	// app/start.go so engines and background agents share one sequence.
@@ -160,48 +153,38 @@ func (m *EngineManager) NewEngineID() string {
 	}
 }
 
-// AddBgTable registers a per-engine background-agent registry so message
-// addressing resolves any engine's background agents through one manager
-// lookup. Nil and already-registered tables are no-ops: WireEngine can run
-// more than once per engine (reload).
-func (m *EngineManager) AddBgTable(reg *agenttool.BackgroundAgentRegistry) {
-	if reg == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if slices.Contains(m.bgTables, reg) {
-		return
-	}
-	m.bgTables = append(m.bgTables, reg)
-}
-
-// RemoveBgTable unregisters a table. No production caller: root-table
-// routing keeps every table registered for its engine's whole life — empty
-// sub tables are harmless to BgAgent's iteration. Test-only today; kept for
-// a future engine-removal path, which must drop the ending engine's table
-// too. Removes the first match; unknown tables are ignored.
-func (m *EngineManager) RemoveBgTable(reg *agenttool.BackgroundAgentRegistry) {
-	if reg == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i, existing := range m.bgTables {
-		if existing == reg {
-			m.bgTables = append(m.bgTables[:i], m.bgTables[i+1:]...)
-			return
-		}
-	}
-}
-
-// BgAgent resolves a background agent id across all registered tables and
-// returns the owning registry's snapshot copy. First match wins; tables hold
-// disjoint ids in production (one shared id minter across engines).
+// BgAgent resolves a background agent id across every live engine's
+// background table and returns the owning registry's snapshot copy. First
+// match wins; tables hold disjoint ids in production (one shared id minter
+// across engines).
+//
+// Tables are discovered through mgr.engines — the table's lifetime IS the
+// engine's lifetime, so a dead engine's spawns stop resolving the moment it
+// leaves the manager (no shadow registry list to keep in sync). Lock order
+// stays mgr.mu → reg.mu: Get enters the registry while the manager read lock
+// is held, and registries never call back into the manager.
+//
+// Reads vs.Engine.toolRefs, which is written once by SetToolRefs BEFORE the
+// engine enters the manager (every production creation path: start.go,
+// dream, wechat, wui) — the mgr.mu handed off by Add makes that write
+// visible here. Engines without wired Agent tools (lazy views, hand-built
+// test engines) are skipped.
 func (m *EngineManager) BgAgent(id string) (*agenttool.BackgroundAgentState, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, reg := range m.bgTables {
+	for _, eid := range m.order {
+		vs := m.engines[eid]
+		if vs == nil || vs.Engine == nil {
+			continue
+		}
+		at := vs.Engine.toolRefs.Agent
+		if at == nil {
+			continue
+		}
+		reg := at.BgRegistry()
+		if reg == nil {
+			continue
+		}
 		if state, ok := reg.Get(id); ok {
 			return state, true
 		}

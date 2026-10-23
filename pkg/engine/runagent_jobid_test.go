@@ -32,7 +32,7 @@ func TestRunAgent_BGJobIDStampedOnMeta(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "sub text"), nil)
 
-	parent := New(&Params{Provider: mp, Model: "test", EngineID: "parent"})
+	parent := newRunAgentEngine(&Params{Provider: mp, Model: "test", EngineID: "parent"})
 	parent.SetSharedDeps(&deps)
 	t.Cleanup(func() { parent.Close() })
 	collector := newEventCollector()
@@ -124,7 +124,7 @@ func TestRunAgent_RootSyncSpawnNoJobID(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "root sync text"), nil)
 
-	parent := New(&Params{Provider: mp, Model: "test", EngineID: "parent"})
+	parent := newRunAgentEngine(&Params{Provider: mp, Model: "test", EngineID: "parent"})
 	parent.SetSharedDeps(&deps)
 	t.Cleanup(func() { parent.Close() })
 	collector := newEventCollector()
@@ -208,7 +208,7 @@ func TestTaggedDispatch_LogCarriesJobID(t *testing.T) {
 	const textLen = 80
 	mp.addResponse(textStreamEvents("test", strings.Repeat("x", textLen)), nil)
 
-	parent := New(&Params{Provider: mp, Model: "test", EngineID: "parent"})
+	parent := newRunAgentEngine(&Params{Provider: mp, Model: "test", EngineID: "parent"})
 	parent.SetSharedDeps(&deps)
 	t.Cleanup(func() { parent.Close() })
 	parent.SetDispatcher(newEventCollector())

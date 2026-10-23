@@ -99,7 +99,7 @@ func TestRunAgent_AgentDefMCPToolCallable(t *testing.T) {
 	var gotSpecs []string
 	var ctxNil bool
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -188,7 +188,7 @@ func TestRunAgent_AgentDefMCPConnectErrorWarnsOnly(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "degraded but done"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -234,7 +234,7 @@ func TestRunAgent_AgentDefMCPCleanupErrorWarnsOnly(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "dirty but done"), nil)
 
 	var cleanupCalls int
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -285,7 +285,7 @@ func TestRunAgent_AgentDefMCPWithoutConnector(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "bare done"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -325,7 +325,7 @@ func TestRunAgent_AgentDefSkillsPreloaded(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "skill probe done"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -372,7 +372,7 @@ func TestRunAgent_AgentDefSkillsWithoutRegistry(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "bare skill done"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -418,7 +418,7 @@ func TestRunAgent_AgentDefModelRoutesSubProvider(t *testing.T) {
 	}))
 
 	parent := &mockProvider{} // no scripted responses: any parent call is a bug
-	eng := New(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: parent, Model: "parent-model", Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
 

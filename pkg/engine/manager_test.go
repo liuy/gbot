@@ -683,17 +683,30 @@ func spawnHoldingAgent(t *testing.T, reg *agenttool.BackgroundAgentRegistry) str
 	return state.ID
 }
 
+// addTableOwner registers a minimal engine whose Agent tool holds reg, so
+// BgAgent can discover the table through the engines map.
+func addTableOwner(t *testing.T, m *EngineManager, engineID string, reg *agenttool.BackgroundAgentRegistry) *Engine {
+	t.Helper()
+	at := agenttool.New()
+	at.SetBgRegistry(reg)
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test", EngineID: engineID})
+	eng.SetToolRefs(ToolRefs{Agent: at})
+	m.Add(&EngineViewState{Engine: eng, ID: engineID})
+	t.Cleanup(func() { eng.Close() })
+	return eng
+}
+
 func TestEngineManager_BgAgent_FindsSpawnedState(t *testing.T) {
 	m := NewEngineManager()
 	reg := agenttool.NewBackgroundAgentRegistry()
-	m.AddBgTable(reg)
+	addTableOwner(t, m, "owner", reg)
 	id := spawnHoldingAgent(t, reg)
 	sink := fakeBgSink{}
 	reg.AttachSink(id, sink)
 
 	got, ok := m.BgAgent(id)
 	if !ok {
-		t.Fatalf("BgAgent(%q) not found after AddBgTable", id)
+		t.Fatalf("BgAgent(%q) not found through the owner engine", id)
 	}
 	if got.ID != id {
 		t.Errorf("BgAgent.ID = %q, want %q", got.ID, id)
@@ -718,13 +731,25 @@ func TestEngineManager_BgAgent_FindsSpawnedState(t *testing.T) {
 
 func TestEngineManager_BgAgent_SearchesAllTables(t *testing.T) {
 	m := NewEngineManager()
-	m.AddBgTable(agenttool.NewBackgroundAgentRegistry())
+	addTableOwner(t, m, "owner-a", agenttool.NewBackgroundAgentRegistry())
+	// Engines the walk must pass WITHOUT stopping: a lazy view (Engine nil),
+	// a bare engine (no SetToolRefs — Agent nil), and a registry-less Agent
+	// tool. All precede the holding owner in walk order, so a guard that
+	// breaks instead of skipping hides the sought id behind them.
+	m.Add(&EngineViewState{ID: "lazy"})
+	bare := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	t.Cleanup(func() { bare.Close() })
+	m.Add(&EngineViewState{Engine: bare, ID: "bare"})
+	noRegEng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	t.Cleanup(func() { noRegEng.Close() })
+	noRegEng.SetToolRefs(ToolRefs{Agent: agenttool.New()}) // no SetBgRegistry — nil BgRegistry()
+	m.Add(&EngineViewState{Engine: noRegEng, ID: "no-reg"})
 	regB := agenttool.NewBackgroundAgentRegistry()
-	m.AddBgTable(regB)
+	addTableOwner(t, m, "owner-b", regB)
 	id := spawnHoldingAgent(t, regB)
 
 	if got, ok := m.BgAgent(id); !ok || got.ID != id {
-		t.Errorf("BgAgent(%q) = (%v, %v), want the entry registered in the second table", id, got, ok)
+		t.Errorf("BgAgent(%q) = (%v, %v), want the entry held by the second owner engine", id, got, ok)
 	}
 }
 
@@ -733,55 +758,50 @@ func TestEngineManager_BgAgent_UnknownIDNotFound(t *testing.T) {
 	if got, ok := m.BgAgent("agent-1"); ok || got != nil {
 		t.Errorf("BgAgent on empty manager = (%v, %v), want (nil, false)", got, ok)
 	}
-	m.AddBgTable(agenttool.NewBackgroundAgentRegistry())
+	addTableOwner(t, m, "owner", agenttool.NewBackgroundAgentRegistry())
 	if got, ok := m.BgAgent("agent-999"); ok || got != nil {
 		t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", got, ok)
 	}
+	// Lazy view (meta-only, engine not yet built) must be skipped, not
+	// dereferenced.
+	m.Add(&EngineViewState{ID: "lazy"})
+	if got, ok := m.BgAgent("agent-999"); ok || got != nil {
+		t.Errorf("BgAgent with a lazy view present = (%v, %v), want (nil, false)", got, ok)
+	}
+	// A nil view-state entry cannot enter the map through any public API
+	// (Add stores only non-nil pointers) — the vs==nil guard keeps the walk
+	// panic-free if that invariant ever breaks. White-box because only
+	// package internals can produce the state.
+	m.engines["ghost"] = nil
+	m.order = append(m.order, "ghost")
+	if got, ok := m.BgAgent("agent-999"); ok || got != nil {
+		t.Errorf("BgAgent with a nil view-state entry = (%v, %v), want (nil, false) without panicking", got, ok)
+	}
 }
 
-func TestEngineManager_RemoveBgTable_UnregistersResolution(t *testing.T) {
-	m := NewEngineManager()
+// A background table's reachability is the engine's reachability: once the
+// owning engine leaves the manager, its spawns stop resolving. The registry
+// itself keeps serving direct callers (Get) — removal only ends manager-side
+// resolution.
+func TestEngineManager_RemoveEngine_DropsBgResolution(t *testing.T) {
+	mgr := NewEngineManager()
 	reg := agenttool.NewBackgroundAgentRegistry()
-	m.AddBgTable(reg)
+	addTableOwner(t, mgr, "owner", reg)
+	addTableOwner(t, mgr, "keeper", agenttool.NewBackgroundAgentRegistry())
 	id := spawnHoldingAgent(t, reg)
-	if _, ok := m.BgAgent(id); !ok {
-		t.Fatalf("BgAgent(%q) not found before RemoveBgTable", id)
-	}
 
-	m.RemoveBgTable(reg)
-	if got, ok := m.BgAgent(id); ok || got != nil {
-		t.Errorf("BgAgent(%q) after RemoveBgTable = (%v, %v), want (nil, false)", id, got, ok)
+	if _, ok := mgr.BgAgent(id); !ok {
+		t.Fatalf("BgAgent(%q) not found before Remove", id)
 	}
-	// Removal only unregisters the table — the registry still owns its
-	// entries and keeps serving them.
+	if err := mgr.Remove("owner"); err != nil {
+		t.Fatalf("Remove(owner): %v", err)
+	}
+	if got, ok := mgr.BgAgent(id); ok || got != nil {
+		t.Errorf("BgAgent(%q) after Remove = (%v, %v), want (nil, false)", id, got, ok)
+	}
 	state, ok := reg.Get(id)
 	if !ok || state.Status != agenttool.AgentRunning {
-		t.Errorf("reg.Get after RemoveBgTable = (%v, %v), want the entry still running", state, ok)
-	}
-}
-
-func TestEngineManager_AddBgTable_DeduplicatedByPointer(t *testing.T) {
-	// Adding the same table twice must not create two entries: a single
-	// RemoveBgTable then fully unregisters it. (WireEngine can run more than
-	// once per engine on reload.)
-	m := NewEngineManager()
-	reg := agenttool.NewBackgroundAgentRegistry()
-	m.AddBgTable(reg)
-	m.AddBgTable(reg)
-	id := spawnHoldingAgent(t, reg)
-
-	m.RemoveBgTable(reg)
-	if got, ok := m.BgAgent(id); ok || got != nil {
-		t.Errorf("BgAgent(%q) after double AddBgTable + one RemoveBgTable = (%v, %v), want (nil, false)", id, got, ok)
-	}
-}
-
-func TestEngineManager_AddBgTable_NilRegistryNoop(t *testing.T) {
-	m := NewEngineManager()
-	m.AddBgTable(nil)
-	m.RemoveBgTable(nil)
-	if got, ok := m.BgAgent("agent-1"); ok || got != nil {
-		t.Errorf("BgAgent after nil AddBgTable = (%v, %v), want (nil, false)", got, ok)
+		t.Errorf("reg.Get after Remove = (%v, %v), want the entry still running", state, ok)
 	}
 }
 
@@ -1083,11 +1103,11 @@ func TestEngineManager_ReadPathsStaySerializedWithMapChurn(t *testing.T) {
 }
 
 // TestEngineManager_FieldChurnStaysSerialized covers the accesses the map guard
-// cannot see. activeID, bgTables and minter are a string field, a slice and a
-// pointer: none of them has a runtime consistency check, so a body hoisted out
-// of its critical section still returns the same values and stays green under a
-// plain go test. The pair has to be produced here — each probe call writes the
-// field it is about to read, so the two probe goroutines of lockScopeChurn form
+// cannot see. activeID and minter are a string field and a pointer: neither
+// has a runtime consistency check, so a body hoisted out of its critical
+// section still returns the same values and stays green under a plain go
+// test. The pair has to be produced here — each probe call writes the field
+// it is about to read, so the two probe goroutines of lockScopeChurn form
 // the write/read race, and the kill signal is the race detector's DATA RACE
 // report rather than a failed assertion.
 func TestEngineManager_FieldChurnStaysSerialized(t *testing.T) {
@@ -1107,15 +1127,6 @@ func TestEngineManager_FieldChurnStaysSerialized(t *testing.T) {
 					t.Errorf("ActiveID() = %q, want one of the %d seeded ids", got, len(seeds))
 					return
 				}
-			}
-		}},
-		{"bgTables", func(m *EngineManager, _ []string) {
-			reg := agenttool.NewBackgroundAgentRegistry()
-			m.AddBgTable(reg)
-			m.RemoveBgTable(reg)
-			if st, ok := m.BgAgent("agent-1"); ok || st != nil {
-				t.Errorf("BgAgent(unknown) = (%v, %v), want (nil, false)", st, ok)
-				return
 			}
 		}},
 		{"minter", func(m *EngineManager, _ []string) {

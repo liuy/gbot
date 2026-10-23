@@ -75,7 +75,15 @@ func newDreamMsgFixture(t *testing.T) *dreamMsgFixture {
 	mgr.Add(&engine.EngineViewState{Engine: peer, ID: "e2"})
 
 	reg := agenttool.NewBackgroundAgentRegistry()
-	mgr.AddBgTable(reg)
+	// Owner engine so the manager's BgAgent walk can discover the table
+	// through the engines map (engines without wired Agent tools are
+	// skipped, so the table must ride on one).
+	ownerAt := agenttool.New()
+	ownerAt.SetBgRegistry(reg)
+	owner := engine.New(&engine.Params{Provider: spy, Model: "m", EngineID: "bg-owner"})
+	t.Cleanup(func() { owner.Close() })
+	owner.SetToolRefs(engine.ToolRefs{Agent: ownerAt})
+	mgr.Add(&engine.EngineViewState{Engine: owner, ID: "bg-owner"})
 	blocked := make(chan struct{})
 	t.Cleanup(func() { close(blocked) })
 	st, err := reg.Spawn(context.Background(),

@@ -38,7 +38,7 @@ func TestRunSkill_Fork_EmitsQueryEvents(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "sub-agent review result"), nil)
 	mp.addResponse(textStreamEvents("test", "main agent summary"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 		TaskList: tl,
@@ -141,7 +141,7 @@ func TestRunSkill_New_EmitsSubAgentEvents(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "sub-agent review result"), nil)
 	mp.addResponse(textStreamEvents("test", "main agent summary"), nil)
 
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 		TaskList: tl,

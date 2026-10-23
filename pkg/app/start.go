@@ -916,8 +916,11 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		WSRegistry: nil,
 		ShortStore: d.Store,
 		// Kept identical to the CreateTools literal above: the two literals
-		// describe one engine — letting them diverge would silently un-wire
-		// WireEngine's manager-side background-table registration.
+		// describe one engine. The table is discovered through mgr.engines +
+		// SetToolRefs via the CreateTools literal's EngineMgr (it feeds the
+		// message resolver); since WireEngine stopped touching EngineMgr, this
+		// literal's EngineMgr is dead weight — kept only so the literals stay
+		// in sync.
 		EngineMgr: d.EngineMgr,
 		IDMinter:  d.IDMinter,
 	})

@@ -135,8 +135,8 @@ func (t *AgentTool) EngineID() string { return t.engineID }
 func (t *AgentTool) SetBgRegistry(reg *BackgroundAgentRegistry) { t.bgReg = reg }
 
 // BgRegistry returns the injected registry. RunAgent reads it to route
-// sub-engine spawns to the root's table and to register tables in the
-// EngineManager; nil when SetBgRegistry was never called.
+// sub-engine spawns to the root's table, and the EngineManager discovers it
+// through the engine's toolRefs; nil when SetBgRegistry was never called.
 func (t *AgentTool) BgRegistry() *BackgroundAgentRegistry { return t.bgReg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.

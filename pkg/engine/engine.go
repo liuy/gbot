@@ -1164,17 +1164,15 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 	WireEngine(subEng, subRefs, *e.sharedDeps)
 
 	// Root-table routing: the sub's Agent tool is re-pointed at THIS engine's
-	// table, so every background spawn by this sub — and by any deeper
-	// engine, since NewSubEngine inherits toolRefs and e.toolRefs.Agent is
-	// therefore the session root's Agent tool at every depth — lands in the
-	// session root's table at spawn time. The sub's own table (registered by
-	// WireEngine above) stays manager-registered but permanently empty;
-	// mgr.BgAgent's iteration tolerates empty tables. The nil guard degrades
-	// gracefully: a root whose Agent tool is nil or registry-less (hand-built
-	// test engines) leaves the sub's own registry in place.
-	if root := e.toolRefs.Agent; root != nil && root.BgRegistry() != nil {
-		subRefs.Agent.SetBgRegistry(root.BgRegistry())
-	}
+	// table, so every background spawn by this sub — at any depth — lands in
+	// the session root's table at spawn time and resolves through the root
+	// engine's manager entry (NewSubEngine inherits toolRefs, so the
+	// executor's Agent tool IS the session root's at every depth). Assembly
+	// contract: RunAgent requires a fully assembled engine (CreateTools /
+	// WireEngine shape — CreateTools injects the Agent tool's registry
+	// unconditionally); bare test engines are built by the test helper
+	// newRunAgentEngine (engine_test.go) which supplies the same shape.
+	subRefs.Agent.SetBgRegistry(e.toolRefs.Agent.BgRegistry())
 
 	// Messaging identity: ALWAYS set — background agents address as their
 	// own registry id (opts.AgentID), sync subs fall back to this engine's

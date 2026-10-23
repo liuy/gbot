@@ -6837,6 +6837,19 @@ func TestQueryOnClosedEngine(t *testing.T) {
 	}
 }
 
+// newRunAgentEngine wraps New with the minimal assembly RunAgent demands:
+// toolRefs.Agent holding a background registry, the piece CreateTools/WireEngine
+// give every production engine and whose absence RunAgent's unconditional
+// root-table re-point no longer tolerates. Everything else (deps, provider,
+// cleanup) stays the caller's business so each test keeps its own shape.
+func newRunAgentEngine(params *Params) *Engine {
+	eng := New(params)
+	at := agenttool.New()
+	at.SetBgRegistry(agenttool.NewBackgroundAgentRegistry())
+	eng.SetToolRefs(ToolRefs{Agent: at})
+	return eng
+}
+
 // runAgentDeps is the minimal SharedDeps bundle RunAgent needs.
 func runAgentDeps(t *testing.T) SharedDeps {
 	t.Helper()
@@ -6864,7 +6877,7 @@ func runAgentOnce(t *testing.T, mp *mockProvider, opts agenttool.AgentOpts, tool
 	if deps != nil {
 		d = *deps
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "parent-model",
 		Logger:        silentLogger(),
@@ -6978,7 +6991,7 @@ func TestRunAgentMaxTurnsOverride(t *testing.T) {
 	capped := &mockProvider{}
 	script(capped)
 	d := runAgentDeps(t)
-	eng := New(&Params{Provider: capped, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: capped, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
@@ -6993,7 +7006,7 @@ func TestRunAgentMaxTurnsOverride(t *testing.T) {
 
 	uncapped := &mockProvider{}
 	script(uncapped)
-	eng2 := New(&Params{Provider: uncapped, Model: "parent-model", Logger: silentLogger(),
+	eng2 := newRunAgentEngine(&Params{Provider: uncapped, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng2.Close() })
 	eng2.SetSharedDeps(&d)
@@ -7011,7 +7024,7 @@ func TestRunAgentPropagatesSubError(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{} // no scripted responses → Stream fails
 	d := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
@@ -7030,7 +7043,7 @@ func TestRunAgentPropagatesSubError(t *testing.T) {
 func TestRunAgentUnknownTypeWraps(t *testing.T) {
 	t.Parallel()
 	d := runAgentDeps(t)
-	eng := New(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: &mockProvider{}, Model: "parent-model", Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
 	res, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{Prompt: "p", AgentType: "NoSuchAgentType"})
@@ -7063,7 +7076,7 @@ func TestRunAgentInterruptedWithoutContent(t *testing.T) {
 		hang: hang,
 	})
 	d := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
@@ -7107,7 +7120,7 @@ func TestRunAgentCancelledWithRealContent(t *testing.T) {
 		}, hang: hang},
 	)
 	d := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&d)
@@ -7158,7 +7171,7 @@ func TestRunAgentSubagentStartHookInput(t *testing.T) {
 	}
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "ok"), nil)
-	eng := New(&Params{Provider: mp, Model: "parent-model", WorkingDir: dir,
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", WorkingDir: dir,
 		Logger: silentLogger(), Hooks: hookSystem, ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
@@ -7200,7 +7213,7 @@ func TestRunAgentNilParentTools(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "ok"), nil)
 	deps := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger()})
 	eng.tools = nil
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
@@ -7214,7 +7227,7 @@ func TestRunAgentNilParentTools(t *testing.T) {
 	// An empty (non-nil) parent set must behave exactly like a nil one.
 	empty := &mockProvider{}
 	empty.addResponse(textStreamEvents("test", "ok"), nil)
-	eng2 := New(&Params{Provider: empty, Model: "parent-model", Logger: silentLogger(),
+	eng2 := newRunAgentEngine(&Params{Provider: empty, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: func() map[string]tool.Tool { return map[string]tool.Tool{} }})
 	t.Cleanup(func() { eng2.Close() })
 	eng2.SetSharedDeps(&deps)
@@ -7237,7 +7250,7 @@ func TestRunAgentSubagentEventsTagged(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "sub says hi"), nil)
 	deps := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		Dispatcher: ec, ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
@@ -7326,7 +7339,7 @@ func TestRunAgentInterruptStubFields(t *testing.T) {
 		}},
 	}
 	deps := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
@@ -7370,7 +7383,9 @@ func skillTestEngine(t *testing.T, mp *mockProvider, reg *skills.Registry, ec *e
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	eng := New(&Params{
+	// RunAgent reaches this constructor through RunSkill's fork path, so the
+	// engine must carry the Agent-tool assembly newRunAgentEngine provides.
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "parent-model",
 		Logger:     silentLogger(),
@@ -9307,7 +9322,7 @@ func TestRunAgentInterruptStubWithoutUserMessage(t *testing.T) {
 		}},
 	}
 	deps := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "parent-model", Logger: silentLogger(),
 		ToolsProvider: runAgentTools})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
@@ -11045,7 +11060,7 @@ func TestRunAgentInterruptStubFieldValues(t *testing.T) {
 		hang: hang,
 	})
 	deps := runAgentDeps(t)
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "parent-model",
 		Logger:        silentLogger(),
@@ -11182,7 +11197,7 @@ func TestRunAgent_MaxTurnsOverride_CapsAtOneTurn(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "second turn"), nil)
 
 	deps := runAgentDeps(t)
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider: mp,
 		Model:    "test",
 		ToolsProvider: func() map[string]tool.Tool {
@@ -11220,7 +11235,7 @@ func TestRunAgent_BuiltInDefinitionsOpenNoMCP(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test", "done"), nil)
 	deps := runAgentDeps(t)
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:      mp,
 		Model:         "test",
 		Logger:        silentLogger(),
@@ -11287,7 +11302,7 @@ func TestRunAgent_InterruptAfterCompactRecovery_ReportsTokens(t *testing.T) {
 	mp.responses[1].hang = hang
 
 	deps := runAgentDeps(t)
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:    mp,
 		Model:       "test",
 		Logger:      silentLogger(),
@@ -11338,7 +11353,7 @@ func TestRunAgent_InterruptFork_ToolResultHead_UsesInterruptStub(t *testing.T) {
 
 	mp := &mockProvider{} // pre-cancelled ctx: the provider is never called
 	deps := runAgentDeps(t)
-	eng := New(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
 
@@ -11386,7 +11401,7 @@ func TestRunSkill_ForkResultText_ComesFromSubAgent(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "SUB-RESULT-77af"), nil)
 	mp.addResponse(textStreamEvents("test", "main wrap-up"), nil)
 
-	eng := New(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -11446,7 +11461,7 @@ func TestRunSkill_ForkEmptyContent_UsesCompletionPlaceholder(t *testing.T) {
 	// Slot 2 wraps up the main loop after the skill result is appended.
 	mp.addResponse(textStreamEvents("test", "main wrap-up"), nil)
 
-	eng := New(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "test", Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -12173,7 +12188,7 @@ func TestRunStopHook_SubagentInputCarriesAgentType(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "sub done"), nil)
 	// Hooks ride the parent engine (NewSubEngine copies e.hooks), not
 	// sharedDeps — which only feeds the SubagentStart dispatch.
-	eng := New(&Params{Provider: mp, Model: "test", Hooks: h, Logger: silentLogger()})
+	eng := newRunAgentEngine(&Params{Provider: mp, Model: "test", Hooks: h, Logger: silentLogger()})
 	t.Cleanup(func() { eng.Close() })
 	eng.SetSharedDeps(&deps)
 

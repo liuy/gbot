@@ -9,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
-	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/job"
@@ -277,95 +275,4 @@ func TestBgTask_SubAgentTaskSurvivesSubEngineEnd(t *testing.T) {
 	if st, ok := mgr.BgAgent(id); !ok || st.Status != agenttool.AgentCancelled {
 		t.Errorf("mgr.BgAgent(%q) = (%v, %v), want the cancelled entry resolvable via the root table", id, st, ok)
 	}
-}
-
-// A hand-wired ToolRefs whose Agent tool has no bg registry (CreateTools
-// always injects one, but ToolRefs is a public struct) must not panic in
-// RunAgent's root-table routing: the guard skips the override, so the sub
-// keeps its own table — per-engine placement, still WireEngine-registered.
-func TestBgTask_SubSpawn_NilRootRegistryFallsBackToOwnTable(t *testing.T) {
-	mgr := NewEngineManager()
-	deps := SharedDeps{
-		WorkingDir: t.TempDir(),
-		SkillReg:   skills.NewRegistry(t.TempDir()),
-		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
-		EngineMgr:  mgr,
-	}
-
-	release := make(chan struct{})
-	var once sync.Once
-	closeRelease := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(closeRelease)
-
-	mp := &mockProvider{}
-	// Sub turn 1: the sub spawns its own background grandchild.
-	mp.addResponse(toolUseStreamEvents("test", "call_bg", "Agent",
-		`{"description":"bg work","prompt":"bg-hang-nil-root","run_in_background":true}`), nil)
-	// Grandchild turn: hangs mid-stream (no message_stop — that event ends
-	// the turn) until release closes.
-	mp.addHangingStream([]llm.StreamEvent{
-		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
-		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
-		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "grandchild working"}},
-		{Type: "content_block_stop", Index: 0},
-	}, release, func(req *llm.Request) bool {
-		return requestHasTextBlock(req, "bg-hang-nil-root")
-	})
-	// Sub turn 2: final text ends the sub and the parent's RunAgent call;
-	// the detached bg grandchild keeps running.
-	mp.addResponse(textStreamEvents("test", "done"), nil)
-
-	at := agenttool.New()
-	eng := New(&Params{
-		Provider:      mp,
-		Model:         "test",
-		ToolsProvider: func() map[string]tool.Tool { return nil },
-	})
-	t.Cleanup(func() { eng.Close() })
-	eng.SetSharedDeps(&deps)
-	eng.SetToolRefs(ToolRefs{Agent: at}) // no SetBgRegistry — nil BgRegistry()
-	at.SetEngine(eng)
-
-	res, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
-		Prompt:    "hi",
-		AgentType: "General",
-		MaxTurns:  2,
-	})
-	if err != nil {
-		t.Fatalf("RunAgent with a registry-less root Agent tool: %v", err)
-	}
-	if res == nil || !strings.Contains(res.Content, "done") {
-		t.Errorf("RunAgent result = %v, want the scripted text response", res)
-	}
-
-	// The guard skipped the override, so the spawned row stayed in the
-	// spawning sub's own table — the FIRST table WireEngine registered (the
-	// bg goroutine's own sub table, if already wired, comes later).
-	mgr.mu.Lock()
-	tables := append([]*agenttool.BackgroundAgentRegistry(nil), mgr.bgTables...)
-	mgr.mu.Unlock()
-	if len(tables) == 0 {
-		t.Fatal("mgr holds no bg tables — WireEngine must register the sub's own table when the guard skips")
-	}
-	list := tables[0].List()
-	if len(list) != 1 {
-		t.Fatalf("sub's own table holds %d agents, want 1 — the bg row must land in the spawning sub's table", len(list))
-	}
-	row := list[0]
-	if row.Description != "bg work" {
-		t.Errorf("bg row description = %q, want %q", row.Description, "bg work")
-	}
-	if row.Status != agenttool.AgentRunning {
-		t.Errorf("bg row status = %q, want running — the detached grandchild outlives the sub", row.Status)
-	}
-	if _, ok := mgr.BgAgent(row.ID); !ok {
-		t.Errorf("mgr.BgAgent(%q) missed, want resolution via the sub's registered table", row.ID)
-	}
-
-	// The detached grandchild outlives everything — stop it via the owning
-	// table and reap its goroutine.
-	t.Cleanup(func() {
-		tables[0].Cancel(row.ID)
-		tables[0].Wait(row.ID)
-	})
 }

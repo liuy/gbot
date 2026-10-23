@@ -59,9 +59,10 @@ type SharedDeps struct {
 
 	// EngineMgr and IDMinter split the background-agent substrate into its
 	// global half and local half. EngineMgr is the global identity layer:
-	// every live engine registers there, and its BgAgent lookup walks each
-	// engine's background table, so agent-N ids stay addressable from any
-	// engine. IDMinter is the global id source — one counter for engines,
+	// every live engine sits there, and its BgAgent lookup walks the live
+	// engines' background tables via the manager, so agent-N ids stay
+	// addressable from any engine. IDMinter is the global id source — one
+	// counter for engines,
 	// sub-agents and forks, so every producer mints collision-free agent-N
 	// ids. Each engine's background table itself is per-engine (minted in
 	// CreateTools from IDMinter): engine A's spawns are invisible and
@@ -281,13 +282,6 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		emitJob := JobEventEmitter(eng)
 		refs.BashReg.OnJobEvent = emitJob
 		refs.Agent.BgRegistry().SetOnJobEvent(emitJob)
-	}
-
-	// Register this engine's background table with the manager so
-	// message-tool resolution reaches its spawns from any engine. Job
-	// visibility stays per-engine: only the resolver walks all tables.
-	if deps.EngineMgr != nil {
-		deps.EngineMgr.AddBgTable(refs.Agent.BgRegistry())
 	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).

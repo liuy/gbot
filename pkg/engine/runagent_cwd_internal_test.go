@@ -71,7 +71,7 @@ func TestRunAgent_Cwd_OverridesSubAgentWorkingDir(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -171,7 +171,7 @@ func TestRunAgent_ForkPromptWithCwd_KeepsParentPrompt(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -259,7 +259,7 @@ func TestRunAgent_Cwd_FileReadRelativePath(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -332,7 +332,7 @@ func TestRunAgent_Cwd_FileReadTildePath(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -406,7 +406,7 @@ func TestRunAgent_Cwd_OverridesSubAgentToolDeps(t *testing.T) {
 		}},
 		{events: subTextEvents("test", "done")},
 	}
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -484,7 +484,7 @@ func TestRunAgent_NoCwd_InheritsParentDir(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -559,7 +559,7 @@ func TestRunAgent_Cwd_GrepUsesOverrideDir(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
@@ -650,7 +650,7 @@ func TestRunAgent_DeletedOverrideDir_FallsBackToParentOriginal(t *testing.T) {
 	}
 	bt := bash.New(nil)
 	ec := newEventCollector()
-	eng := New(&Params{
+	eng := newRunAgentEngine(&Params{
 		Provider:   mp,
 		Model:      "test",
 		WorkingDir: parentDir,
