@@ -8,7 +8,7 @@ import "fmt"
 //
 //              none                      auto                    low/medium/high/max
 // anthropic    thinking{type:disabled}   thinking{type:adaptive} output_config{effort:"..."}, no thinking field
-// chat (GLM)   thinking{type:disabled}   omit thinking field     thinking{type:enabled}
+// chat         reasoning_effort:"none"   omit reasoning_effort   reasoning_effort:"<axis value>"
 // responses    reasoning{effort:"none"}  omit reasoning field    reasoning{effort:"..."}
 //
 // anthropic effort rides the nested output_config object, not a top-level
@@ -16,8 +16,10 @@ import "fmt"
 // forbids passing "adaptive" as an effort value, which is why auto keeps the
 // adaptive thinking type instead. responses effort "none" is the GLM-verified
 // hard off (reasoning_tokens=0); the word "disabled" is not recognized there.
-// chat's axis is coarse: every non-none, non-auto level collapses to the
-// enabled toggle because GLM's chat protocol exposes nothing finer.
+// chat sends the native reasoning_effort field: it is the only spelling
+// PolyStrata reads, and servers that reject a tier are handled by the runtime
+// negotiation fallback (reasoning_fallback.go), not by translation. Legacy
+// GLM toggle users can still emit thinking:{type:...} via extra_params.
 
 // Effort is the protocol-agnostic thinking-effort axis carried on
 // Request.Thinking. Empty means "no preference" and resolves to auto at the
@@ -110,15 +112,14 @@ func translateAnthropicThinking(e Effort) (thinking *ThinkingConfig, out *output
 	return &ThinkingConfig{Type: "adaptive"}, nil
 }
 
-// translateChatThinking maps the axis onto GLM/DeepSeek's two-state chat
-// toggle: every concrete level lands on enabled because the protocol has no
-// finer granularity.
-func translateChatThinking(e Effort) *ThinkingConfig {
+// translateChatReasoningEffort maps the axis onto the native chat
+// reasoning_effort string. Empty for auto/"" so the field is omitted and the
+// provider default applies; tiers that a server does not know are resolved by
+// the runtime negotiation fallback, not here.
+func translateChatReasoningEffort(e Effort) string {
 	switch e {
-	case EffortNone:
-		return &ThinkingConfig{Type: "disabled"}
-	case EffortLow, EffortMedium, EffortHigh, EffortMax:
-		return &ThinkingConfig{Type: "enabled"}
+	case EffortNone, EffortLow, EffortMedium, EffortHigh, EffortMax:
+		return string(e)
 	}
-	return nil
+	return ""
 }

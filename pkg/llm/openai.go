@@ -35,6 +35,9 @@ type OpenAIProvider struct {
 	baseURL     string
 	model       string
 	extraParams map[string]any
+	// reasoningFallbacks freezes runtime effort-dialect negotiation
+	// conclusions for this instance's lifetime (reasoning_fallback.go).
+	reasoningFallbacks *reasoningFallbackState
 }
 
 // OpenAIConfig configures the OpenAI provider.
@@ -56,14 +59,15 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
 	return &OpenAIProvider{
-		name:        cfg.Name,
-		httpClient:  newLLMHTTPClient(cfg.Timeout),
-		retryConfig: DefaultRetryConfig(),
-		idleTimeout: DefaultSSETimeout,
-		apiKey:      cfg.APIKey,
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		model:       cfg.Model,
-		extraParams: cfg.ExtraParams,
+		name:               cfg.Name,
+		httpClient:         newLLMHTTPClient(cfg.Timeout),
+		retryConfig:        DefaultRetryConfig(),
+		idleTimeout:        DefaultSSETimeout,
+		apiKey:             cfg.APIKey,
+		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
+		model:              cfg.Model,
+		extraParams:        cfg.ExtraParams,
+		reasoningFallbacks: newReasoningFallbackState(),
 	}
 }
 
@@ -84,9 +88,9 @@ type openaiChatRequest struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	Stop        []string `json:"stop,omitempty"`
 	User        string   `json:"user,omitempty"`
-	// GLM/DeepSeek reasoning toggle: {"type":"enabled"|"disabled"} (verified
-	// against both endpoints; budget_tokens is silently ignored there).
-	Thinking *ThinkingConfig `json:"thinking,omitempty"`
+	// Native reasoning-effort tier. Omitted for auto; servers that reject a
+	// tier are renegotiated at runtime (reasoning_fallback.go).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type openaiMessage struct {
@@ -224,25 +228,41 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response,
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	p.setHeaders(httpReq)
+	body = p.applyFrozenReasoningFallback(req, body)
 
-	httpResp, err := p.httpClient.Do(httpReq)
+	httpResp, apiErr, captured, err := p.postChat(ctx, body)
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
+	}
+	if httpResp == nil {
+		// Non-200: one negotiation attempt, one retry. Complete deliberately
+		// has no transport-level retry loop (omp's non-streaming path has
+		// none either); the negotiation retry here is the single authorized
+		// extension to omp, which wires it only on streaming paths.
+		fb := p.resolveReasoningFallback(apiErr, captured, body, req.Thinking == EffortNone)
+		if fb == nil {
+			return nil, apiErr
+		}
+		body = applyReasoningFallbackToBody(body, fb)
+		httpResp, apiErr, _, err = p.postChat(ctx, body)
+		if err != nil {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
+		if httpResp == nil {
+			return nil, apiErr
+		}
+		// Freeze only after the retry connected; explicit-disable conclusions
+		// stay per-request (omp: a reasoning-off side request must not
+		// downgrade later normal turns).
+		if req.Thinking != EffortNone {
+			p.rememberReasoningFallback(req, fb)
+		}
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 50<<20)) // 50MB safety cap
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, p.ParseAPIError(respBody, httpResp.StatusCode)
 	}
 
 	return p.translateResponse(respBody)
@@ -317,63 +337,25 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 		return nil, err
 	}
 
-	retryCfg := p.retryConfig
-	if retryCfg == nil {
-		retryCfg = DefaultRetryConfig()
-	}
+	body = p.applyFrozenReasoningFallback(req, body)
 
-	var httpResp *http.Response
-	var lastErr error
-
-	for attempt := 0; attempt <= retryCfg.MaxRetries; attempt++ {
-		if attempt > 0 {
-			retryAfter := time.Duration(0)
-			if httpResp != nil {
-				if ra := httpResp.Header.Get("Retry-After"); ra != "" {
-					if sec, e := strconv.Atoi(ra); e == nil && sec > 0 {
-						retryAfter = time.Duration(sec) * time.Second
-					}
-				}
-			}
-			backoff := CalculateBackoffWithRetryAfter(attempt, retryCfg, retryAfter)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+	httpResp, captured, err := p.connectChatStream(ctx, body)
+	if err != nil {
+		fb := p.resolveReasoningFallback(err, captured, body, req.Thinking == EffortNone)
+		if fb == nil {
+			return nil, err
 		}
-
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+		body = applyReasoningFallbackToBody(body, fb)
+		httpResp, _, err = p.connectChatStream(ctx, body)
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, err
 		}
-		p.setHeaders(httpReq)
-
-		httpResp, lastErr = p.httpClient.Do(httpReq)
-		if lastErr != nil {
-			if IsConnectionError(lastErr) {
-				continue
-			}
-			return nil, fmt.Errorf("send request: %w", lastErr)
+		// Freeze only after the retry connected; explicit-disable conclusions
+		// stay per-request (omp: a reasoning-off side request must not
+		// downgrade later normal turns).
+		if req.Thinking != EffortNone {
+			p.rememberReasoningFallback(req, fb)
 		}
-
-		if httpResp.StatusCode == http.StatusOK {
-			break
-		}
-
-		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
-		_ = httpResp.Body.Close()
-		apiErr := p.ParseAPIError(errBody, httpResp.StatusCode)
-
-		if !IsRetryableStatus(httpResp.StatusCode) {
-			return nil, apiErr
-		}
-		lastErr = apiErr
-		httpResp = nil
-	}
-
-	if httpResp == nil {
-		return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 	}
 
 	eventCh := make(chan StreamEvent, 64)
@@ -401,6 +383,89 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 	}()
 
 	return eventCh, nil
+}
+
+// postChat issues one chat-completions POST. Non-200 responses are drained
+// (1MB error-body cap, matching the stream path) and returned as a parsed
+// APIError plus the captured body for reasoning negotiation; the caller owns
+// draining a 200 response body. Transport failures return err unwrapped so
+// the retry loop can classify them.
+func (p *OpenAIProvider) postChat(ctx context.Context, body []byte) (*http.Response, *APIError, *capturedHTTPError, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	p.setHeaders(httpReq)
+
+	httpResp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if httpResp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
+		_ = httpResp.Body.Close()
+		return nil, p.ParseAPIError(errBody, httpResp.StatusCode), newCapturedHTTPError(httpResp.StatusCode, errBody), nil
+	}
+	return httpResp, nil, nil, nil
+}
+
+// connectChatStream runs the transport retry loop around postChat:
+// connection errors retry immediately, retryable statuses retry with
+// backoff, and a non-retryable status returns the APIError directly with its
+// captured body so reasoning negotiation can inspect it. Exhausting the
+// budget wraps the last error.
+func (p *OpenAIProvider) connectChatStream(ctx context.Context, body []byte) (*http.Response, *capturedHTTPError, error) {
+	retryCfg := p.retryConfig
+	if retryCfg == nil {
+		retryCfg = DefaultRetryConfig()
+	}
+
+	var httpResp *http.Response
+	var lastErr error
+
+	for attempt := 0; attempt <= retryCfg.MaxRetries; attempt++ {
+		if attempt > 0 {
+			retryAfter := time.Duration(0)
+			if httpResp != nil {
+				if ra := httpResp.Header.Get("Retry-After"); ra != "" {
+					if sec, e := strconv.Atoi(ra); e == nil && sec > 0 {
+						retryAfter = time.Duration(sec) * time.Second
+					}
+				}
+			}
+			backoff := CalculateBackoffWithRetryAfter(attempt, retryCfg, retryAfter)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+		}
+
+		resp, apiErr, captured, err := p.postChat(ctx, body)
+		if err != nil {
+			httpResp = nil
+			lastErr = err
+			if IsConnectionError(err) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("send request: %w", err)
+		}
+		if resp != nil {
+			httpResp = resp
+			break
+		}
+
+		if !IsRetryableStatus(apiErr.Status) {
+			return nil, captured, apiErr
+		}
+		lastErr = apiErr
+		httpResp = nil
+	}
+
+	if httpResp == nil {
+		return nil, nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+	}
+	return httpResp, nil, nil
 }
 
 // parseOpenAISSE parses the OpenAI SSE stream and emits Anthropic-shaped StreamEvents.
@@ -678,12 +743,12 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 		model = p.model
 	}
 	oReq := openaiChatRequest{
-		Model:       model,
-		Stream:      stream,
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stop:        req.StopSequences,
-		Thinking:    translateChatThinking(req.Thinking),
+		Model:           model,
+		Stream:          stream,
+		MaxTokens:       req.MaxTokens,
+		Temperature:     req.Temperature,
+		Stop:            req.StopSequences,
+		ReasoningEffort: translateChatReasoningEffort(req.Thinking),
 	}
 
 	if req.Metadata != nil && req.Metadata.UserID != "" {

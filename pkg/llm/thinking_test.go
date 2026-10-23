@@ -135,20 +135,18 @@ func TestTranslateAnthropicThinking(t *testing.T) {
 	}
 }
 
-func TestTranslateChatThinking(t *testing.T) {
-	got := translateChatThinking(EffortNone)
-	if got == nil || got.Type != "disabled" {
-		t.Errorf("none = %+v, want Type=disabled", got)
+func TestTranslateChatReasoningEffort(t *testing.T) {
+	if got := translateChatReasoningEffort(EffortNone); got != "none" {
+		t.Errorf("none = %q, want \"none\" (hard off, DeepSeek V4 + GLM 5.3 verified)", got)
 	}
 	for _, e := range []Effort{EffortAuto, ""} {
-		if got := translateChatThinking(e); got != nil {
-			t.Errorf("%q = %+v, want nil (field omitted)", e, got)
+		if got := translateChatReasoningEffort(e); got != "" {
+			t.Errorf("%q = %q, want \"\" (field omitted, provider default applies)", e, got)
 		}
 	}
 	for _, e := range []Effort{EffortLow, EffortMedium, EffortHigh, EffortMax} {
-		got := translateChatThinking(e)
-		if got == nil || got.Type != "enabled" {
-			t.Errorf("%q = %+v, want Type=enabled (coarse GLM toggle)", e, got)
+		if got := translateChatReasoningEffort(e); got != string(e) {
+			t.Errorf("%q = %q, want the axis value passed through", e, got)
 		}
 	}
 }

@@ -1779,20 +1779,28 @@ func TestOpenAIProvider_ThinkingWireMapping(t *testing.T) {
 		return parsed
 	}
 
-	// none → explicit disabled toggle (GLM/DeepSeek reasoning off).
-	if got := translate(EffortNone)["thinking"]; string(got) != `{"type":"disabled"}` {
-		t.Errorf("none: thinking = %s, want {\"type\":\"disabled\"}", got)
+	// none → native hard off (DeepSeek V4 + GLM 5.3 accept reasoning_effort:"none").
+	if got := string(translate(EffortNone)["reasoning_effort"]); got != `"none"` {
+		t.Errorf("none: reasoning_effort = %s, want \"none\"", got)
 	}
-	// Any concrete level collapses onto enabled — the chat protocol is a
-	// two-state switch with no finer granularity.
-	if got := translate(EffortHigh)["thinking"]; string(got) != `{"type":"enabled"}` {
-		t.Errorf("high: thinking = %s, want {\"type\":\"enabled\"}", got)
+	// Concrete levels pass through as-is; servers that reject a tier are
+	// handled by the runtime negotiation fallback, not by this translation.
+	if got := string(translate(EffortHigh)["reasoning_effort"]); got != `"high"` {
+		t.Errorf("high: reasoning_effort = %s, want \"high\"", got)
 	}
 	// auto and unset → omitted entirely (provider default applies).
 	for _, e := range []Effort{EffortAuto, ""} {
 		parsed := translate(e)
+		if raw, present := parsed["reasoning_effort"]; present {
+			t.Errorf("%q: reasoning_effort = %s, want omitted", e, raw)
+		}
+	}
+	// The old GLM toggle dialect must be fully retired from the chat path —
+	// no axis value may emit a thinking field.
+	for _, e := range []Effort{EffortNone, EffortAuto, EffortLow, EffortMedium, EffortHigh, EffortMax, ""} {
+		parsed := translate(e)
 		if raw, present := parsed["thinking"]; present {
-			t.Errorf("%q: thinking = %s, want omitted", e, raw)
+			t.Errorf("%q: thinking = %s, want key absent (old GLM dialect retired)", e, raw)
 		}
 	}
 }
