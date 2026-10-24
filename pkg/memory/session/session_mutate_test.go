@@ -381,8 +381,7 @@ func TestExtract_WrapsUnderlyingErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), "setup session memory file") {
 			t.Errorf("error = %v, want setup prefix", err)
 		}
-		var pe *os.PathError
-		if !errors.As(err, &pe) {
+		if _, ok := errors.AsType[*os.PathError](err); !ok {
 			t.Errorf("error does not wrap *os.PathError: %v", err)
 		}
 	})
@@ -402,8 +401,7 @@ func TestExtract_WrapsUnderlyingErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), "read session memory") {
 			t.Errorf("error = %v, want read prefix", err)
 		}
-		var pe *os.PathError
-		if !errors.As(err, &pe) {
+		if _, ok := errors.AsType[*os.PathError](err); !ok {
 			t.Errorf("error does not wrap *os.PathError: %v", err)
 		}
 	})

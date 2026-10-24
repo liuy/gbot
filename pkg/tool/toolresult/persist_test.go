@@ -95,6 +95,12 @@ func TestMaybePersistLargeToolResult_OptedOutThreshold(t *testing.T) {
 	if result.Persisted {
 		t.Error("should not persist when threshold is -1 (opted out of persistence)")
 	}
+	if result.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty when opted out", result.FilePath)
+	}
+	if string(result.Output) != string(output) {
+		t.Errorf("opted-out output changed: got %d bytes, want the original %d", len(result.Output), len(output))
+	}
 }
 
 func TestMaybePersistLargeToolResult_OverMaxPersistSize(t *testing.T) {
@@ -107,6 +113,12 @@ func TestMaybePersistLargeToolResult_OverMaxPersistSize(t *testing.T) {
 	output := mustMarshal(bigContent)
 
 	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-5", "test-session")
+	if result.Persisted {
+		t.Error("oversized content must not be persisted")
+	}
+	if result.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty for oversized content", result.FilePath)
+	}
 	// Should not crash, output should be valid JSON array.
 	var blocks []struct {
 		Type string `json:"type"`
@@ -117,6 +129,27 @@ func TestMaybePersistLargeToolResult_OverMaxPersistSize(t *testing.T) {
 	}
 	if len(blocks) != 1 || blocks[0].Type != "text" {
 		t.Fatalf("expected single text block, got %+v", blocks)
+	}
+	if !strings.Contains(blocks[0].Text, "Output too large to persist") {
+		t.Errorf("expected too-large hint, got %q", blocks[0].Text)
+	}
+}
+
+// Content exactly at the cap is still persisted — only strictly larger output
+// gets the hint.
+func TestMaybePersistLargeToolResult_ExactMaxPersistSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	content := strings.Repeat("x", MaxPersistSizeBytes)
+	output := mustMarshal(content)
+	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-5b", "test-session")
+	if !result.Persisted {
+		t.Fatal("content exactly at MaxPersistSizeBytes must be persisted")
+	}
+	if result.FilePath == "" {
+		t.Error("FilePath should be set for persisted output")
 	}
 }
 

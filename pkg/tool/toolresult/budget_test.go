@@ -93,10 +93,22 @@ func TestIsContentAlreadyCompacted(t *testing.T) {
 }
 
 func TestEnforceToolResultBudget_NilState(t *testing.T) {
-	msgs := []BudgetMessage{{Role: "user"}}
+	// With real candidates: the nil-state guard must return before any state
+	// access instead of dereferencing nil.
+	msgs := []BudgetMessage{
+		{Role: "assistant", ID: "asst-1", Content: []BudgetBlock{
+			{Type: "tool_use", ID: "tu-1", Name: "Bash"},
+		}},
+		{Role: "user", Content: []BudgetBlock{
+			{Type: "tool_result", ToolUseID: "tu-1", Content: json.RawMessage(`"content"`)},
+		}},
+	}
 	result, records := EnforceToolResultBudget(msgs, nil, "session", nil)
-	if len(result) != 1 {
+	if len(result) != 2 {
 		t.Error("should return messages unchanged")
+	}
+	if string(result[1].Content[0].Content) != `"content"` {
+		t.Error("content must be untouched with nil state")
 	}
 	if records != nil {
 		t.Error("should return nil records")

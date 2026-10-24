@@ -2,17 +2,32 @@ package toolresult
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestGetSessionDir_HomeError(t *testing.T) {
+	if runtime.GOOS == "android" {
+		t.Skip("Termux HOME resolution differs from standard Linux; os.UserHomeDir fallback makes empty HOME non-fatal")
+	}
 	t.Setenv("HOME", "")
-	_, err := GetSessionDir("test")
-	if err != nil {
-		t.Logf("expected error when HOME empty: %v", err)
+	dir, err := GetSessionDir("test")
+	if err == nil {
+		t.Fatal("expected error when HOME is empty")
+	}
+	if !strings.Contains(err.Error(), "get home dir") {
+		t.Errorf("error should carry the wrap prefix, got: %v", err)
+	}
+	if dir != "" {
+		t.Errorf("dir = %q, want empty on error", dir)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Error("error must wrap the underlying home-dir error")
 	}
 }
 
@@ -107,6 +122,9 @@ func TestBuildLargeToolResultMessage_NoMore(t *testing.T) {
 	msg := BuildLargeToolResultMessage(result)
 	if strings.Contains(msg, "...") {
 		t.Error("should not contain ... when HasMore is false")
+	}
+	if !strings.HasSuffix(msg, "\n"+PersistedOutputClosingTag) {
+		t.Errorf("message must end with newline before closing tag, got %q", msg)
 	}
 }
 
@@ -328,8 +346,15 @@ func TestFormatFileSize(t *testing.T) {
 	}{
 		{0, "0B"},
 		{500, "500B"},
+		{1023, "1023B"},
 		{1500, "1.5KB"},
+		// Unit boundaries: each step up switches at exactly the power of 1024.
+		{1024, "1.0KB"},
+		{1048575, "1024.0KB"},
+		{1048576, "1.0MB"},
 		{1500000, "1.4MB"},
+		{1073741823, "1024.0MB"},
+		{1073741824, "1.0GB"},
 		{1500000000, "1.4GB"},
 	}
 	for _, tt := range tests {
@@ -366,6 +391,12 @@ func TestBuildLargeToolResultMessage(t *testing.T) {
 	if !strings.Contains(msg, "first line") {
 		t.Error("message missing preview content")
 	}
+	if !strings.Contains(msg, "Preview (first 2.0KB):") {
+		t.Error("message missing preview header")
+	}
+	if !strings.Contains(msg, "\n...\n") {
+		t.Error("message missing truncation marker for HasMore")
+	}
 }
 
 func TestSanitizeToolUseID(t *testing.T) {
@@ -382,8 +413,14 @@ func TestSanitizeToolUseID(t *testing.T) {
 		if tt.want != "" && got != tt.want {
 			t.Errorf("sanitizeToolUseID(%q) = %q, want %q", tt.input, got, tt.want)
 		}
-		if tt.want == "" && got == tt.input {
-			t.Errorf("sanitizeToolUseID(%q) should have been hashed, got original", tt.input)
+		if tt.want == "" {
+			if got == tt.input {
+				t.Errorf("sanitizeToolUseID(%q) = input unchanged — unsafe ids must be hashed", tt.input)
+			}
+			// The hash fallback is the first 16 bytes in hex.
+			if len(got) != 32 {
+				t.Errorf("sanitizeToolUseID(%q) hashed form has %d chars, want 32", tt.input, len(got))
+			}
 		}
 	}
 }
@@ -421,6 +458,14 @@ func TestHasImageBlock(t *testing.T) {
 		{"empty", ``, false},
 		{"invalid json", `not json`, false},
 		{"invalid array json", `[{`, false},
+		// encoding/json tolerates leading whitespace, so the first-byte '['
+		// gate is what keeps a space-prefixed image array out — without it
+		// the unmarshal below succeeds and reports the image.
+		{"leading space before array", ` [{"type":"image"}]`, false},
+		// encoding/json partially fills blocks on a mid-array element error,
+		// so the unmarshal-error early return is what keeps this out —
+		// without it the loop sees the decoded leading image block.
+		{"type error mid array", `[{"type":"image"},{"type":123}]`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -463,6 +508,9 @@ func TestIsToolResultPath_HomeError(t *testing.T) {
 }
 
 func TestPersistToolResult_OpenFileNonIsExistError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure does not trigger for root")
+	}
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 	ResetDirCache()
@@ -487,13 +535,12 @@ func TestPersistToolResult_OpenFileNonIsExistError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when OpenFile fails with non-IsExist error")
 	}
-	if strings.Contains(err.Error(), "ensure dir") {
-		// The error came from MkdirAll, not OpenFile - still an error path covered
-		t.Logf("got ensure dir error: %v", err)
-	} else if strings.Contains(err.Error(), "create file") {
-		t.Logf("got create file error: %v", err)
-	} else {
-		t.Errorf("unexpected error: %v", err)
+	if !strings.Contains(err.Error(), "create file") {
+		t.Errorf("error should come from the create step, got: %v", err)
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Errorf("error must wrap *fs.PathError, got %v", err)
 	}
 }
 

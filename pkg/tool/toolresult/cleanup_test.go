@@ -143,9 +143,12 @@ func TestCleanupOldSessions_HomeError(t *testing.T) {
 	}
 	// Trigger os.UserHomeDir error (cleanup.go:33-35)
 	t.Setenv("HOME", "")
-	_, err := CleanupOldSessions(time.Now()) // REAL-TIME: filesystem mtime comparison
+	cleaned, err := CleanupOldSessions(time.Now()) // REAL-TIME: filesystem mtime comparison
 	if err == nil {
 		t.Fatal("expected error when HOME is invalid")
+	}
+	if cleaned != 0 {
+		t.Errorf("cleaned = %d, want 0 on home-dir failure", cleaned)
 	}
 	if !strings.Contains(err.Error(), "home") && !strings.Contains(err.Error(), "HOME") {
 		t.Errorf("error should relate to home directory, got: %v", err)
@@ -167,9 +170,12 @@ func TestCleanupOldSessions_ReadDirError(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := CleanupOldSessions(time.Now()) // REAL-TIME: filesystem mtime comparison
+	cleaned, err := CleanupOldSessions(time.Now()) // REAL-TIME: filesystem mtime comparison
 	if err == nil {
 		t.Fatal("expected error when sessions dir is a file")
+	}
+	if cleaned != 0 {
+		t.Errorf("cleaned = %d, want 0 when the scan itself fails", cleaned)
 	}
 	if !strings.Contains(err.Error(), "sessions") {
 		t.Errorf("error should mention sessions, got: %v", err)

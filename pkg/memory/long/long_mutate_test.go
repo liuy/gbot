@@ -450,8 +450,7 @@ func TestErrorWrapChains(t *testing.T) {
 		if !strings.Contains(err.Error(), c.msg) {
 			t.Errorf("%s: error %q missing %q", c.name, err, c.msg)
 		}
-		var pe *os.PathError
-		if !errors.As(err, &pe) {
+		if _, ok := errors.AsType[*os.PathError](err); !ok {
 			t.Errorf("%s: error does not wrap *os.PathError: %v", c.name, err)
 		}
 	}
