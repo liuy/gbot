@@ -6,3 +6,10 @@
 # suite anyway, so pairing adds no relevance — disable both skip policies.
 skip_without_test: false
 skip_with_build_tags: false
+# Process-kill paths must never be mutated: a kill(-pgid) mutant with a
+# reused pid can signal a real process group (2026-10-15 incident). The
+# behavior is guarded by positive tests instead (pkg/mcp/process_group_test.go,
+# pkg/tool/bash cleanup tests).
+exclude_dirs:
+  - pkg/mcp/process_unix.go
+  - pkg/tool/bash/process_unix.go
