@@ -59,7 +59,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 
 	// PartialCompact is a pure in-memory function that only errors on invalid keepFrom.
 	// keepFrom is already validated above (keepFrom > 1 && keepFrom < len), so this cannot fail.
-	pcr, _ := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom, "manual")
+	pcr, _ := short.PartialCompact(shortMsgs, keepFrom, "manual")
 
 	// Truncate session memory for compact (per-section caps)
 	truncated := session.TruncateForCompact(content, session.DefaultConfig().MaxSectionTokens)

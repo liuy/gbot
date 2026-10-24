@@ -89,7 +89,7 @@ smcompact_integration_test.go — chain tests
 	// Turn response (after compact)
 	p.addStream(textStreamEvents("test-model", "Turn after SM-compact."), nil)
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
 
 	eng := New(&Params{
 		Provider:  p,
@@ -342,7 +342,7 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
 	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, slog.Default())
 	notesPath := sm.NotesPath()
 	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
@@ -428,7 +428,7 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "Response after LLM compact."), nil)
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 500, provider: p})
 	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, slog.Default())
 	notesPath := sm.NotesPath()
 	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
@@ -592,7 +592,7 @@ func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
 
 	eng := New(&Params{
 		Provider:  p,

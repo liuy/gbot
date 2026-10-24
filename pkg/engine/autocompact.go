@@ -44,7 +44,6 @@ type EngineCompactorMeta interface {
 // functions and using the LLM provider to generate a summary.
 // TS align: compact.ts:compactConversation + partialCompactConversation
 type AutoCompactor struct {
-	store  *short.Store
 	engine EngineCompactorMeta // live engine state (model/provider/sessionID may change)
 	logger *slog.Logger
 
@@ -61,7 +60,7 @@ type AutoCompactor struct {
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
-func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompactor {
+func NewAutoCompactor(engine EngineCompactorMeta) *AutoCompactor {
 	est := func(text string) int { return utils.EstimateTokens(text) }
 	if cal, ok := engine.(interface {
 		EstimateTokensCalibrated(string) int
@@ -73,7 +72,6 @@ func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompa
 		overheadFn = op.ContextOverheadTokens
 	}
 	return &AutoCompactor{
-		store:     store,
 		engine:    engine,
 		logger:    slog.Default(),
 		estimator: est,
@@ -163,7 +161,7 @@ func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, c
 
 	// Normal compact: call PartialCompact to split head/tail. keepFrom is
 	// always < len here (the == len case returned as noop above).
-	pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom, trigger)
+	pcr, err := short.PartialCompact(shortMsgs, keepFrom, trigger)
 	if err != nil {
 		c.logger.Error("PartialCompact failed", "error", err)
 		return nil, err
@@ -278,23 +276,16 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 		return "", nil
 	}
 
-	// Build the conversation text for the summarizer
-	var sb strings.Builder
+	// Only emptiness of the conversation matters here — the summarizer gets
+	// the messages as apiMsgs below, so no text is built.
+	hasText := false
 	for _, msg := range messages {
-		role := msg.Type
-		if role == "" {
-			role = "unknown"
+		if extractTextFromShortContent(msg.Content) != "" {
+			hasText = true
+			break
 		}
-		// Extract text content from blocks
-		text := extractTextFromShortContent(msg.Content)
-		if text == "" {
-			continue
-		}
-		fmt.Fprintf(&sb, "[%s] %s\n\n", role, text)
 	}
-
-	conversationText := strings.TrimSpace(sb.String())
-	if conversationText == "" {
+	if !hasText {
 		// No extractable text in head messages — can't summarize.
 		// Return error so the engine treats this as a no-op.
 		return "", fmt.Errorf("no extractable text in head messages for summarization")
@@ -305,9 +296,6 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	// conversation messages are included as individual messages.
 	model := c.engine.Model()
 	maxTokens := 16000
-	if maxTokens <= 0 {
-		maxTokens = 16000
-	}
 
 	// Convert head messages to engine messages for the API call.
 	apiMsgs := make([]types.Message, 0, len(messages)+1)
@@ -485,7 +473,6 @@ func removeOrphanedToolResults(msgs []types.Message) []types.Message {
 			}
 			newContent = append(newContent, block)
 		}
-		result[i] = msg
 		result[i].Content = newContent
 		changed = true
 	}

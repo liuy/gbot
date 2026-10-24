@@ -1431,3 +1431,49 @@ func TestMaybeTokenBasedMicrocompact_ClearsOnlyClearSetToolResults(t *testing.T)
 		}
 	}
 }
+
+// The length guard must answer before the estimator is consulted.
+func TestMC_CalculateToolResultTokens_EmptyContentBypassesEstimator(t *testing.T) {
+	t.Parallel()
+	seven := func(string) int { return 7 }
+	const want = 0
+	if got := calculateToolResultTokensWith(nil, seven); got != want {
+		t.Errorf("nil payload priced %d, want %d (guard precedes estimation)", got, want)
+	}
+	if got := calculateToolResultTokensWith(json.RawMessage{}, seven); got != want {
+		t.Errorf("empty payload priced %d, want %d (guard precedes estimation)", got, want)
+	}
+}
+
+// Only the role guard saves a clearable tool_result nested in an assistant
+// message; the sibling Ignores test never populates the clear set.
+func TestMC_TokenPrune_ClearSetResultInAssistantMessageStays(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Timestamp: base, Content: []types.ContentBlock{
+			types.NewToolUseBlock("a1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("a2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("a3", "Read", json.RawMessage(`{}`)),
+			types.NewToolResultBlock("a1", json.RawMessage(`"assistant-carried result"`), false),
+		}},
+		{Role: types.RoleUser, Timestamp: base, Content: []types.ContentBlock{
+			types.NewToolResultBlock("a2", json.RawMessage(`"user-carried two"`), false),
+			types.NewToolResultBlock("a3", json.RawMessage(`"user-carried three"`), false),
+		}},
+	}
+	res := maybeTokenBasedMicrocompact(msgs, 10_000, 10, TokenPruneConfig{Enabled: true, KeepRecent: 1}, QuerySourceReplMainThread, nil)
+	if res == nil {
+		t.Fatal("maybeTokenBasedMicrocompact = nil, want the a2 prune")
+	}
+	if res.Cleared != 1 {
+		t.Errorf("Cleared = %d, want 1 (a2 only; a1 lives in an assistant message)", res.Cleared)
+	}
+	got, found := blockContentOf(res.Messages, "a1")
+	if !found {
+		t.Fatal("a1 result block missing from result")
+	}
+	if got != `"assistant-carried result"` {
+		t.Errorf("assistant-carried a1 = %s, want untouched original content", got)
+	}
+}

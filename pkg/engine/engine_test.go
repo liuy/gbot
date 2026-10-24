@@ -15538,7 +15538,7 @@ func TestAppendInlineInterrupt_AutoRewindSkipsEmptyTail(t *testing.T) {
 	}
 }
 
-func TestSetStore_WiresCompactorAndClearsForkPoint(t *testing.T) {
+func TestSetStore_ClearsForkPoint(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
@@ -15551,12 +15551,8 @@ func TestSetStore_WiresCompactorAndClearsForkPoint(t *testing.T) {
 	if eng.forkParentUUID != "" {
 		t.Errorf("forkParentUUID after SetStore = %q, want cleared", eng.forkParentUUID)
 	}
-	ac, ok := eng.compactor.(*AutoCompactor)
-	if !ok {
+	if _, ok := eng.compactor.(*AutoCompactor); !ok {
 		t.Fatalf("compactor = %T, want auto-created AutoCompactor", eng.compactor)
-	}
-	if ac.store != store {
-		t.Error("AutoCompactor store not wired by SetStore")
 	}
 }
 
@@ -16808,20 +16804,10 @@ func TestRewindTo_RebuildsToolSearchAndPersistsTokens(t *testing.T) {
 	}
 }
 
-// TestSetStore_LeavesWiredCompactorAlone pins the type-assert wiring: a
-// compactor that already owns a store must not be re-pointed, and a
-// non-auto compactor must survive SetStore without a nil deref.
-func TestSetStore_LeavesWiredCompactorAlone(t *testing.T) {
+// TestSetStore_LeavesCompactorAlone pins that SetStore leaves a compactor
+// it does not own in place.
+func TestSetStore_LeavesCompactorAlone(t *testing.T) {
 	t.Parallel()
-
-	storeA, storeB := newTestStore(t), newTestStore(t)
-	eng := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger()})
-	t.Cleanup(func() { eng.Close() })
-	eng.SetCompactor(&AutoCompactor{store: storeA}, AutoCompactConfig{ContextWindow: 100})
-	eng.SetStore(storeB, "/proj")
-	if ac, ok := eng.compactor.(*AutoCompactor); !ok || ac.store != storeA {
-		t.Errorf("SetStore re-pointed a wired AutoCompactor: %T store=%v", eng.compactor, ac)
-	}
 
 	eng2 := New(&Params{Provider: &mockProvider{}, Model: "m", Logger: silentLogger()})
 	t.Cleanup(func() { eng2.Close() })

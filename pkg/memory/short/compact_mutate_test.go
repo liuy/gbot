@@ -121,7 +121,7 @@ func TestMCPartialCompactSingleKeptMessage(t *testing.T) {
 		testMessage(0, "user", "m3", "m2", `[{"type":"text","text":"tail"}]`),
 	}
 
-	res, err := store.PartialCompact("s", msgs, 2, "auto")
+	res, err := PartialCompact(msgs, 2, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact: %v", err)
 	}

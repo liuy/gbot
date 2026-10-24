@@ -46,7 +46,7 @@ func TestAutoCompactor_Summarize_NoToolResultDataLeak(t *testing.T) {
 	defer db.Close()
 
 	p := &leakCapProvider{}
-	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: p}) // REAL-TIME: fixed meta, no timing dependency
+	sc := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: p}) // REAL-TIME: fixed meta, no timing dependency
 
 	// A head message whose engine form carries rich data (as restored from
 	// the metadata column by StoreMessageToEngine) plus a text block so the

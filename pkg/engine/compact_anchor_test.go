@@ -33,7 +33,7 @@ func TestManualCompact_NextTurnEstimateReflectsCompactedContext(t *testing.T) {
 	eng := New(&Params{Provider: mp, Dispatcher: ec, Model: "test-model"})
 	t.Cleanup(func() { eng.Close() })
 
-	ac := NewAutoCompactor(store, &testEngineMeta{
+	ac := NewAutoCompactor(&testEngineMeta{
 		model: "test-model", sessionID: "repro", contextWindow: 8000,
 		provider: &compactMockProvider{},
 	})

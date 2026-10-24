@@ -555,7 +555,7 @@ func New(p *Params) *Engine {
 	// engine state (model/sessionID/contextWindow) at compact time.
 	// Only auto-create when AutoCompact is explicitly configured (ContextWindow > 0).
 	if e.compactor == nil && p.Provider != nil && p.AutoCompact.ContextWindow > 0 {
-		e.compactor = NewAutoCompactor(nil, e)
+		e.compactor = NewAutoCompactor(e)
 	}
 
 	return e
@@ -4723,7 +4723,6 @@ func (e *Engine) markAllPersisted() {
 // SetStore wires the short-term store for persistence.
 // lastPersistedIdx is initialized via markAllPersisted() — an initial value that
 // will be overwritten by lifecycle methods (NewSession, SwitchSession).
-// AutoCompactor receives the same *short.Store pointer at creation time (main.go:446).
 func (e *Engine) SetStore(store *short.Store, projectDir string) {
 	e.mu.Lock()
 	e.store = store
@@ -4731,11 +4730,6 @@ func (e *Engine) SetStore(store *short.Store, projectDir string) {
 	e.markAllPersisted()
 	e.forkParentUUID = ""
 	e.mu.Unlock()
-
-	// Wire store into compactor if it was auto-created without one.
-	if c, ok := e.compactor.(*AutoCompactor); ok && c.store == nil {
-		c.store = store
-	}
 }
 
 // persistContextTokens saves the current ContextTokens to the session store.

@@ -88,7 +88,7 @@ func TestCompactSummaryPersist_RestartRoundTrip(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{
+	compactor := NewAutoCompactor(&testEngineMeta{
 		model: "test-model", sessionID: session.SessionID, contextWindow: 1000, provider: p,
 	})
 	eng := New(&Params{
@@ -208,7 +208,7 @@ func TestCompactSummaryPersist_StoreRowShape(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{
+	compactor := NewAutoCompactor(&testEngineMeta{
 		model: "test-model", sessionID: session.SessionID, contextWindow: 1000, provider: p,
 	})
 	eng := New(&Params{

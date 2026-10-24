@@ -33,7 +33,7 @@ func TestAutoCompactor_AfterTokens_IncludesEngineContextOverhead(t *testing.T) {
 	}
 	defer store.Close()
 
-	sc := NewAutoCompactor(store, &overheadMeta{
+	sc := NewAutoCompactor(&overheadMeta{
 		model: "m", sessionID: "s-overhead", contextWindow: 40000, provider: &compactMockProvider{},
 		ov: 20000,
 	})
@@ -60,7 +60,7 @@ func TestAutoCompactor_AfterTokens_NoProbeMeta_NoAddition(t *testing.T) {
 	}
 	defer store.Close()
 
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-noprobe", contextWindow: 40000, provider: &compactMockProvider{}})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "s-noprobe", contextWindow: 40000, provider: &compactMockProvider{}})
 	msgs := makeLargeMessages(10, 10000)
 	result, err := sc.Compact(context.Background(), msgs)
 	if err != nil {

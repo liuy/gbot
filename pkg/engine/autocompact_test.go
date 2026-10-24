@@ -521,7 +521,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	_, err = sc.Compact(context.Background(), []types.Message{})
 	if err == nil {
@@ -541,7 +541,7 @@ func TestCompactor_Compact_FewMessages_CompactAll(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -574,7 +574,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: mp})
 
 	// 9 large + 1 "recent" message; cw=40K → budget 8K. 9×1121 ≈ 10.1K
 	// store-estimated tokens > 8K, so the head is summarized.
@@ -625,7 +625,7 @@ func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
 	}
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 10000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 10000, provider: mp})
 
 	// All messages have only thinking blocks - no extractable text.
 	// Each message is padded large enough that total tokens exceed the
@@ -667,7 +667,7 @@ func TestCompactor_Compact_LLMErrors_ReturnsError(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 1000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 1000, provider: mp})
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
@@ -700,7 +700,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 8000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 8000, provider: mp})
 
 	msgs := makeMessages(10, 3000)
 
@@ -745,7 +745,7 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	})
 	mp.addResponse(textStreamEvents("test-model", "Success after compact"), nil)
 
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
@@ -859,7 +859,7 @@ func TestAutoCompactor_SummarizeMessages_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
-	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
+	sc := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
 	got, err := sc.summarizeMessages(context.Background(), nil, "")
 	if err != nil {
 		t.Fatalf("summarizeMessages(nil) error: %v", err)
@@ -874,7 +874,7 @@ func TestAutoCompactor_SummarizeMessages_NoText(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
-	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
+	sc := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
 	// Message with no text content (empty JSON array)
 	msgs := []*short.TranscriptMessage{{Type: "user", Content: "[]"}}
 	got, err := sc.summarizeMessages(context.Background(), msgs, "")
@@ -894,7 +894,7 @@ func TestAutoCompactor_SummarizeMessages_LLMError(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{compactErr: fmt.Errorf("LLM unavailable")}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
+	c := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
 
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
@@ -914,7 +914,7 @@ func TestAutoCompactor_SummarizeMessages_EmptyResponse(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir2, "test.db"))
 	defer db.Close()
 	mp := &emptyResponseProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
+	c := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
 
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
@@ -946,7 +946,7 @@ func TestAutoCompactor_BuildResultMessages_NoBoundary(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir3, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
+	c := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
 
 	pcr := &short.CompactResult{
 		BoundaryMarker: nil,
@@ -968,7 +968,7 @@ func TestAutoCompactor_BuildResultMessages_WithSummary(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir4, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
+	c := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
 
 	pcr := &short.CompactResult{
 		BoundaryMarker: &short.TranscriptMessage{
@@ -992,7 +992,7 @@ func TestAutoCompactor_BuildResultMessages_FiltersStaleCompactMarkers(t *testing
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
+	c := NewAutoCompactor(&testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
 
 	// Simulate a previous compact boundary + summary that landed in the tail.
 	prevBoundary := short.CreateCompactBoundaryMessage("auto", 10000, "")
@@ -1203,7 +1203,7 @@ func newFindKeepFromHelper(t *testing.T, contextWindow int, msgs []types.Message
 		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: contextWindow, provider: &compactMockProvider{}})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: contextWindow, provider: &compactMockProvider{}})
 	shortMsgs := short.EngineMessagesToStore(msgs)
 	return sc.findKeepFrom(shortMsgs)
 }
@@ -1496,7 +1496,7 @@ func TestAutoCompact_Summarize_EnsuresToolResultPairing(t *testing.T) {
 	}
 
 	p := &compactCaptureProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 100000, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 100000, provider: p})
 
 	if _, err := compactor.summarizeMessages(context.Background(), storeMsgs, ""); err != nil {
 		t.Fatalf("summarizeMessages error: %v", err)
@@ -1565,7 +1565,7 @@ func TestAutoCompactor_CompactWithInstructions(t *testing.T) {
 
 	custom := "focus on API design decisions"
 	p := &compactCaptureProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{
+	sc := NewAutoCompactor(&testEngineMeta{
 		model:         "test-model",
 		sessionID:     "test-session",
 		contextWindow: 1000,
@@ -1625,7 +1625,7 @@ func TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker(t *tes
 	defer store.Close()
 
 	p := &compactCaptureProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{
+	sc := NewAutoCompactor(&testEngineMeta{
 		model:         "test-model",
 		sessionID:     "test-session",
 		contextWindow: 1000,
@@ -1673,7 +1673,7 @@ func TestCompactor_PartialCompact_BoundaryMetadata(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	// Messages exceed the tail budget → goes through PartialCompact.
 	// tail budget = min(200000/5, 30000) = 30000 tokens.
@@ -1770,7 +1770,7 @@ func TestCompactor_Compact_SmallMessages_NoOp(t *testing.T) {
 
 	mp := &compactMockProvider{}
 	// contextWindow=200000 → tail budget = min(200000/5, 30000) = 30000 tokens.
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
+	sc := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	// 3 small messages, total ~100 tokens << 30000 budget.
 	// findKeepFrom returns len(messages) → "nothing to compact".
@@ -1818,7 +1818,7 @@ func TestAutoCompactor_Compact_RealContextGate_CJKUnderestimate(t *testing.T) {
 
 	p := &compactMockProvider{}
 	// contextWindow=262144 → tail budget = min(262144/5, 30000) = 30000.
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-cjk", contextWindow: 262144, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "qwen", sessionID: "s-cjk", contextWindow: 262144, provider: p})
 
 	// 20 CJK messages × 2200 chars ≈ 44k chars → char estimate 44k×0.65 ≈ 28.6k
 	// tokens < 30000 budget, but the last assistant turn carries a usage block
@@ -1881,7 +1881,7 @@ func TestAutoCompactor_Compact_RescaleWhenEstimateAlreadyOverBudget(t *testing.T
 
 	p := &compactMockProvider{}
 	// contextWindow=262144 → keep budget 30000.
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-cjk2", contextWindow: 262144, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "qwen", sessionID: "s-cjk2", contextWindow: 262144, provider: p})
 
 	// 40 CJK messages × 2200 chars → char estimate ≈ 40×1430 ≈ 57.2k, already
 	// over the 30000 budget, while the usage anchor says the real context is
@@ -1954,7 +1954,7 @@ func TestAutoCompactor_Compact_LastMessageOversized_NotNoop(t *testing.T) {
 
 	p := &compactMockProvider{}
 	// contextWindow=1000 → budget = max(min(200, 30000), 2000) = 2000.
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-big", contextWindow: 1000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "s-big", contextWindow: 1000, provider: p})
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("small one")}},
@@ -1993,7 +1993,7 @@ func TestAutoCompactor_KeepBudget_Cap30K(t *testing.T) {
 		{1000, 2000},    // floor 段不变
 	}
 	for _, tc := range cases {
-		sc := NewAutoCompactor(nil, &testEngineMeta{model: "m", sessionID: "s", contextWindow: tc.window, provider: &compactMockProvider{}})
+		sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "s", contextWindow: tc.window, provider: &compactMockProvider{}})
 		if got := sc.keepBudget(); got != tc.want {
 			t.Errorf("keepBudget(window=%d) = %d, want %d", tc.window, got, tc.want)
 		}
@@ -2017,7 +2017,7 @@ func TestCompactor_Compact_MidSizeTranscript_CompressesUnder30KCap(t *testing.T)
 	defer store.Close()
 
 	p := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-midsize", contextWindow: 384000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "s-midsize", contextWindow: 384000, provider: p})
 
 	msgs := makeLargeMessages(35, 12000) // ~47k est: fits 60k (noop) but not 30k
 	result, err := sc.Compact(context.Background(), msgs)
@@ -2052,7 +2052,7 @@ func TestAutoCompactor_Compact_SingleRound_WholeTranscript(t *testing.T) {
 	defer store.Close()
 
 	p := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "s-whole", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "s-whole", contextWindow: 10000, provider: p})
 
 	// Assistant-led pair → single round group; ~2.2k est each, combined over
 	// the 2000 budget → keepFrom=1 → align clamps to 0 → whole-transcript path.
@@ -2130,13 +2130,12 @@ func (p *ctxRecordingProvider) state() (sawNil, sawDone bool) {
 	return p.sawNil, p.sawDone
 }
 
-// TestNewAutoCompactorWiresStore pins the store field of the constructor:
-// a partial compact must reach the store, not a nil receiver.
-func TestNewAutoCompactorWiresStore(t *testing.T) {
+// TestCompactPartialPathProducesBoundary pins the partial-compact path of
+// Compact: boundary marker, kept tail, and the LLM summary.
+func TestCompactPartialPathProducesBoundary(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t)
 	p := &ctxRecordingProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "m", sessionID: "ac-store", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-store", contextWindow: 10000, provider: p})
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
@@ -2148,10 +2147,10 @@ func TestNewAutoCompactorWiresStore(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 	if res.BoundaryMarker == nil {
-		t.Error("partial compact produced no boundary marker — the store was not reachable")
+		t.Error("partial compact produced no boundary marker")
 	}
 	if len(res.MessagesToKeep) == 0 {
-		t.Error("partial compact kept no tail — the store split did not run")
+		t.Error("partial compact kept no tail")
 	}
 	if !strings.Contains(res.Summary, "ac summary") {
 		t.Errorf("partial-path CompactResult.Summary = %q, want the LLM summary text", res.Summary)
@@ -2160,17 +2159,16 @@ func TestNewAutoCompactorWiresStore(t *testing.T) {
 
 // TestPartialCompactOnlyFailsOnBadSplit pins why compact()'s
 // PartialCompact error branch is unreachable: with the split compact()
-// guarantees (0 < keepFrom < len) the store call cannot fail.
+// guarantees (0 < keepFrom < len) the call cannot fail.
 func TestPartialCompactOnlyFailsOnBadSplit(t *testing.T) {
 	t.Parallel()
-	store := newTestStore(t)
 	msgs := []*short.TranscriptMessage{
 		{UUID: "a", Type: "user", Content: `[{"type":"text","text":"one"}]`},
 		{UUID: "b", Type: "assistant", Content: `[{"type":"text","text":"two"}]`},
 		{UUID: "c", Type: "user", Content: `[{"type":"text","text":"three"}]`},
 	}
 	for _, keepFrom := range []int{1, 2} {
-		res, err := store.PartialCompact("ac-split", msgs, keepFrom, "auto")
+		res, err := short.PartialCompact(msgs, keepFrom, "auto")
 		if err != nil {
 			t.Errorf("PartialCompact(keepFrom=%d) error = %v, want nil", keepFrom, err)
 		}
@@ -2178,10 +2176,10 @@ func TestPartialCompactOnlyFailsOnBadSplit(t *testing.T) {
 			t.Errorf("PartialCompact(keepFrom=%d) returned a nil result", keepFrom)
 		}
 	}
-	if _, err := store.PartialCompact("ac-split", msgs, 0, "auto"); err == nil {
+	if _, err := short.PartialCompact(msgs, 0, "auto"); err == nil {
 		t.Error("PartialCompact(keepFrom=0) must reject the split")
 	}
-	if _, err := store.PartialCompact("ac-split", msgs, len(msgs), "auto"); err == nil {
+	if _, err := short.PartialCompact(msgs, len(msgs), "auto"); err == nil {
 		t.Error("PartialCompact(keepFrom=len) must reject the split")
 	}
 }
@@ -2195,7 +2193,7 @@ func TestCompactThreadsContext(t *testing.T) {
 
 	// Partial path (head summarized, tail kept).
 	p := &ctxRecordingProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-ctx", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-ctx", contextWindow: 10000, provider: p})
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2206,7 +2204,7 @@ func TestCompactThreadsContext(t *testing.T) {
 	}
 	// Whole-transcript path.
 	p2 := &ctxRecordingProvider{}
-	sc2 := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-ctx-all", contextWindow: 10000, provider: p2})
+	sc2 := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-ctx-all", contextWindow: 10000, provider: p2})
 	all := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2231,7 +2229,7 @@ func TestCompactThreadsContext(t *testing.T) {
 func TestCompactNoopLogsRecord(t *testing.T) {
 	t.Parallel()
 	rec := &slogCapture{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-noop", contextWindow: 200000, provider: &ctxRecordingProvider{}})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-noop", contextWindow: 200000, provider: &ctxRecordingProvider{}})
 	sc.logger = slog.New(rec)
 
 	msgs := []types.Message{
@@ -2262,7 +2260,7 @@ func TestCompactNoopLogsRecord(t *testing.T) {
 func TestWholeTranscriptResultFields(t *testing.T) {
 	t.Parallel()
 	p := &ctxRecordingProvider{text: "<summary>whole-transcript summary</summary>"}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-all", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-all", contextWindow: 10000, provider: p})
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2288,7 +2286,7 @@ func TestSummarizeErrorWrapsCause(t *testing.T) {
 	sentinel := errors.New("provider exploded")
 
 	partial := &ctxRecordingProvider{err: sentinel}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-err-partial", contextWindow: 10000, provider: partial})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-err-partial", contextWindow: 10000, provider: partial})
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2300,7 +2298,7 @@ func TestSummarizeErrorWrapsCause(t *testing.T) {
 	}
 
 	whole := &ctxRecordingProvider{err: sentinel}
-	sc2 := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-err-whole", contextWindow: 10000, provider: whole})
+	sc2 := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-err-whole", contextWindow: 10000, provider: whole})
 	all := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2317,7 +2315,7 @@ func TestSummarizeFailureLogged(t *testing.T) {
 	t.Parallel()
 	rec := &slogCapture{}
 	p := &ctxRecordingProvider{err: errors.New("boom")}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-faillog", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-faillog", contextWindow: 10000, provider: p})
 	sc.logger = slog.New(rec)
 
 	msgs := []types.Message{
@@ -2346,7 +2344,7 @@ func TestSummarizeRequestLogged(t *testing.T) {
 	t.Parallel()
 	rec := &slogCapture{}
 	p := &ctxRecordingProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-reqlog", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-reqlog", contextWindow: 10000, provider: p})
 	sc.logger = slog.New(rec)
 
 	msgs := []types.Message{
@@ -2379,7 +2377,7 @@ func TestSummaryLogPreview(t *testing.T) {
 	rec := &slogCapture{}
 	raw := "<summary>" + strings.Repeat("z", 300) + "</summary>"
 	p := &ctxRecordingProvider{text: raw}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-prev", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-prev", contextWindow: 10000, provider: p})
 	sc.logger = slog.New(rec)
 
 	msgs := []types.Message{
@@ -2464,7 +2462,7 @@ func TestRescaleOnlyWhenMeasuredExceedsBudget(t *testing.T) {
 		t.Fatalf("fixture measured %d tokens, want it inside the keepBudget clamp [2000,30000]", before)
 	}
 	p := &ctxRecordingProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-gate", contextWindow: 5 * before, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-gate", contextWindow: 5 * before, provider: p})
 
 	shortMsgs := short.EngineMessagesToStore(msgs)
 	if sc.estimateStoreTokens(shortMsgs) <= before {
@@ -2489,7 +2487,7 @@ func TestRescaleOnlyWhenMeasuredExceedsBudget(t *testing.T) {
 func TestSummarizeScansAllHeadMessages(t *testing.T) {
 	t.Parallel()
 	p := &ctxRecordingProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-scan", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-scan", contextWindow: 10000, provider: p})
 
 	shortMsgs := []*short.TranscriptMessage{
 		{UUID: "a", Type: "user", Content: `[{"type":"image"}]`},
@@ -2507,7 +2505,7 @@ func TestSummarizeScansAllHeadMessages(t *testing.T) {
 func TestSummarizeRequestShape(t *testing.T) {
 	t.Parallel()
 	p := &compactCaptureProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-req", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-req", contextWindow: 10000, provider: p})
 
 	shortMsgs := []*short.TranscriptMessage{
 		{UUID: "u", Type: "user", Content: `[{"type":"text","text":"look at this"},{"type":"image","source":{"type":"base64"}}]`},
@@ -2549,7 +2547,7 @@ func TestSummarizeRequestShape(t *testing.T) {
 func TestSummaryBlockSelection(t *testing.T) {
 	t.Parallel()
 	p := &blockOnlyProvider{}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-blocks", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-blocks", contextWindow: 10000, provider: p})
 
 	shortMsgs := []*short.TranscriptMessage{
 		{UUID: "u", Type: "user", Content: `[{"type":"text","text":"content"}]`},
@@ -2593,7 +2591,7 @@ func (p *blockOnlyProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Re
 func TestSummaryMessageSuppressesFollowUp(t *testing.T) {
 	t.Parallel()
 	p := &ctxRecordingProvider{text: "<summary>keep going</summary>"}
-	sc := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "ac-followup", contextWindow: 10000, provider: p})
+	sc := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "ac-followup", contextWindow: 10000, provider: p})
 	msgs := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 20000))}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("y", 20000))}},
@@ -2724,7 +2722,7 @@ func transcriptMsgs(contents ...string) []*short.TranscriptMessage {
 // a measured context of 100k against an 8k keep budget keeps the whole tail.
 func TestRescaledKeepFrom_RescalesWhenEstimateIsOneToken(t *testing.T) {
 	t.Parallel()
-	ac := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "acg-rescale", contextWindow: 40000})
+	ac := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "acg-rescale", contextWindow: 40000})
 	// utils.EstimateTokens("hello") == 1, so the transcript estimate is 1.
 	msgs := transcriptMsgs("hello", "", "")
 	if got := ac.rescaledKeepFrom(msgs, 100000); got != 1 {
@@ -2736,7 +2734,7 @@ func TestRescaledKeepFrom_RescalesWhenEstimateIsOneToken(t *testing.T) {
 // verdict stands, and the rescale branch must not divide by it.
 func TestRescaledKeepFrom_SkipsRescaleWhenEstimateIsZero(t *testing.T) {
 	t.Parallel()
-	ac := NewAutoCompactor(newTestStore(t), &testEngineMeta{model: "m", sessionID: "acg-rescale0", contextWindow: 40000})
+	ac := NewAutoCompactor(&testEngineMeta{model: "m", sessionID: "acg-rescale0", contextWindow: 40000})
 	msgs := transcriptMsgs("", "", "")
 	if got := ac.rescaledKeepFrom(msgs, 100000); got != len(msgs) {
 		t.Errorf("rescaledKeepFrom = %d, want %d (estTotal 0 keeps the plain scan)", got, len(msgs))

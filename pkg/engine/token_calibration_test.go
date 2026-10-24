@@ -666,7 +666,7 @@ func TestNewAutoCompactor_InjectsCalibratedEstimator(t *testing.T) {
 	defer store.Close()
 	called := int32(0)
 	meta := &injectableMeta{model: "m", sessionID: "s", contextWindow: 200000, provider: &compactMockProvider{}, called: &called}
-	sc := NewAutoCompactor(store, meta)
+	sc := NewAutoCompactor(meta)
 
 	text := strings.Repeat("丁", 500) // 500 CJK chars
 	// 2-feature: 500×0.65 = 325. Calibrated seed: 500×0.72 = 360.

@@ -47,7 +47,7 @@ func TestTrySMCompact_NilSessionMemory(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 	msgs := makeLargeMessages(10, 100)
 
 	result, err := ac.TrySMCompact(msgs, nil)
@@ -78,7 +78,7 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -123,7 +123,7 @@ smcompact_test.go — test file
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 500, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 500, provider: nil})
 
 	// Create enough messages for PartialCompact to work
 	// Need at least keepFrom > 1 and keepFrom < len(messages)
@@ -187,7 +187,7 @@ func TestTrySMCompact_TooFewMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Only 2 messages — too few for PartialCompact to find a valid boundary
 	msgs := makeLargeMessages(2, 100)
@@ -214,7 +214,7 @@ func TestTrySMCompact_NoFile(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -235,7 +235,7 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Create a minimal CompactResult with messages to keep
 	shortMsgs := makeLargeMessages(10, 100)
@@ -243,7 +243,7 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 
 	// Use PartialCompact to get a real CompactResult
 	keepFrom := 3
-	pcr, err := store.PartialCompact("test-session", shortList, keepFrom, "auto")
+	pcr, err := short.PartialCompact(shortList, keepFrom, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact failed: %v", err)
 	}
@@ -283,12 +283,12 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Create a CompactResult with nil boundary marker
 	shortMsgs := makeLargeMessages(10, 100)
 	shortList := short.EngineMessagesToStore(shortMsgs)
-	pcr, err := store.PartialCompact("test-session", shortList, 3, "auto")
+	pcr, err := short.PartialCompact(shortList, 3, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact failed: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 	go func() { _ = sm.Extract(context.Background(), msgs, 100) }()
 	time.Sleep(50 * time.Millisecond) // REAL-TIME: wait for extraction to start
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	largeMsgs := makeLargeMessages(20, 500)
 	result, err := ac.TrySMCompact(largeMsgs, sm)
@@ -488,7 +488,7 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	result, err := ac.TrySMCompact([]types.Message{}, sm)
 	if err != nil {
@@ -522,7 +522,7 @@ func TestTrySMCompact_OversizedNewestMessage_Proceeds(t *testing.T) {
 	// returned len on the first loop iteration and the keepFrom >= len guard
 	// made TrySMCompact fall back (nil). Now SM-compact proceeds with the
 	// notes summary.
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 	msgs := makeLargeMessages(9, 100)
 	msgs = append(msgs, types.Message{
 		Role:    types.RoleAssistant,
@@ -560,7 +560,7 @@ func TestTrySMCompact_CJKUnderestimate_RescalesTail(t *testing.T) {
 	// already over budget while the usage anchor says 100039: without the
 	// rescale the SM path kept a tail of ≈36 messages (~2.5x the real
 	// budget); rescaled it keeps ≈11.
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "qwen", sessionID: "s-sm-cjk", contextWindow: 262144, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "qwen", sessionID: "s-sm-cjk", contextWindow: 262144, provider: nil})
 	fixture := strings.Repeat("这是一段用于校准压缩预算口径的中文测试消息。", 100)
 	msgs := make([]types.Message, 0, 41)
 	for i := range 40 {
@@ -623,7 +623,7 @@ func smNotesFixture(t *testing.T, notes string, contextWindow int) (*AutoCompact
 	if err := os.WriteFile(notesPath, []byte(notes), 0644); err != nil {
 		t.Fatal(err)
 	}
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: contextWindow, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: contextWindow, provider: nil})
 	return ac, sm
 }
 
@@ -744,7 +744,7 @@ func TestSMCompact_ExtractionWaitFailureFallsBack(t *testing.T) {
 	go func() { _ = sm.Extract(context.Background(), makeLargeMessages(3, 600), 100) }()
 	time.Sleep(50 * time.Millisecond) // REAL-TIME: let the extraction start and block
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: 40000, provider: nil})
+	ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "sm-test", contextWindow: 40000, provider: nil})
 	result, err := ac.TrySMCompact(smSplitAt(2), sm)
 	if err != nil {
 		t.Fatalf("TrySMCompact: %v", err)
@@ -761,7 +761,6 @@ func TestSMCompact_ExtractionWaitFailureFallsBack(t *testing.T) {
 func TestSMCompact_ExtractionWaitFailureIsLogged(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		setTempHome(t)
-		store := newTestStore(t)
 		started := make(chan struct{})
 		release := make(chan struct{})
 		defer close(release)
@@ -787,7 +786,7 @@ func TestSMCompact_ExtractionWaitFailureIsLogged(t *testing.T) {
 		synctest.Wait()
 
 		logs := captureSlog(t)
-		ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "gtest-warn", contextWindow: 40000})
+		ac := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: "gtest-warn", contextWindow: 40000})
 		res, err := ac.TrySMCompact(smSplitAt(2), sm)
 		if err != nil {
 			t.Fatalf("TrySMCompact: %v", err)

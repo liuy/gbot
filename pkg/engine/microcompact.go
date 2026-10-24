@@ -417,7 +417,6 @@ func maybeTokenBasedMicrocompact(
 		}
 
 		if touched {
-			result[i] = messages[i]
 			result[i].Content = newContent
 		}
 	}

@@ -128,7 +128,7 @@ func TestCompactPipeline_OldToolResultsStillAutoCompact(t *testing.T) {
 		p := &pipelineProvider{}
 		p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
 
-		compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 500, provider: p})
+		compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 500, provider: p})
 		tc := newEventCollector()
 		eng := New(&Params{
 			Provider:  p,
@@ -242,7 +242,7 @@ func TestCompactPipeline_IdleGapAloneClearsNothing(t *testing.T) {
 		p := &pipelineProvider{}
 		p.addStream(pipelineStreamEvents("test-model", "Response after idle gap."), nil)
 
-		compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 40000, provider: p})
+		compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 40000, provider: p})
 		eng := New(&Params{
 			Provider:  p,
 			Model:     "test-model",

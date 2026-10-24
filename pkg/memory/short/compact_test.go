@@ -487,9 +487,6 @@ func TestGetMessagesAfterCompactBoundary_SliceCorrect(t *testing.T) {
 }
 
 func TestPartialCompact_PreservesTail(t *testing.T) {
-	store := openTestStore(t)
-	sessionID := "test-session"
-
 	// Create 10 messages
 	messages := make([]*TranscriptMessage, 10)
 	for i := range 10 {
@@ -497,7 +494,7 @@ func TestPartialCompact_PreservesTail(t *testing.T) {
 	}
 
 	// Compact keeping last 3
-	result, err := store.PartialCompact(sessionID, messages, 7, "auto") // keep from index 7 (last 3)
+	result, err := PartialCompact(messages, 7, "auto") // keep from index 7 (last 3)
 	if err != nil {
 		t.Fatalf("PartialCompact: %v", err)
 	}
@@ -1599,38 +1596,36 @@ func TestRecordCompact_TransactionFailure(t *testing.T) {
 }
 
 func TestPartialCompact_InvalidKeepFrom(t *testing.T) {
-	store := openTestStore(t)
 	messages := []*TranscriptMessage{
 		{UUID: "msg-1"},
 		{UUID: "msg-2"},
 	}
 
 	// keepFrom <= 0 should fail
-	_, err := store.PartialCompact("session", messages, 0, "auto")
+	_, err := PartialCompact(messages, 0, "auto")
 	if err == nil {
 		t.Error("PartialCompact should fail when keepFrom <= 0")
 	}
 
 	// keepFrom > len(messages) should fail
-	_, err = store.PartialCompact("session", messages, 5, "auto")
+	_, err = PartialCompact(messages, 5, "auto")
 	if err == nil {
 		t.Error("PartialCompact should fail when keepFrom exceeds message length")
 	}
 
 	// keepFrom == len(messages) should fail
-	_, err = store.PartialCompact("session", messages, 2, "auto")
+	_, err = PartialCompact(messages, 2, "auto")
 	if err == nil {
 		t.Error("PartialCompact should fail when keepFrom equals message length")
 	}
 }
 
 func TestPartialCompact_NoTail(t *testing.T) {
-	store := openTestStore(t)
 	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Content: `[{"type":"text","text":"message 1"}]`},
 	}
 
-	result, err := store.PartialCompact("session", messages, 0, "auto")
+	result, err := PartialCompact(messages, 0, "auto")
 	if err == nil {
 		t.Error("PartialCompact should fail for invalid keepFrom=0")
 	}
@@ -2137,13 +2132,12 @@ func TestRecordCompact_UpdateTimestampError(t *testing.T) {
 
 // Lines 202-204: PartialCompact annotateBoundaryWithPreservedSegment error
 func TestPartialCompact_AnnotateError(t *testing.T) {
-	store := openTestStore(t)
 	// Create messages where boundary has invalid content
 	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Content: "a"},
 		{UUID: "msg-2", Content: "b"},
 	}
-	_, err := store.PartialCompact("session", messages, 1, "auto")
+	_, err := PartialCompact(messages, 1, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact: %v", err)
 	}
@@ -2541,7 +2535,7 @@ func TestPartialCompact_WithMessagesToKeep(t *testing.T) {
 		testMessage(0, "assistant", "a-1", "", `[{"type":"text","text":"hi"}]`),
 		testMessage(0, "user", "u-2", "", `[{"type":"text","text":"world"}]`),
 	}
-	result, err := store.PartialCompact(sessionID, msgs, 1, "auto")
+	result, err := PartialCompact(msgs, 1, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact: %v", err)
 	}

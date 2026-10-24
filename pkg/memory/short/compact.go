@@ -279,7 +279,7 @@ func (s *Store) LoadPostCompactChainMessages(sessionID string) ([]*TranscriptMes
 // PartialCompact compacts only the head portion of messages, keeping the tail.
 // keepFrom specifies the index (0-based) from which to start keeping messages.
 // TS align: compact.ts:1500-1600 partialCompactConversation
-func (s *Store) PartialCompact(sessionID string, messages []*TranscriptMessage, keepFrom int, trigger string) (*CompactResult, error) {
+func PartialCompact(messages []*TranscriptMessage, keepFrom int, trigger string) (*CompactResult, error) {
 	if keepFrom <= 0 {
 		return nil, fmt.Errorf("keepFrom must be positive, got %d", keepFrom)
 	}

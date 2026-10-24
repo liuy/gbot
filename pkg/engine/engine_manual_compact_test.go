@@ -178,7 +178,7 @@ func newManualCompactSMCase(t *testing.T) manualCompactCaseFixture {
 		}, nil
 	}
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 10000, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 10000, provider: p})
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -277,7 +277,7 @@ func TestEngine_ManualCompact_PassesInstructionsToCompactor(t *testing.T) {
 		}, nil
 	}
 
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
+	compactor := NewAutoCompactor(&testEngineMeta{model: "test-model", sessionID: sess.SessionID, contextWindow: 1000, provider: p})
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",

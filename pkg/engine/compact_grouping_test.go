@@ -47,7 +47,7 @@ func TestCompact_RetainSplitKeepsToolPairsIntact(t *testing.T) {
 	}
 
 	p := &compactCaptureProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{
+	sc := NewAutoCompactor(&testEngineMeta{
 		model:         "test-model",
 		sessionID:     session.SessionID,
 		contextWindow: 20000, // keep budget = 20000/5 = 4000
@@ -414,7 +414,7 @@ func TestCompact_SingleApiRound_SummarizesAll(t *testing.T) {
 	}
 
 	p := &compactCaptureProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{
+	sc := NewAutoCompactor(&testEngineMeta{
 		model:         "test-model",
 		sessionID:     session.SessionID,
 		contextWindow: 5000, // keep budget = 2000; 20 messages ≈ 3.3K store tokens

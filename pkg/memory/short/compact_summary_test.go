@@ -112,7 +112,7 @@ func TestRecordCompact_SummaryRowAndAnchor(t *testing.T) {
 		testMessage(0, "assistant", "a-1", "u-1", `[{"type":"text","text":"hi"}]`),
 		testMessage(0, "user", "u-2", "a-1", `[{"type":"text","text":"world"}]`),
 	}
-	result, err := store.PartialCompact(sessionID, msgs, 1, "auto")
+	result, err := PartialCompact(msgs, 1, "auto")
 	if err != nil {
 		t.Fatalf("PartialCompact: %v", err)
 	}
