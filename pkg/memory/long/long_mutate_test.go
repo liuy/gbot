@@ -1,9 +1,12 @@
 package long
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -26,6 +29,10 @@ func TestParseIndexLine_Shapes(t *testing.T) {
 		{"closing before opening", "- ]My Title[", IndexEntry{}},
 		{"paren closed before title", ") [Title](f.md)", IndexEntry{}},
 		{"bracket closed before title", "] [Title](f.md)", IndexEntry{}},
+		{"bracket at byte zero", "[T](f.md)", IndexEntry{FileName: "f.md", Title: "T"}},
+		{"bracket missing but text and parens present", "x] y (f.md)", IndexEntry{}},
+		{"paren at byte zero", "(f.md) [T]", IndexEntry{FileName: "f.md", Title: "T"}},
+		{"paren missing but text and bracket present", "[T] x)", IndexEntry{}},
 	}
 	for _, c := range cases {
 		got := parseIndexLine(c.line)
@@ -124,6 +131,7 @@ func TestLastIndexByte(t *testing.T) {
 		{"abc\ndef\nghi", '\n', 100, 7},
 		{"abcdef", '\n', 6, -1},
 		{"", '\n', 0, -1},
+		{"\nbc", '\n', 3, 0},
 	}
 	for _, c := range cases {
 		if got := lastIndexByte(c.s, c.c, c.n); got != c.want {
@@ -155,6 +163,9 @@ func TestTruncateEntrypoint(t *testing.T) {
 	empty := TruncateEntrypoint("   \n  ")
 	if empty.Content != "" || empty.WasLineTruncated || empty.WasByteTruncated {
 		t.Errorf("whitespace input = %+v, want an empty result", empty)
+	}
+	if empty.LineCount != 0 || empty.ByteCount != 0 {
+		t.Errorf("whitespace input counts = (%d, %d), want (0, 0)", empty.LineCount, empty.ByteCount)
 	}
 
 	// Split the truncated payload off the appended warning.
@@ -210,6 +221,63 @@ func TestTruncateEntrypoint(t *testing.T) {
 	if payload(got.Content) != want {
 		t.Errorf("newline-aligned cut = %d bytes, want the first 124 lines", len(payload(got.Content)))
 	}
+
+	// Exactly at the line cap: no truncation at all, counts reported verbatim.
+	atCap := strings.Repeat("l\n", 199) + "l"
+	if len(strings.Split(atCap, "\n")) != 200 {
+		t.Fatalf("setup: want 200 lines, got %d", len(strings.Split(atCap, "\n")))
+	}
+	got = TruncateEntrypoint(atCap)
+	if got.WasLineTruncated || got.WasByteTruncated {
+		t.Errorf("200 lines exactly = %+v, want no truncation at the cap", got)
+	}
+	if got.LineCount != 200 || got.ByteCount != len(atCap) {
+		t.Errorf("counts = (%d, %d), want (200, %d)", got.LineCount, got.ByteCount, len(atCap))
+	}
+	if got.Content != atCap {
+		t.Errorf("at-cap content = %q, want unchanged input", got.Content)
+	}
+
+	// Exactly at the byte cap on a single line: still no truncation.
+	atBytes := strings.Repeat("x", MaxEntrypointBytes)
+	got = TruncateEntrypoint(atBytes)
+	if got.WasLineTruncated || got.WasByteTruncated {
+		t.Errorf("%d bytes exactly = %+v, want no truncation at the cap", MaxEntrypointBytes, got)
+	}
+	if got.Content != atBytes {
+		t.Errorf("at-cap byte content changed: %d bytes, want %d", len(got.Content), MaxEntrypointBytes)
+	}
+
+	// First 200 lines land exactly on the byte cap: the byte cut must not
+	// fire on content that is at (not over) the limit after the line cut.
+	capLines := make([]string, 201)
+	for i := range capLines {
+		if i < 199 {
+			capLines[i] = strings.Repeat("a", 124)
+		} else if i == 199 {
+			capLines[i] = strings.Repeat("a", 125)
+		} else {
+			capLines[i] = "tail"
+		}
+	}
+	first200 := strings.Join(capLines[:200], "\n")
+	if len(first200) != MaxEntrypointBytes {
+		t.Fatalf("setup: first 200 lines = %d bytes, want %d", len(first200), MaxEntrypointBytes)
+	}
+	got = TruncateEntrypoint(strings.Join(capLines, "\n"))
+	if !got.WasLineTruncated || !got.WasByteTruncated {
+		t.Fatalf("cap-boundary setup = %+v, want both flags set", got)
+	}
+	if payload(got.Content) != first200 {
+		t.Errorf("payload = %d bytes, want the full %d-byte first-200-lines cut", len(payload(got.Content)), MaxEntrypointBytes)
+	}
+
+	// Newline at index 1 is the last newline under the cap: cut there, not
+	// at the hard byte limit.
+	got = TruncateEntrypoint("a\n" + strings.Repeat("y", MaxEntrypointBytes-1))
+	if payload(got.Content) != "a" {
+		t.Errorf("early-newline payload = %q, want %q", payload(got.Content), "a")
+	}
 }
 
 func TestSanitizeFileName(t *testing.T) {
@@ -218,6 +286,8 @@ func TestSanitizeFileName(t *testing.T) {
 		{"Hello World", "hello_world"},
 		{"a/b:c", "abc"},
 		{"keep-99_x", "keep-99_x"},
+		{"z", "z"},
+		{"0", "0"},
 		{"!!!", "memory"},
 		{"", "memory"},
 		{"café note", "caf_note"},
@@ -228,6 +298,26 @@ func TestSanitizeFileName(t *testing.T) {
 		if got := sanitizeFileName(c.in); got != c.want {
 			t.Errorf("sanitizeFileName(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// The 0o755 mode is part of EnsureMemoryDir's contract (readable by group
+// tools, writable by the owner); umask is pinned so the assertion sees the
+// literal mode the code passes to MkdirAll.
+func TestEnsureMemoryDir_Permissions(t *testing.T) {
+	old := syscall.Umask(0)
+	defer syscall.Umask(old)
+
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := EnsureMemoryDir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(GetMemoryPath(workingDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o755 {
+		t.Errorf("memory dir mode = %o, want 755", perm)
 	}
 }
 
@@ -267,5 +357,424 @@ func TestUpdateMemoryIndex_Append(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "updated desc") {
 		t.Errorf("entry not updated: %q", data)
+	}
+}
+
+// Callers up the stack match on the wrapped error (os.IsNotExist /
+// errors.As), which silently breaks when a %w verb degrades to %v.
+func TestErrorWrapChains(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based error injection does not fail as root")
+	}
+	base := t.TempDir()
+
+	readOnly := filepath.Join(base, "ro")
+	if err := os.MkdirAll(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(readOnly, 0o755) }()
+
+	fileAsPath := filepath.Join(base, "plainfile")
+	if err := os.WriteFile(fileAsPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirAsIndex := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dirAsIndex, EntrypointName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirAsIndex, "test.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTargetIsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(writeTargetIsDir, "test.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	roIndexUpdate := t.TempDir()
+	if err := os.WriteFile(filepath.Join(roIndexUpdate, EntrypointName), []byte("- [x](x.md) — d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(roIndexUpdate, EntrypointName), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(roIndexUpdate, EntrypointName), 0o644) }()
+
+	roIndexRemove := t.TempDir()
+	if err := os.WriteFile(filepath.Join(roIndexRemove, "test.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roIndexRemove, EntrypointName), []byte("- [test](test.md) — d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(roIndexRemove, EntrypointName), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(roIndexRemove, EntrypointName), 0o644) }()
+
+	notEmptyDir := t.TempDir()
+	target := filepath.Join(notEmptyDir, "test.md")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "nested"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		fn   func() error
+		msg  string
+	}{
+		{"LoadMemoryIndex read failure", func() error { _, err := LoadMemoryIndex(dirAsIndex); return err }, "read MEMORY.md"},
+		{"LoadMemoryFile read failure", func() error { _, err := LoadMemoryFile(filepath.Join(base, "missing.md")); return err }, "read memory file"},
+		{"LoadAllMemoryFiles readdir failure", func() error { _, err := LoadAllMemoryFiles(fileAsPath); return err }, "read memory dir"},
+		{"WriteMemoryFile mkdir failure", func() error {
+			return WriteMemoryFile(filepath.Join(readOnly, "nested"), "test", MemoryTypeUser, "d", "c")
+		}, "create memory dir"},
+		{"WriteMemoryFile write failure", func() error { return WriteMemoryFile(writeTargetIsDir, "test", MemoryTypeUser, "d", "c") }, "write memory file"},
+		{"UpdateMemoryIndex read failure", func() error { return UpdateMemoryIndex(dirAsIndex, "new.md", "d") }, "read MEMORY.md"},
+		{"UpdateMemoryIndex write failure", func() error { return UpdateMemoryIndex(roIndexUpdate, "new.md", "d") }, "write MEMORY.md"},
+		{"RemoveMemoryFile remove failure", func() error { return RemoveMemoryFile(notEmptyDir, "test.md") }, "remove memory file"},
+		{"RemoveMemoryFile read failure", func() error { return RemoveMemoryFile(dirAsIndex, "test.md") }, "read MEMORY.md"},
+		{"RemoveMemoryFile write failure", func() error { return RemoveMemoryFile(roIndexRemove, "test.md") }, "write MEMORY.md"},
+	}
+	for _, c := range cases {
+		err := c.fn()
+		if err == nil {
+			t.Errorf("%s: expected error", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.msg) {
+			t.Errorf("%s: error %q missing %q", c.name, err, c.msg)
+		}
+		var pe *os.PathError
+		if !errors.As(err, &pe) {
+			t.Errorf("%s: error does not wrap *os.PathError: %v", c.name, err)
+		}
+	}
+}
+
+func TestWriteMemoryFile_Permissions(t *testing.T) {
+	old := syscall.Umask(0)
+	defer syscall.Umask(old)
+
+	dir := filepath.Join(t.TempDir(), "nested", "mem")
+	if err := WriteMemoryFile(dir, "test", MemoryTypeUser, "d", "c"); err != nil {
+		t.Fatal(err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o755 {
+		t.Errorf("memory dir mode = %o, want 755", perm)
+	}
+	fileInfo, err := os.Stat(filepath.Join(dir, "test.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fileInfo.Mode().Perm(); perm != 0o644 {
+		t.Errorf("memory file mode = %o, want 644", perm)
+	}
+}
+
+func TestIndexWritePermissions(t *testing.T) {
+	old := syscall.Umask(0)
+	defer syscall.Umask(old)
+
+	updateDir := t.TempDir()
+	if err := UpdateMemoryIndex(updateDir, "a.md", "d"); err != nil {
+		t.Fatal(err)
+	}
+	removeDir := t.TempDir()
+	if err := UpdateMemoryIndex(removeDir, "a.md", "d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveMemoryFile(removeDir, "a.md"); err != nil {
+		t.Fatal(err)
+	}
+	perm := func(dir string) os.FileMode {
+		t.Helper()
+		info, err := os.Stat(filepath.Join(dir, EntrypointName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	if got := perm(updateDir); got != 0o644 {
+		t.Errorf("index after update: mode = %o, want 644", got)
+	}
+	if got := perm(removeDir); got != 0o644 {
+		t.Errorf("index after remove: mode = %o, want 644", got)
+	}
+}
+
+// An already-consistent file is a no-op, so removing a file that never
+// existed must not surface an error either.
+func TestRemoveMemoryFile_MissingFileIsNoError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, EntrypointName), []byte("- [a](a.md) — d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveMemoryFile(dir, "ghost.md"); err != nil {
+		t.Errorf("RemoveMemoryFile for missing file = %v, want nil", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, EntrypointName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "- [a](a.md) — d\n" {
+		t.Errorf("index rewritten by no-op removal: %q", data)
+	}
+}
+
+// UpdateMemoryIndex must persist the truncated form when a cap fires —
+// line-only, byte-only, and both, since each flag guards the decision.
+func TestUpdateMemoryIndex_PersistsTruncation(t *testing.T) {
+	t.Parallel()
+	scenarios := []struct {
+		name  string
+		lines int
+		width int
+	}{
+		{"line cap only", 200, 10},
+		{"byte cap only", 150, 200},
+		{"both caps", 250, 200},
+	}
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var lines []string
+			for i := range s.lines {
+				lines = append(lines, fmt.Sprintf("- [e%d](f%d.md) — %s", i, i, strings.Repeat("x", s.width)))
+			}
+			if err := os.WriteFile(filepath.Join(dir, EntrypointName), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := UpdateMemoryIndex(dir, "fresh.md", "fresh desc"); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, EntrypointName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "WARNING") {
+				t.Errorf("%s: index not truncated on disk (%d bytes)", s.name, len(data))
+			}
+		})
+	}
+}
+
+// Only the first matching line is replaced; a duplicate entry line for the
+// same file survives untouched.
+func TestUpdateMemoryIndex_ReplacesOnlyFirstDuplicate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	original := "- [a](a.md) — first\n- [a](a.md) — second\n"
+	if err := os.WriteFile(filepath.Join(dir, EntrypointName), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateMemoryIndex(dir, "a.md", "updated"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, EntrypointName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- [a](a.md) — updated\n- [a](a.md) — second\n"
+	if string(data) != want {
+		t.Errorf("index = %q, want %q", data, want)
+	}
+}
+
+// Entries after the removed one must survive index rewriting.
+func TestRemoveMemoryFile_KeepsEntriesAfterRemoved(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	original := "- [a](a.md) — da\n- [b](b.md) — db\n- [c](c.md) — dc\n"
+	if err := os.WriteFile(filepath.Join(dir, EntrypointName), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveMemoryFile(dir, "b.md"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, EntrypointName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- [a](a.md) — da\n- [c](c.md) — dc\n"
+	if string(data) != want {
+		t.Errorf("index = %q, want %q", data, want)
+	}
+}
+
+// LoadMemoryIndex scans the whole file: entries after blank or plain-text
+// lines are still collected, and indented entries count, while stray
+// bracket text outside "- [" lines does not.
+func TestLoadMemoryIndex_ScansPastNonEntryLines(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := "# Notes\n\n- [A](a.md) — x\n  - [B](b.md) — y\nx [T](t.md)\n"
+	if err := os.WriteFile(filepath.Join(dir, EntrypointName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := LoadMemoryIndex(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2 (A + indented B): %+v", len(idx.Entries), idx.Entries)
+	}
+	if idx.Entries[0].FileName != "a.md" || idx.Entries[1].FileName != "b.md" {
+		t.Errorf("entries = %+v, want a.md then b.md", idx.Entries)
+	}
+	if idx.Raw != content {
+		t.Errorf("Raw = %q, want the file verbatim", idx.Raw)
+	}
+}
+
+func TestLoadMemoryFile_RecordsFilePath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy.md")
+	if err := os.WriteFile(legacy, []byte("plain body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mf, err := LoadMemoryFile(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mf.FilePath != legacy {
+		t.Errorf("legacy FilePath = %q, want %q", mf.FilePath, legacy)
+	}
+
+	if err := WriteMemoryFile(dir, "typed", MemoryTypeUser, "d", "c"); err != nil {
+		t.Fatal(err)
+	}
+	typed := filepath.Join(dir, "typed.md")
+	mf, err = LoadMemoryFile(typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mf.FilePath != typed {
+		t.Errorf("typed FilePath = %q, want %q", mf.FilePath, typed)
+	}
+}
+
+func TestLoadAllMemoryFiles_SortedByFilename(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"c.md", "a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("body"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := LoadAllMemoryFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("files = %d, want 3", len(files))
+	}
+	got := []string{files[0].FilePath, files[1].FilePath, files[2].FilePath}
+	want := []string{filepath.Join(dir, "a.md"), filepath.Join(dir, "b.md"), filepath.Join(dir, "c.md")}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}
+
+// An unreadable file is skipped and scanning continues with the rest.
+func TestLoadAllMemoryFiles_SkipsUnreadableAndContinues(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based error injection does not fail as root")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("body"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.md"), []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := LoadAllMemoryFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || filepath.Base(files[0].FilePath) != "b.md" {
+		t.Errorf("files = %+v, want only b.md", files)
+	}
+}
+
+// Frontmatter is only recognized when the opening "---" starts at byte 0;
+// a document that merely contains a frontmatter-shaped block stays legacy.
+func TestParseFrontmatter_PrefixMustStartAtByteZero(t *testing.T) {
+	t.Parallel()
+	content := "----name: x\n---\nbody"
+	name, _, _, body, ok := ParseFrontmatter(content)
+	if ok || name != "" {
+		t.Errorf("ok=%v name=%q, want ok=false: content must not parse as frontmatter", ok, name)
+	}
+	if body != content {
+		t.Errorf("body = %q, want the original content", body)
+	}
+}
+
+// A colon-less "name" line must not reset the parsed name to empty.
+func TestParseFrontmatter_ColonlessLineKeepsName(t *testing.T) {
+	t.Parallel()
+	content := "---\nname: x\nname\n---\nbody"
+	name, _, _, body, ok := ParseFrontmatter(content)
+	if !ok || name != "x" {
+		t.Errorf("ok=%v name=%q, want ok=true name=x", ok, name)
+	}
+	if body != "body" {
+		t.Errorf("body = %q, want %q", body, "body")
+	}
+}
+
+// The prompt's section skeleton (headers, blank-line separation, index
+// workflow) is the behavioral contract injected into every conversation.
+func TestBuildMemoryPrompt_SectionSkeleton(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	prompt := BuildMemoryPrompt(t.TempDir(), "")
+	for _, want := range []string{
+		"# auto memory",
+		"## Types of memory",
+		"## What NOT to save",
+		"\n\n## How to save memories",
+		"**Step 2**",
+		"\n\n## When to access memories",
+		"\n\n## Before recommending from memory",
+		"\n\n## Archive",
+		"\n\n## Memory and other forms of persistence",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+// The override directory must win over the path computed from workingDir.
+func TestBuildMemoryPrompt_OverrideDirWins(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	override := t.TempDir()
+	if err := os.WriteFile(filepath.Join(override, EntrypointName), []byte("- [Ov](ov.md) — override content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt := BuildMemoryPrompt(t.TempDir(), override)
+	if !strings.Contains(prompt, "override content") {
+		t.Error("prompt missing override MEMORY.md content")
+	}
+	if strings.Contains(prompt, "currently empty") {
+		t.Error("prompt fell back to the computed (empty) memory dir")
 	}
 }

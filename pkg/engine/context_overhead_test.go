@@ -492,9 +492,7 @@ func TestEngine_ContextOverheadReadStaysSerialized(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 500 {
 				eng.recordContextOverhead(&usageMsg)
 				if got := eng.ContextOverheadTokens(); got != wantOverhead {
@@ -502,7 +500,7 @@ func TestEngine_ContextOverheadReadStaysSerialized(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

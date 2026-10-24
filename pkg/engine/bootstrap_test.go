@@ -1550,9 +1550,9 @@ func TestCreateTools_CfgWebKeysReachWebTool(t *testing.T) {
 // the proxy (the proxy answers on the proxy's own address, no target DNS).
 func TestCreateTools_CfgProxyReachesWebFetch(t *testing.T) {
 	t.Parallel()
-	var proxied int32
+	var proxied atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&proxied, 1)
+		proxied.Add(1)
 		_, _ = io.WriteString(w, "fetched through the configured proxy")
 	}))
 	defer proxy.Close()
@@ -1583,7 +1583,7 @@ func TestCreateTools_CfgProxyReachesWebFetch(t *testing.T) {
 	if !strings.Contains(out.Content, "through the configured proxy") {
 		t.Errorf("Web fetch content = %q, want the proxy's response body", out.Content)
 	}
-	if n := atomic.LoadInt32(&proxied); n < 1 {
+	if n := proxied.Load(); n < 1 {
 		t.Errorf("proxy served %d requests, want >= 1 (fetch bypassed the configured proxy)", n)
 	}
 }

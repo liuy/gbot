@@ -26,15 +26,12 @@ func BuildMemoryPrompt(workingDir string, memoryDirOverride string) string {
 
 	entrypoint := filepath.Join(memoryDir, EntrypointName)
 	data, err := readFileOrNull(entrypoint)
-	if err != nil {
-		// Can't read — continue without content
-		lines = append(lines, fmt.Sprintf("## %s", EntrypointName), "",
-			fmt.Sprintf("Your %s is currently empty. When you save new memories, they will appear here.", EntrypointName))
-		return strings.Join(lines, "\n")
+	content := ""
+	if err == nil {
+		content = strings.TrimSpace(string(data))
 	}
-
-	content := strings.TrimSpace(string(data))
 	if content == "" {
+		// Unreadable and empty render the same placeholder.
 		lines = append(lines, fmt.Sprintf("## %s", EntrypointName), "",
 			fmt.Sprintf("Your %s is currently empty. When you save new memories, they will appear here.", EntrypointName))
 		return strings.Join(lines, "\n")

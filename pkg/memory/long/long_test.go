@@ -105,9 +105,12 @@ func TestParseFrontmatter_InvalidType(t *testing.T) {
 func TestParseFrontmatter_MissingName(t *testing.T) {
 	t.Parallel()
 	content := "---\ndescription: desc\ntype: user\n---\nbody"
-	_, _, _, _, ok := ParseFrontmatter(content)
+	_, _, _, body, ok := ParseFrontmatter(content)
 	if ok {
 		t.Error("expected ok=false for frontmatter without name")
+	}
+	if body != content {
+		t.Errorf("body = %q, want the original content on rejection", body)
 	}
 }
 
@@ -791,8 +794,14 @@ func TestHowToSaveSection_SkipIndex(t *testing.T) {
 	if strings.Contains(joined, "Step 2") {
 		t.Error("skipIndex=true should not contain Step 2")
 	}
+	if !strings.Contains(joined, "## How to save memories") {
+		t.Error("skipIndex=true should still contain the section header")
+	}
 	if !strings.Contains(joined, "frontmatter format") {
 		t.Error("should contain frontmatter format reference")
+	}
+	if !strings.Contains(joined, "- Do not write duplicate memories") {
+		t.Error("should contain the closing guidance bullets")
 	}
 }
 

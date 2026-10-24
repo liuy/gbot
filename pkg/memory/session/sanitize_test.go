@@ -159,3 +159,130 @@ func countSubstring(s, substr string) int {
 	}
 	return count
 }
+
+// Reading a missing file must surface the error, not silently rewrite.
+func TestSanitizeNotes_ReadErrorPropagates(t *testing.T) {
+	t.Parallel()
+	err := SanitizeNotes(filepath.Join(t.TempDir(), "SESSION_NOTES.md"))
+	if err == nil {
+		t.Fatal("missing notes file must fail the sanitize pass")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("error = %v, want a not-exist error", err)
+	}
+}
+
+// Every stray-header alias must land in its canonical section with its body;
+// a dropped alias silently loses that section's content.
+func TestSanitizeNotes_HeaderAliases(t *testing.T) {
+	t.Parallel()
+	aliases := map[string]string{
+		"task specification":                "Task specification",
+		"files and functions":               "Files and Functions",
+		"files & functions":                 "Files and Functions",
+		"key files & functions":             "Files and Functions",
+		"errors":                            "Errors & Corrections",
+		"errors and corrections":            "Errors & Corrections",
+		"codebase":                          "Codebase and System Documentation",
+		"codebase documentation":            "Codebase and System Documentation",
+		"codebase and system documentation": "Codebase and System Documentation",
+		"learnings":                         "Learnings",
+		"key learnings":                     "Learnings",
+		"key learnings (this session)":      "Learnings",
+		"side discoveries":                  "Side Discoveries",
+		"workflow":                          "Workflow",
+		"worklog":                           "Worklog",
+		"worklog (recent)":                  "Worklog",
+		"worklog (2026-06-19, recent)":      "Worklog",
+		"worklog (recent only — full history in git log)": "Worklog",
+		"session title":                     "Session Title",
+		"key results":                       "Key results",
+		"sub-agent event propagation chain": "Learnings",
+	}
+	for alias, canonical := range aliases {
+		t.Run(alias, func(t *testing.T) {
+			t.Parallel()
+			notesPath := filepath.Join(t.TempDir(), "SESSION_NOTES.md")
+			body := "body for " + alias
+			content := "# Session Notes\n\n## " + alias + "\n" + body + "\n"
+			if err := os.WriteFile(notesPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := SanitizeNotes(notesPath); err != nil {
+				t.Fatalf("SanitizeNotes: %v", err)
+			}
+			result, err := os.ReadFile(notesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(result)
+			if !contains(s, "## "+canonical+"\n") {
+				t.Errorf("alias %q did not resolve to canonical section %q:\n%s", alias, canonical, s)
+			}
+			if !contains(s, body) {
+				t.Errorf("body under alias %q was lost:\n%s", alias, s)
+			}
+		})
+	}
+}
+
+// Date suffixes, parenthetical notes, and trailing whitespace are stripped
+// from headers before resolution; without stripping the section is dropped.
+func TestSanitizeNotes_StripsHeaderSuffixes(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ header, canonical string }{
+		{"Worklog — 2026-06-19", "Worklog"},
+		{"Learnings (today)", "Learnings"},
+		{"Learnings（今天）", "Learnings"},
+		{"Worklog  ", "Worklog"},
+	}
+	for _, c := range cases {
+		t.Run(c.header, func(t *testing.T) {
+			t.Parallel()
+			notesPath := filepath.Join(t.TempDir(), "SESSION_NOTES.md")
+			content := "# Session Notes\n\n## " + c.header + "\nsuffix body\n"
+			if err := os.WriteFile(notesPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := SanitizeNotes(notesPath); err != nil {
+				t.Fatalf("SanitizeNotes: %v", err)
+			}
+			result, err := os.ReadFile(notesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(result)
+			if !contains(s, "## "+c.canonical+"\n") {
+				t.Errorf("header %q did not resolve to %q:\n%s", c.header, c.canonical, s)
+			}
+			if !contains(s, "suffix body") {
+				t.Errorf("body under header %q was lost:\n%s", c.header, s)
+			}
+		})
+	}
+}
+
+// A section with an empty body is dropped, and scanning continues with the
+// sections after it.
+func TestSanitizeNotes_DropsEmptyBodySections(t *testing.T) {
+	t.Parallel()
+	notesPath := filepath.Join(t.TempDir(), "SESSION_NOTES.md")
+	content := "# Session Notes\n\n## Worklog\n\n## Learnings\nreal lesson\n"
+	if err := os.WriteFile(notesPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SanitizeNotes(notesPath); err != nil {
+		t.Fatalf("SanitizeNotes: %v", err)
+	}
+	result, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(result)
+	if contains(s, "## Worklog") {
+		t.Errorf("empty-body section should be dropped:\n%s", s)
+	}
+	if !contains(s, "## Learnings") || !contains(s, "real lesson") {
+		t.Errorf("section after the empty one was lost:\n%s", s)
+	}
+}

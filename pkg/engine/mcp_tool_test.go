@@ -642,8 +642,7 @@ func TestMCPTool_Call_InMemoryServer_InvalidInput(t *testing.T) {
 	}
 	// The JSON parse error must stay wrapped so callers can branch on the
 	// concrete decode failure instead of parsing message text.
-	var se *json.SyntaxError
-	if !errors.As(err, &se) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
 		t.Errorf("invalid-input error does not wrap *json.SyntaxError: %v", err)
 	}
 }
