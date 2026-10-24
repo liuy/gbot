@@ -117,9 +117,9 @@ func TestIntegration_Stop_JsHook_CallsMcpNamedTool(t *testing.T) {
 
 	// Production wiring, same as bootstrap.go:190/199.
 	var replAskMu sync.Mutex
-	replSessionAllowed := make(map[string]bool)
+	var replSessionAllowed sync.Map
 	replTool.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
-		return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
+		return eng.ExecuteTool(toolCtx, name, args, &replSessionAllowed, &replAskMu)
 	})
 	replTool.SetToolLister(func() []repl.ToolMeta {
 		all := eng.AllTools()

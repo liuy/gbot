@@ -95,11 +95,12 @@ func TestExecuteTool_BashCdPersistsAcrossCalls(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	sessionAllowed := map[string]bool{"Bash": true}
+	var sessionAllowed sync.Map
+	sessionAllowed.Store("Bash", true)
 	var mu sync.Mutex
 
 	if _, err := eng.ExecuteTool(context.Background(), "Bash",
-		json.RawMessage(`{"command":"cd sub"}`), sessionAllowed, &mu); err != nil {
+		json.RawMessage(`{"command":"cd sub"}`), &sessionAllowed, &mu); err != nil {
 		t.Fatalf("ExecuteTool cd: %v", err)
 	}
 
@@ -108,7 +109,7 @@ func TestExecuteTool_BashCdPersistsAcrossCalls(t *testing.T) {
 	}
 
 	result, err := eng.ExecuteTool(context.Background(), "Bash",
-		json.RawMessage(`{"command":"pwd"}`), sessionAllowed, &mu)
+		json.RawMessage(`{"command":"pwd"}`), &sessionAllowed, &mu)
 	if err != nil {
 		t.Fatalf("ExecuteTool pwd: %v", err)
 	}
@@ -312,11 +313,12 @@ func TestNewSubEngine_WorkingDirInheritance(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	sessionAllowed := map[string]bool{"Bash": true}
+	var sessionAllowed sync.Map
+	sessionAllowed.Store("Bash", true)
 	var mu sync.Mutex
 
 	if _, err := eng.ExecuteTool(context.Background(), "Bash",
-		json.RawMessage(`{"command":"cd sub"}`), sessionAllowed, &mu); err != nil {
+		json.RawMessage(`{"command":"cd sub"}`), &sessionAllowed, &mu); err != nil {
 		t.Fatalf("parent cd: %v", err)
 	}
 
@@ -326,7 +328,7 @@ func TestNewSubEngine_WorkingDirInheritance(t *testing.T) {
 	}
 
 	if _, err := subEng.ExecuteTool(context.Background(), "Bash",
-		json.RawMessage(`{"command":"cd `+realOther+`"}`), sessionAllowed, &mu); err != nil {
+		json.RawMessage(`{"command":"cd `+realOther+`"}`), &sessionAllowed, &mu); err != nil {
 		t.Fatalf("sub-engine cd: %v", err)
 	}
 	if got := subEng.getWorkingDir(); got != realOther {

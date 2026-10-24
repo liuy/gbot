@@ -802,3 +802,40 @@ func TestSMCompact_ExtractionWaitFailureIsLogged(t *testing.T) {
 		}
 	})
 }
+
+// A successful SM-compact is an operator-visible event: the ledger line must
+// carry the compact's token accounting so a silent notes-based compact cannot
+// hide behind the returned result.
+func TestSMCompact_SuccessLogsTokenLedger(t *testing.T) {
+	logs := captureSlog(t)
+	ac, sm := smNotesFixture(t, "# Session Notes\n## Current State\nnoted ledger\n", 40000)
+	msgs := smSplitAt(2)
+	result, err := ac.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("TrySMCompact: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result = nil, want a compact from a keepFrom-2 split")
+	}
+	attrInt := func(a map[string]any, key string) (int, bool) {
+		switch v := a[key].(type) {
+		case int64:
+			return int(v), true
+		case int:
+			return v, true
+		}
+		return 0, false
+	}
+	_, ok := logs.find("sm-compact: using session memory for compact", func(a map[string]any) bool {
+		beforeTokens, bok := attrInt(a, "before_tokens")
+		afterTokens, aok := attrInt(a, "after_tokens")
+		beforeMsgs, bmok := attrInt(a, "before_messages")
+		afterMsgs, amok := attrInt(a, "after_messages")
+		return bok && aok && bmok && amok &&
+			beforeTokens == result.BeforeTokens && afterTokens == result.AfterTokens &&
+			beforeMsgs == len(msgs) && afterMsgs == len(result.Messages)
+	})
+	if !ok {
+		t.Error("no sm-compact ledger record matching the result's token accounting")
+	}
+}

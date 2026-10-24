@@ -287,9 +287,9 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).
 	if deps.McpReg != nil {
 		refs.Agent.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
-			handle, err := deps.McpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
-			if err != nil || handle == nil {
-				return nil, err
+			handle := deps.McpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
+			if handle == nil {
+				return nil, nil
 			}
 			mcpTools := make(map[string]tool.Tool)
 			for name, dt := range handle.Tools() {
@@ -305,9 +305,9 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	// REPL tool executor → this engine.
 	{
 		var replAskMu sync.Mutex
-		replSessionAllowed := make(map[string]bool)
+		var replSessionAllowed sync.Map
 		refs.REPL.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
-			return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
+			return eng.ExecuteTool(toolCtx, name, args, &replSessionAllowed, &replAskMu)
 		})
 	}
 

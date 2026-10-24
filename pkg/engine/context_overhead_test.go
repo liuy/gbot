@@ -9,6 +9,7 @@ package engine
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -468,4 +469,40 @@ func TestEngine_ContextOverhead_EdgeCases(t *testing.T) {
 			t.Errorf("locked fallback = %d, want %d (unlocked result)", got, want)
 		}
 	})
+}
+
+// ContextOverheadTokens' read of e.contextOverhead must stay inside the
+// calibMu critical section: recordContextOverhead writes the same field under
+// that mutex from response-processing goroutines. An unlock hoisted above the
+// read is sequentially invisible, so the only witness is the race detector —
+// each goroutine below pairs a writer with a reader so -race has a report to
+// make. A plain (non -race) run of this test stays green on both the original
+// and the broken shape; the census has no -race mode and keeps listing this
+// instance, the same limitation the manager lock-scope probes documented.
+func TestEngine_ContextOverheadReadStaysSerialized(t *testing.T) {
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+	t.Cleanup(func() { eng.Close() })
+	usageMsg := types.Message{Role: types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("done")},
+		Usage:   &types.Usage{InputTokens: 5000}}
+	// Empty transcript: the learned residual is exactly the bill, so every
+	// write stores the same 5000 and the probe's reads are exact-value checks,
+	// not liveness paddling.
+	const wantOverhead = 5000
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				eng.recordContextOverhead(&usageMsg)
+				if got := eng.ContextOverheadTokens(); got != wantOverhead {
+					t.Errorf("ContextOverheadTokens = %d, want %d", got, wantOverhead)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -7208,10 +7208,10 @@ func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	sessionAllowed := make(map[string]bool)
+	var sessionAllowed sync.Map
 	var mu sync.Mutex
 
-	result, err := eng.ExecuteTool(context.Background(), "list_files", json.RawMessage(`{}`), sessionAllowed, &mu)
+	result, err := eng.ExecuteTool(context.Background(), "list_files", json.RawMessage(`{}`), &sessionAllowed, &mu)
 	if err != nil {
 		t.Fatalf("ExecuteTool: %v", err)
 	}
@@ -7247,8 +7247,8 @@ func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
 	})
 	t.Cleanup(func() { eng.Close() })
 
-	sessionAllowed := make(map[string]bool)
-	sessionAllowed["Bash"] = true // skip permission prompt
+	var sessionAllowed sync.Map
+	sessionAllowed.Store("Bash", true) // skip permission prompt
 	var mu sync.Mutex
 
 	// seq 1 20000 produces ~90KB, well above MaxOutputSize=30000
@@ -7256,7 +7256,7 @@ func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
 		context.Background(),
 		"Bash",
 		json.RawMessage(`{"command":"seq 1 20000","timeout":30000}`),
-		sessionAllowed,
+		&sessionAllowed,
 		&mu,
 	)
 	if err != nil {
@@ -9017,7 +9017,7 @@ func TestEngineExecuteTool_AskPermission_UserAllows(t *testing.T) {
 	resultCh := make(chan string)
 	errCh := make(chan error)
 	go func() {
-		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), &sync.Map{}, &sync.Mutex{})
 		if e != nil {
 			errCh <- e
 		} else {
@@ -9062,7 +9062,7 @@ func TestEngineExecuteTool_AskPermission_UserDenies(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		_, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), &sync.Map{}, &sync.Mutex{})
 		errCh <- e
 	}()
 
@@ -9096,11 +9096,11 @@ func TestEngineExecuteTool_AskPermission_AlwaysCache(t *testing.T) {
 	}
 	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
 
-	sessionAllowed := map[string]bool{}
+	var sessionAllowed sync.Map
 	resultCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), sessionAllowed, &sync.Mutex{})
+		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), &sessionAllowed, &sync.Mutex{})
 		if e != nil {
 			errCh <- e
 		} else {
@@ -9126,7 +9126,7 @@ func TestEngineExecuteTool_AskPermission_AlwaysCache(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	if !sessionAllowed["AskTool"] {
+	if _, cached := sessionAllowed.Load("AskTool"); !cached {
 		t.Error("DecisionAllowAlways should cache in sessionAllowed")
 	}
 }
@@ -9143,7 +9143,7 @@ func TestEngineExecuteTool_CachedAllow(t *testing.T) {
 	}
 	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
 
-	result, err := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{"AskTool": true}, &sync.Mutex{})
+	result, err := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), seededSessionAllowed(&sync.Map{}, "AskTool"), &sync.Mutex{})
 	if err != nil {
 		t.Fatalf("cached allow should succeed: %v", err)
 	}
@@ -9167,7 +9167,7 @@ func TestEngineExecuteTool_CtxCancelled(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, e := eng.ExecuteTool(ctx, "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		_, e := eng.ExecuteTool(ctx, "AskTool", json.RawMessage(`{}`), &sync.Map{}, &sync.Mutex{})
 		errCh <- e
 	}()
 

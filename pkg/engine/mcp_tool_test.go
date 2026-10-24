@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,6 +155,16 @@ func TestMCPTool_Call_ServerNotFound_TriesReconnect(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reconnect failed") {
 		t.Errorf("error should mention reconnect attempt: %v", err)
+	}
+	// The reconnect failure must be wrapped, not flattened into the text —
+	// callers walk the chain (errors.Is/As) to tell a dead registry entry
+	// from an unreachable server.
+	inner := errors.Unwrap(err)
+	if inner == nil {
+		t.Fatalf("reconnect error is not in the wrap chain (Unwrap = nil): %v", err)
+	}
+	if !strings.Contains(inner.Error(), "not found in registry") {
+		t.Errorf("wrapped reconnect error = %q, want the registry's not-found error", inner.Error())
 	}
 }
 
@@ -430,6 +443,8 @@ func TestExtractCommonParams(t *testing.T) {
 		{"url priority over query", `{"url":"https://x.com","query":"test"}`, "https://x.com"},
 		{"no match", `{"something":"value"}`, ""},
 		{"empty input", "", ""},
+		{"60-char value passes the limit untouched", `{"url":"` + strings.Repeat("a", 60) + `"}`, strings.Repeat("a", 60)},
+		{"61-char value truncates at the limit", `{"url":"` + strings.Repeat("b", 61) + `"}`, strings.Repeat("b", 60) + "..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -502,6 +517,34 @@ func setupInMemoryEchoServer(t *testing.T) *mcp.ConnectedServer {
 	mcpsdk.AddTool(server, &mcpsdk.Tool{
 		Name: "echo", Description: "Echoes input",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args map[string]any) (*mcpsdk.CallToolResult, any, error) {
+		text, _ := args["text"].(string)
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
+		}, nil, nil
+	})
+
+	// echo-meta mirrors echo but tags the result with server-supplied _meta,
+	// for assertions on the metadata the engine preserves.
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name: "echo-meta", Description: "Echoes input with result metadata",
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args map[string]any) (*mcpsdk.CallToolResult, any, error) {
+		text, _ := args["text"].(string)
+		return &mcpsdk.CallToolResult{
+			Meta:    mcpsdk.Meta{"trail": "mk-9"},
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
+		}, nil, nil
+	})
+
+	// slow holds the call open so tests can observe state while a call is
+	// in flight.
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name: "slow", Description: "Echoes input after a delay",
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args map[string]any) (*mcpsdk.CallToolResult, any, error) {
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
 		text, _ := args["text"].(string)
 		return &mcpsdk.CallToolResult{
 			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
@@ -597,6 +640,35 @@ func TestMCPTool_Call_InMemoryServer_InvalidInput(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid input") {
 		t.Errorf("error should mention invalid input, got: %v", err)
 	}
+	// The JSON parse error must stay wrapped so callers can branch on the
+	// concrete decode failure instead of parsing message text.
+	var se *json.SyntaxError
+	if !errors.As(err, &se) {
+		t.Errorf("invalid-input error does not wrap *json.SyntaxError: %v", err)
+	}
+}
+
+// A one-byte input still parses (and fails) — the empty-input fast path is
+// reserved for the truly empty argument list, not for short bytes.
+func TestMCPTool_Call_SingleByteInputStillParses(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	_, err := tl.Call(context.Background(), json.RawMessage(`x`), nil)
+	if err == nil {
+		t.Fatal("single-byte non-JSON input must be rejected by the args parse")
+	}
+	if !strings.Contains(err.Error(), "invalid input") {
+		t.Errorf("error should mention invalid input, got: %v", err)
+	}
 }
 
 func TestMCPTool_Call_InMemoryServer_EmptyInput(t *testing.T) {
@@ -645,7 +717,8 @@ func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
 	}
 
 	// A DisabledServer (no reconnect attempt for non-failed states) still hits
-	// the type-assertion path.
+	// the type-assertion path. The error must name the server and its state —
+	// a generic "not connected" would hide which server and why.
 	registry.SetConnectionForTest("off-srv", &mcp.DisabledServer{Name: "off-srv"})
 	tl2 := NewMCPTool(mcp.DiscoveredTool{
 		Name:         "mcp__off-srv__echo",
@@ -656,8 +729,8 @@ func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for disabled server")
 	}
-	if !strings.Contains(err.Error(), "not connected") {
-		t.Errorf("disabled server error should mention not connected, got: %v", err)
+	if !strings.Contains(err.Error(), `server "off-srv" not connected`) || !strings.Contains(err.Error(), "state: disabled") {
+		t.Errorf("disabled server error must carry the server name and state, got: %v", err)
 	}
 }
 
@@ -795,6 +868,21 @@ func TestMCPTool_DecodeResult_RejectsBareStruct(t *testing.T) {
 	}
 }
 
+// Wire text that is not itself a JSON string literal must come back as the
+// raw text — the unwrap layer is only for legacy double-encoded wires.
+func TestMCPTool_DecodeResult_PlainTextPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	tl := NewMCPTool(mcp.DiscoveredTool{Name: "mcp__s__echo"}, nil)
+	v, err := tl.DecodeResult(json.RawMessage(`[{"type":"text","text":"plain 42 output"}]`))
+	if err != nil {
+		t.Fatalf("DecodeResult: %v", err)
+	}
+	if s, ok := v.(string); !ok || s != "plain 42 output" {
+		t.Errorf("DecodeResult = %#v, want the raw wire text %q", v, "plain 42 output")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mode matrix — server mode × per-tool alwaysLoad
 // ---------------------------------------------------------------------------
@@ -841,5 +929,235 @@ func TestMCPTool_ModeMatrix(t *testing.T) {
 				t.Errorf("tool.IsCodeOnly = %v, want %v", got, tc.wantCodeOnly)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCPTool.Call — progress routing and metadata preservation
+// ---------------------------------------------------------------------------
+
+// Progress notifications from the server process must reach tctx.OnProgress
+// as formatted snapshot lines — and an update that formats to empty (no
+// message, no totals) must not surface at all. End-to-end over a real stdio
+// helper because the client-level progress routing only exists on
+// manager-built clients.
+func TestMCPTool_Call_ProgressUpdatesReachToolContext(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pids")
+	reg := newDeathHelperRegistry(t, pidFile, "serve")
+	waitDeathHelperPIDs(t, pidFile, 1)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__helper__progress",
+		OriginalName: "progress",
+		ServerName:   "helper",
+	}, reg)
+
+	var mu sync.Mutex
+	var updates []tool.ProgressUpdate
+	tctx := &tool.ToolUseContext{
+		OnProgress: func(u tool.ProgressUpdate) {
+			mu.Lock()
+			defer mu.Unlock()
+			updates = append(updates, u)
+		},
+	}
+	res, err := tl.Call(context.Background(), json.RawMessage(`{}`), tctx)
+	if err != nil {
+		t.Fatalf("progress tool call: %v", err)
+	}
+	if s, ok := res.Data.(string); !ok || s != "progress-done" {
+		t.Fatalf("progress tool result = %#v, want text %q", res.Data, "progress-done")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 1 {
+		t.Fatalf("progress updates delivered = %d, want exactly 1 (empty-formatted update must be dropped): %+v", len(updates), updates)
+	}
+	if !slices.Equal(updates[0].Lines, []string{"wired progress (1/2)"}) {
+		t.Errorf("progress update Lines = %q, want [\"wired progress (1/2)\"]", updates[0].Lines)
+	}
+}
+
+// A session that died mid-flight with no stored config: the death-retry
+// must surface both the original failure and the reconnect failure in one
+// error, so the caller can tell a dead server from an unreachable one.
+func TestMCPTool_Call_DeadSessionReconnectFailureSurfaces(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("srv", cs)
+
+	if err := cs.Session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__srv__echo",
+		OriginalName: "echo",
+		ServerName:   "srv",
+	}, registry)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err == nil {
+		t.Fatal("call against a dead session with no reconnect config must fail")
+	}
+	if !strings.Contains(err.Error(), "connection died") || !strings.Contains(err.Error(), "reconnect failed") {
+		t.Errorf("error must carry the dead connection and the failed reconnect, got: %v", err)
+	}
+	// The reconnect failure must stay wrapped — same chain contract as the
+	// not-found path, checked here on the death-retry branch.
+	inner := errors.Unwrap(err)
+	if inner == nil {
+		t.Fatalf("reconnect error is not in the wrap chain (Unwrap = nil): %v", err)
+	}
+	if !strings.Contains(inner.Error(), "not found in registry") {
+		t.Errorf("wrapped reconnect error = %q, want the registry's not-found error", inner.Error())
+	}
+	// The dead entry must not survive the failed retry: eviction is what
+	// routes every later call through reconnect instead of a dead session.
+	if conn, ok := registry.GetConnection("srv"); ok {
+		t.Errorf("registry still holds srv (state %q) after the dead-session retry — eviction never ran", conn.ConnType())
+	}
+}
+
+// A death-retry whose reconnect "succeeds" into a non-connected state (a
+// FailedServer from a broken spawn config) must surface the original death
+// plus the state it landed in — not a bare nil.
+func TestMCPTool_Call_DeadSessionReconnectReturnsFailedState(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(mcp.NewClientManager(mcp.TransportFactory{}, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConfigsForTest(map[string]mcp.ScopedMcpServerConfig{
+		"srv": {Config: &mcp.StdioConfig{Command: "/nonexistent-binary-xyz"}, Scope: mcp.ScopeUser},
+	})
+	registry.SetConnectionForTest("srv", cs)
+	if err := cs.Session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__srv__echo",
+		OriginalName: "echo",
+		ServerName:   "srv",
+	}, registry)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err == nil {
+		t.Fatal("call against a dead session whose respawn config is broken must fail")
+	}
+	if !strings.Contains(err.Error(), "connection died") || !strings.Contains(err.Error(), "reconnect returned state failed") {
+		t.Errorf("error must carry the death and the post-reconnect state, got: %v", err)
+	}
+}
+
+// Server-supplied result metadata must survive into the tool result's
+// MCPMeta — downstream consumers key resource hints off it.
+func TestMCPTool_Call_PreservesResultMeta(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo-meta",
+		OriginalName: "echo-meta",
+		ServerName:   "test-srv",
+	}, registry)
+
+	res, err := tl.Call(context.Background(), json.RawMessage(`{"text":"hello"}`), nil)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if res.MCPMeta == nil {
+		t.Fatal("result carries no MCPMeta — server _meta dropped on the floor")
+	}
+	if got, _ := res.MCPMeta.Meta["trail"].(string); got != "mk-9" {
+		t.Errorf("MCPMeta[trail] = %q, want %q", got, "mk-9")
+	}
+}
+
+// A tool-use context without an OnProgress sink must suppress the progress
+// channel entirely: no token is registered, the server emits nothing, and
+// the call completes through the plain path.
+func TestMCPTool_Call_ToolContextWithoutProgressSink(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pids")
+	reg := newDeathHelperRegistry(t, pidFile, "serve")
+	waitDeathHelperPIDs(t, pidFile, 1)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__helper__progress",
+		OriginalName: "progress",
+		ServerName:   "helper",
+	}, reg)
+
+	res, err := tl.Call(context.Background(), json.RawMessage(`{}`), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("progress tool call without a sink failed: %v", err)
+	}
+	if s, ok := res.Data.(string); !ok || s != "progress-done" {
+		t.Fatalf("progress tool result = %#v, want text %q", res.Data, "progress-done")
+	}
+}
+
+// SearchHint hands ToolSearch the curated hint verbatim — an empty return
+// would drop the tool from relevance scoring.
+func TestMCPTool_SearchHint(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{SearchHint: "fetch web pages"}, nil)
+	if got := tl.SearchHint(); got != "fetch web pages" {
+		t.Errorf("SearchHint() = %q, want %q", got, "fetch web pages")
+	}
+}
+
+// The in-flight counter must balance: after a call returns, the server's
+// slot is free again, so a config reload's drain does not wait on a call
+// that already finished.
+func TestMCPTool_Call_InFlightCounterBalances(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	if _, err := tl.Call(context.Background(), json.RawMessage(`{"text":"hi"}`), nil); err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	idle, remaining := registry.DrainServer("test-srv", 2*time.Second)
+	if !idle || remaining != 0 {
+		t.Errorf("DrainServer after a completed call = (idle=%v, remaining=%d), want (true, 0) — the in-flight slot leaked", idle, remaining)
+	}
+}
+
+// While a call is running, the server's in-flight slot must be held — a
+// reload that drains mid-call must see it and wait, not reap the server
+// out from under the live call.
+func TestMCPTool_Call_HoldsInFlightSlotDuringCall(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__slow",
+		OriginalName: "slow",
+		ServerName:   "test-srv",
+	}, registry)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tl.Call(context.Background(), json.RawMessage(`{"text":"late"}`), nil)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // REAL-TIME: land inside the slow call's window
+	idle, remaining := registry.DrainServer("test-srv", 50*time.Millisecond)
+	if idle || remaining != 1 {
+		t.Errorf("DrainServer during a running call = (idle=%v, remaining=%d), want (false, 1) — the in-flight slot is not held for the call's duration", idle, remaining)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("slow call failed: %v", err)
 	}
 }

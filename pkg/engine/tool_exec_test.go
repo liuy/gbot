@@ -116,6 +116,15 @@ func (d *recordingDispatcher) nextAsk(t *testing.T) types.QueryEvent {
 	}
 }
 
+// seededSessionAllowed returns a session cache with the given tools marked
+// already-allowed (the sync.Map replacement for map[string]bool{"X": true}).
+func seededSessionAllowed(sm *sync.Map, names ...string) *sync.Map {
+	for _, n := range names {
+		sm.Store(n, true)
+	}
+	return sm
+}
+
 func newToolExecEngine(rec *ctxRecordingTool, checker permission.PermissionChecker, disp *recordingDispatcher) *Engine {
 	eng := &Engine{
 		logger:             slog.Default(),
@@ -231,7 +240,7 @@ func TestToolExec_AskEventFields(t *testing.T) {
 	resultCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		r, e := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{"q":1}`), map[string]bool{}, &sync.Mutex{})
+		r, e := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{"q":1}`), &sync.Map{}, &sync.Mutex{})
 		if e != nil {
 			errCh <- e
 			return
@@ -306,7 +315,7 @@ func TestToolExec_AskRuleDetail(t *testing.T) {
 
 			errCh := make(chan error, 1)
 			go func() {
-				_, e := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{"q":1}`), map[string]bool{}, &sync.Mutex{})
+				_, e := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{"q":1}`), &sync.Map{}, &sync.Mutex{})
 				errCh <- e
 			}()
 			ask := disp.nextAsk(t).Ask
@@ -332,11 +341,11 @@ func TestToolExec_SessionCacheShortCircuit(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
-		allowed   map[string]bool
+		allowed   *sync.Map
 		wantAsked bool
 	}{
-		{name: "cached allow skips the ask", allowed: map[string]bool{"ask_tool": true}, wantAsked: false},
-		{name: "empty cache still asks", allowed: map[string]bool{}, wantAsked: true},
+		{name: "cached allow skips the ask", allowed: seededSessionAllowed(&sync.Map{}, "ask_tool"), wantAsked: false},
+		{name: "empty cache still asks", allowed: &sync.Map{}, wantAsked: true},
 		{name: "nil cache still asks", allowed: nil, wantAsked: true},
 	}
 	for _, tc := range cases {
@@ -400,7 +409,7 @@ func TestToolExec_AskMuHeldDuringAsk(t *testing.T) {
 		Action: permission.ActionAsk,
 	}}, disp)
 
-	if _, err := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{}`), map[string]bool{}, askMu); err != nil {
+	if _, err := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{}`), &sync.Map{}, askMu); err != nil {
 		t.Fatalf("ExecuteTool: %v", err)
 	}
 	select {
@@ -459,7 +468,7 @@ func TestToolExec_CachedAllowDoesNotTakeAskMutex(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, e := eng.ExecuteTool(context.Background(), "ask_tool", json.RawMessage(`{}`),
-			map[string]bool{"ask_tool": true}, askMu)
+			seededSessionAllowed(&sync.Map{}, "ask_tool"), askMu)
 		done <- e
 	}()
 	select {

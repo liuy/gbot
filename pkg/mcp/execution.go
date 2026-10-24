@@ -68,6 +68,24 @@ func unregisterProgress(token string) {
 	progressRegistry.Delete(token)
 }
 
+// progressDrainGrace bounds how long a finished call keeps its progress token
+// registered. The go-sdk delivers notifications on goroutines spawned by its
+// handleAsync loop, which can run after the CallTool response has already
+// unblocked the caller — unregistering at return silently drops the last
+// notification(s). The window only covers goroutine scheduling skew (µs…ms),
+// so this constant sits far above what it needs; it is a pure tail on
+// progress-enabled calls, not a wait on dispatch completion.
+const progressDrainGrace = 50 * time.Millisecond
+
+// drainProgress holds a token's registration open for the grace window so
+// in-flight SDK dispatch goroutines can still deliver. Strictly time-bounded:
+// a consumer callback that never returns must not be able to deadlock the
+// caller (the SDK serializes dispatches, so one stuck callback would
+// otherwise park every later notification behind it).
+func drainProgress(token string) {
+	time.Sleep(progressDrainGrace)
+}
+
 // dispatchProgress looks up a progress token and calls the registered callback.
 // Returns false if the token is not found (e.g., already unregistered after CallTool returned).
 func dispatchProgress(tokenStr string, p MCPProgress) bool {
@@ -159,8 +177,14 @@ type MCPToolCallResult struct {
 // CallMCPTool executes a tool on a connected MCP server with timeout and progress.
 // Source: client.ts:3029-3245
 func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
-	if params.Server == nil || params.Server.Session == nil {
+	if params.Server == nil {
 		return nil, fmt.Errorf("mcp: server not connected")
+	}
+	if params.Server.Session == nil {
+		// Reachable when mcp_tool's type-assert branch is skipped (a
+		// *ConnectedServer with a dead session) — the name is the only
+		// attribution the caller gets.
+		return nil, fmt.Errorf("mcp: server %q not connected", params.Server.Name)
 	}
 
 	timeoutMs := GetToolTimeoutMs()
@@ -184,7 +208,13 @@ func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallRes
 		}
 		token := hex.EncodeToString(tokenBytes)
 		registerProgress(token, params.OnProgress)
-		defer unregisterProgress(token)
+		defer func() {
+			// Drain before unregister: see progressDrainGrace — the SDK's
+			// dispatch goroutines may still be holding this token's last
+			// notifications when CallTool returns.
+			drainProgress(token)
+			unregisterProgress(token)
+		}()
 		callParams.SetProgressToken(token)
 	}
 

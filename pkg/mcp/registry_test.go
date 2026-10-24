@@ -1970,10 +1970,7 @@ func TestConnectAgentServers_EmptySpecs(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
 	defer r.Close()
 
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", nil)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", nil)
 	if handle != nil {
 		t.Error("expected nil handle for empty specs")
 	}
@@ -2000,10 +1997,7 @@ func TestConnectAgentServers_StringRefExisting(t *testing.T) {
 
 	// Connect using string ref
 	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle == nil {
 		t.Fatal("expected non-nil handle")
 	}
@@ -2027,10 +2021,7 @@ func TestConnectAgentServers_StringRefNonExistent(t *testing.T) {
 	defer r.Close()
 
 	rawSpecs := []json.RawMessage{[]byte(`"nonexistent"`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	// No tools found, handle should be nil
 	if handle != nil {
 		t.Error("expected nil handle when no servers resolve")
@@ -2043,10 +2034,7 @@ func TestConnectAgentServers_InvalidSpec(t *testing.T) {
 
 	// Spec that's neither a valid string ref nor a valid server config
 	rawSpecs := []json.RawMessage{[]byte(`123`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle != nil {
 		t.Error("expected nil handle for invalid spec")
 	}
@@ -2072,10 +2060,7 @@ func TestConnectAgentServers_CleanupIdempotent(t *testing.T) {
 	r.mu.Unlock()
 
 	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle == nil {
 		t.Fatal("expected non-nil handle")
 	}
@@ -2109,10 +2094,7 @@ func TestConnectAgentServers_CleanupDisconnectsNewConnections(t *testing.T) {
 
 	// Use string ref only — no new connections created, cleanup should be no-op
 	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle == nil {
 		t.Fatal("expected non-nil handle")
 	}
@@ -2145,10 +2127,7 @@ func TestConnectAgentServers_InlineConfigConnects(t *testing.T) {
 	// Inline config (not string ref)
 	inlineCfg := `{"command": "test-cmd", "args": ["--test"]}`
 	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle == nil {
 		t.Fatal("expected non-nil handle")
 	}
@@ -2183,6 +2162,42 @@ func TestConnectAgentServers_InlineConfigConnects(t *testing.T) {
 	}
 }
 
+// TestConnectAgentServers_PartialFailureSwallowedNoErrorSignature pins the
+// TS-aligned error contract: initializeAgentMcpServers (runAgent.ts) never
+// throws — a server that fails to connect is logged and skipped, the agent
+// runs on whatever connected. The Go signature therefore carries no error
+// return; a partial failure yields a handle with only the survivors' tools.
+func TestConnectAgentServers_PartialFailureSwallowedNoErrorSignature(t *testing.T) {
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer r.Close()
+
+	// Second inline server fails; first connects with a live tool.
+	srv, tr := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "live_tool", Description: "live"}, noopToolHandler)
+	p.mu.Lock()
+	p.transports["agent-swallow-agent-0"] = tr
+	p.failConn["agent-swallow-agent-1"] = true
+	p.mu.Unlock()
+
+	rawSpecs := []json.RawMessage{
+		json.RawMessage(`{"command": "ok-cmd"}`),
+		json.RawMessage(`{"command": "dead-cmd"}`),
+	}
+	handle := r.ConnectAgentServers(context.Background(), "swallow-agent", rawSpecs)
+	if handle == nil {
+		t.Fatal("expected a handle carrying the surviving server's tools")
+	}
+	defer func() { _ = handle.Cleanup() }()
+	if _, ok := handle.Tools()["mcp__agent-swallow-agent-0__live_tool"]; !ok {
+		t.Error("surviving server's tool missing from handle")
+	}
+	if _, ok := r.GetConnection("agent-swallow-agent-1"); ok {
+		t.Error("failed server left a residual connection")
+	}
+}
+
 func TestConnectAgentServers_InlineConnectFails(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
@@ -2196,11 +2211,8 @@ func TestConnectAgentServers_InlineConnectFails(t *testing.T) {
 
 	inlineCfg := `{"command": "test-cmd"}`
 	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	// Should not panic; returns nil handle (all servers failed)
-	if err != nil {
-		t.Errorf("expected nil error on partial failure, got: %v", err)
-	}
 	if handle != nil {
 		t.Error("expected nil handle when all inline servers fail")
 	}
@@ -2248,10 +2260,7 @@ func TestConnectAgentServers_MixedRefsAndInline(t *testing.T) {
 		[]byte(`"global-srv"`),
 		[]byte(`{"command": "test-cmd"}`),
 	}
-	handle, err := r.ConnectAgentServers(context.Background(), "mixed-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "mixed-agent", rawSpecs)
 	if handle == nil {
 		t.Fatal("expected non-nil handle")
 	}
@@ -2297,10 +2306,7 @@ func TestConnectAgentServers_StringRefNotConnectedServer(t *testing.T) {
 	r.mu.Unlock()
 
 	rawSpecs := []json.RawMessage{[]byte(`"failed-srv"`)}
-	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
 	if handle != nil {
 		t.Error("expected nil handle when ref points to non-connected server")
 	}
@@ -2321,10 +2327,7 @@ func TestConnectAgentServers_InlineConnectsNoTools(t *testing.T) {
 
 	inlineCfg := `{"command": "test-cmd"}`
 	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
-	handle, err := r.ConnectAgentServers(context.Background(), "notools-agent", rawSpecs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	handle := r.ConnectAgentServers(context.Background(), "notools-agent", rawSpecs)
 	// Connected but no tools — should still return handle (has cleanup)
 	if handle == nil {
 		t.Fatal("expected non-nil handle even with no tools (has cleanup)")

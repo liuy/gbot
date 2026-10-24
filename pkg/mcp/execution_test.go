@@ -46,8 +46,11 @@ func TestCallMCPTool_NilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	if !strings.Contains(err.Error(), "not connected") {
-		t.Errorf("error should mention 'not connected', got: %v", err)
+	// The error must carry the server name: the mcp_tool type-assert branch is
+	// skipped for a *ConnectedServer with a dead session, so this is the only
+	// place the failure can be attributed.
+	if !strings.Contains(err.Error(), "not connected") || !strings.Contains(err.Error(), `"test"`) {
+		t.Errorf("error should name the server and say 'not connected', got: %v", err)
 	}
 }
 
@@ -2103,6 +2106,114 @@ func TestCallMCPTool_ProgressNotifications(t *testing.T) {
 	}
 	if calls[0] != "step 1 (1/1)" {
 		t.Errorf("progress = %q, want %q", calls[0], "step 1 (1/1)")
+	}
+}
+
+// TestCallMCPTool_LastProgressNotDroppedAfterReturn pins the drain contract:
+// a notification the server sent before the tool result must still reach
+// OnProgress even though the SDK dispatches it on a goroutine that runs after
+// the response has unblocked CallTool. The test parks inside the first
+// notification's callback: the SDK's handleAsync chain serializes dispatches
+// (each handler must release before the next is spawned), so the last
+// notification stays queued while the response travels on and CallTool
+// returns. Releasing after the return then forces the late dispatch.
+func TestCallMCPTool_LastProgressNotDroppedAfterReturn(t *testing.T) {
+	server, t2 := setupInMemoryServer(t)
+
+	// Two notifications back-to-back, then the result immediately — no
+	// server-side pacing to hide the client-side dispatch race.
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "late_progress",
+		Description: "emit two notifications then return",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		if token := req.Params.GetProgressToken(); token != nil {
+			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: token, Progress: 1, Total: 2, Message: "first",
+			})
+			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: token, Progress: 2, Total: 2, Message: "last",
+			})
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
+		}, nil, nil
+	})
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
+			token, ok := req.Params.ProgressToken.(string)
+			if !ok {
+				return
+			}
+			dispatchProgress(token, MCPProgress{
+				Progress:        req.Params.Progress,
+				Total:           req.Params.Total,
+				ProgressMessage: req.Params.Message,
+			})
+		},
+	})
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	conn := &ConnectedServer{
+		Name:    "test-server",
+		Session: session,
+		Config:  ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
+	}
+
+	firstSeen := make(chan struct{})
+	lastSeen := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	resCh := make(chan *MCPToolCallResult, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		res, err := CallMCPTool(context.Background(), CallMCPToolParams{
+			Server:   conn,
+			ToolName: "late_progress",
+			Args:     map[string]any{},
+			OnProgress: func(p MCPProgress) {
+				switch p.ProgressMessage {
+				case "first":
+					close(firstSeen)
+					<-releaseFirst
+				case "last":
+					close(lastSeen)
+				}
+			},
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res
+	}()
+
+	<-firstSeen
+	// Let the result overtake the parked dispatch: in-memory transit plus the
+	// call return are microseconds against this REAL-TIME slack, so by now
+	// CallTool has returned and the unfixed code has already unregistered.
+	// REAL-TIME: sequences the SDK's reader/dispatch goroutines, which synctest cannot freeze
+	time.Sleep(10 * time.Millisecond)
+	close(releaseFirst)
+
+	select {
+	case <-lastSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("last progress notification dropped after CallTool returned — token unregistered before the in-flight dispatch")
+	}
+	select {
+	case res := <-resCh:
+		if len(res.Content) != 1 {
+			t.Errorf("content blocks = %d, want 1", len(res.Content))
+		}
+	case err := <-errCh:
+		t.Fatalf("CallMCPTool: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("CallMCPTool did not return after the drain")
 	}
 }
 

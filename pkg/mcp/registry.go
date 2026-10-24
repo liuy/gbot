@@ -614,10 +614,14 @@ func (h *AgentServerHandle) Cleanup() error {
 // String refs reuse existing global clients (no cleanup needed).
 // Inline defs create new connections that must be cleaned up via handle.Cleanup().
 //
+// No error return: initializeAgentMcpServers (runAgent.ts) never throws — a
+// server that fails to connect is logged and skipped, and the agent runs on
+// whatever connected. Failures surface as a missing tool set, not an error.
+//
 // Source: runAgent.ts:95-218 — initializeAgentMcpServers
-func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*AgentServerHandle, error) {
+func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawSpecs []json.RawMessage) *AgentServerHandle {
 	if len(rawSpecs) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	handle := &AgentServerHandle{
@@ -768,10 +772,10 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 	}
 
 	if len(handle.tools) == 0 && handle.cleanup == nil {
-		return nil, nil
+		return nil
 	}
 
-	return handle, nil
+	return handle
 }
 
 // Close performs a two-phase shutdown of all MCP server connections.

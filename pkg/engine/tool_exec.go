@@ -14,7 +14,10 @@ import (
 
 // ExecuteTool runs a single tool with full permission checking.
 // Mirrors StreamingToolExecutor three-phase logic; sessionAllowed/askMu are caller-owned state.
-func (e *Engine) ExecuteTool(ctx context.Context, name string, args json.RawMessage, sessionAllowed map[string]bool, askMu *sync.Mutex) (string, error) {
+// sessionAllowed is a sync.Map keyed by tool name: reads must stay off askMu
+// (an in-flight ask holds it for the whole user-answer window) while still
+// being race-free against the AllowAlways write.
+func (e *Engine) ExecuteTool(ctx context.Context, name string, args json.RawMessage, sessionAllowed *sync.Map, askMu *sync.Mutex) (string, error) {
 	toolsMap := e.Tools()
 	t, ok := toolsMap[name]
 	if !ok {
@@ -90,19 +93,29 @@ func (e *Engine) askAndCheckPermission(
 	name string,
 	args json.RawMessage,
 	decision permission.Decision,
-	sessionAllowed map[string]bool,
+	sessionAllowed *sync.Map,
 	askMu *sync.Mutex,
 ) error {
 	cacheKey := name
-	if sessionAllowed != nil && sessionAllowed[cacheKey] {
-		return nil // already allowed
+	// The fast path must not touch askMu: an open permission ask holds it for
+	// the whole user-answer window, which would serialise already-allowed
+	// calls behind it (pinned by TestToolExec_CachedAllowDoesNotTakeAskMutex).
+	// sync.Map's Load never waits on Store, so this lock-free read cannot
+	// race the allow-always write the way the old map[string]bool fast path
+	// did (concurrent map read/write is a process-fatal).
+	if sessionAllowed != nil {
+		if _, ok := sessionAllowed.Load(cacheKey); ok {
+			return nil // already allowed
+		}
 	}
 
 	askMu.Lock()
 	defer askMu.Unlock()
 
-	if sessionAllowed != nil && sessionAllowed[cacheKey] {
-		return nil
+	if sessionAllowed != nil {
+		if _, ok := sessionAllowed.Load(cacheKey); ok {
+			return nil
+		}
 	}
 
 	ruleDetail := ""
@@ -136,7 +149,7 @@ func (e *Engine) askAndCheckPermission(
 			if sessionAllowed == nil {
 				return nil
 			}
-			sessionAllowed[cacheKey] = true
+			sessionAllowed.Store(cacheKey, true)
 		}
 		return nil
 	case <-ctx.Done():

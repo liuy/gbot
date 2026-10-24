@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -1318,5 +1319,290 @@ func TestEngineHallucinatedCodeTool_Rejected(t *testing.T) {
 				t.Fatalf("error text should mention 'No such tool available', got: %q", parsed[0].Text)
 			}
 		}()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Partition-scope and parser-robustness pins
+// ---------------------------------------------------------------------------
+
+// disabledPlainTool builds a non-deferred tool whose IsEnabled reports false.
+func disabledPlainTool(name string) tool.Tool {
+	return tool.BuildTool(tool.ToolDef{
+		Name_:        name,
+		IsEnabled_:   func() bool { return false },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) { return name + " disabled", nil },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
+	})
+}
+
+// A disabled tool leading toolOrder must neither terminate the partition scan
+// nor leak into either partition: the tools after it still partition normally.
+func TestFilterToolsForRequest_DisabledStopsNeitherScanNorPartition(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"DisabledPlain": disabledPlainTool("DisabledPlain"),
+		"Read":          tsStubTool("Read"),
+		"DeferredA":     deferredStubTool("DeferredA"),
+		"DeferredB":     deferredStubTool("DeferredB"),
+		"DeferredC":     deferredStubTool("DeferredC"),
+	}
+	state := newToolSearchState()
+	order := []string{"DisabledPlain", "Read", "DeferredA", "DeferredB", "DeferredC"}
+
+	active, deferred, activated := FilterToolsForRequest(tools, state, order)
+	if !activated {
+		t.Fatal("expected filtering activated (deferred tools present)")
+	}
+	activeNames := tsExtractToolNames(active)
+	if len(activeNames) != 1 || activeNames[0] != "Read" {
+		t.Errorf("active = %v, want exactly [Read] (disabled excluded, scan continues past it)", activeNames)
+	}
+	deferredNames := tsExtractToolNames(deferred)
+	if len(deferredNames) != 3 {
+		t.Errorf("deferred = %v, want all 3 deferred (scan continues past the disabled entry)", deferredNames)
+	}
+}
+
+// With neither SearchHint nor Description the announcement line is the bare
+// name; the full format is pinned with string equality so neither the
+// name write nor the line break can drift.
+func TestDeferredToolsAnnouncement_NameOnlyLineExact(t *testing.T) {
+	bare := tool.BuildTool(tool.ToolDef{
+		Name_:              "Bare",
+		ShouldDefer_:       true,
+		InputSchema_:       func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_:       func(json.RawMessage) (string, error) { return "", nil },
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+	})
+	want := "<available-deferred-tools>\nBare\n</available-deferred-tools>"
+	if got := DeferredToolsAnnouncement([]tool.Tool{bare}); got != want {
+		t.Errorf("name-only announcement = %q, want %q", got, want)
+	}
+}
+
+// A Description that fails must not leak its partial text into the
+// announcement: the tool degrades to the bare-name line.
+func TestDeferredToolsAnnouncement_FailingDescriptionExcluded(t *testing.T) {
+	failing := tool.BuildTool(tool.ToolDef{
+		Name_:        "Failing",
+		ShouldDefer_: true,
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) {
+			return "partial hint text", errors.New("description unavailable")
+		},
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
+	})
+	want := "<available-deferred-tools>\nFailing\n</available-deferred-tools>"
+	if got := DeferredToolsAnnouncement([]tool.Tool{failing}); got != want {
+		t.Errorf("announcement with failing Description = %q, want %q", got, want)
+	}
+}
+
+// The direct map path must not depend on the whole map serializing: live
+// values under unrelated keys are invisible to name extraction.
+func TestExtractDiscoveredToolNames_DirectMapWithoutMarshalableFields(t *testing.T) {
+	data := map[string]any{
+		"tools": []any{"DeferredA"},
+		"ctx":   make(chan int),
+	}
+	names := ExtractDiscoveredToolNamesFromResult(data)
+	if len(names) != 1 || names[0] != "DeferredA" {
+		t.Errorf("names = %v, want [DeferredA] from the direct structured path", names)
+	}
+}
+
+// Fragment edge cases: an empty fragment is skipped without ending the scan,
+// a nameless fragment contributes no entry, and a degenerate fragment must
+// not disturb the slicing around it.
+func TestExtractToolNamesFromString_FragmentEdgeCases(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			name: "empty fragment then named block",
+			in:   `<function></function><function>{"name":"Second"}</function>`,
+			want: []string{"Second"},
+		},
+		{
+			name: "valid fragment without name",
+			in:   `<function>{"description":"no name"}</function>`,
+			want: nil,
+		},
+		{
+			name: "empty object fragment",
+			in:   `<function>{}</function>`,
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		got := extractToolNamesFromString(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: names = %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: names[%d] = %q, want %q", tc.name, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+// Only the first key yielding names is honored, and an empty array under an
+// earlier key does not stop the scan of later keys.
+func TestExtractToolNamesFromMap_FirstKeyWinsEmptyArrayContinues(t *testing.T) {
+	both := map[string]any{"tools": []any{"FromTools"}, "names": []any{"FromNames"}}
+	if got := extractToolNamesFromMap(both); len(got) != 1 || got[0] != "FromTools" {
+		t.Errorf("names = %v, want [FromTools] (first yielding key wins)", got)
+	}
+	emptyThenNames := map[string]any{"tools": []any{}, "names": []any{"FromNames"}}
+	if got := extractToolNamesFromMap(emptyThenNames); len(got) != 1 || got[0] != "FromNames" {
+		t.Errorf("names = %v, want [FromNames] (empty earlier array must not stop the scan)", got)
+	}
+}
+
+// A single-entry structured result must come back intact: the return gate is
+// existence of names, not a minimum count.
+func TestExtractToolNamesFromString_SingleNameStructured(t *testing.T) {
+	names := extractToolNamesFromString(`{"tools": ["Only"]}`)
+	if len(names) != 1 || names[0] != "Only" {
+		t.Errorf("names = %v, want [Only]", names)
+	}
+}
+
+// Restore scoping: discoveries come only from user-role tool results and
+// system-role compact boundaries. Assistant echoes, boundary text in the
+// wrong role or block type, and non-boundary subtypes must all be inert.
+func TestRestoreToolSearchState_Scoping(t *testing.T) {
+	boundary := `{"subtype":"compact_boundary","preCompactDiscoveredTools":["FromBoundary"]}`
+	resultJSON, err := json.Marshal(`<function>{"name":"FromToolResult"}</function>`)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	rawResult := json.RawMessage(`<function>{"name":"FromRawResult"}</function>`)
+	nonBoundary := `{"subtype":"autosummary","preCompactDiscoveredTools":["FromNonBoundary"]}`
+
+	// Assistant-echoed tool results are transcript noise, not discoveries.
+	s := newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, Content: resultJSON}},
+	}}, s)
+	if s.IsDiscovered("FromToolResult") {
+		t.Error("assistant-role tool result must not restore discoveries")
+	}
+
+	// Boundary metadata only counts in system messages.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(boundary)},
+	}}, s)
+	if s.IsDiscovered("FromBoundary") {
+		t.Error("compact boundary in a user message must not restore discoveries")
+	}
+
+	// A non-text block neither contributes nor terminates the scan of the
+	// later text blocks in the same message.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role: types.RoleSystem,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult},
+			types.NewTextBlock(boundary),
+		},
+	}}, s)
+	if !s.IsDiscovered("FromBoundary") {
+		t.Error("a non-text block must not stop the boundary scan of later blocks")
+	}
+
+	// Boundary JSON in a non-text block's Text field is not a boundary.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleSystem,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, Text: boundary}},
+	}}, s)
+	if s.IsDiscovered("FromBoundary") {
+		t.Error("boundary JSON in a non-text block must not restore discoveries")
+	}
+
+	// Only compact_boundary subtypes restore their saved set.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleSystem,
+		Content: []types.ContentBlock{types.NewTextBlock(nonBoundary)},
+	}}, s)
+	if s.IsDiscovered("FromNonBoundary") {
+		t.Error("non-boundary subtype must not restore its discovered list")
+	}
+
+	// Function blocks only count inside tool_result content: a text block
+	// carrying raw content bytes is not a tool result.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{{Type: types.ContentTypeText, Content: rawResult}},
+	}}, s)
+	if s.IsDiscovered("FromRawResult") {
+		t.Error("function blocks in a text block's content must not restore discoveries")
+	}
+
+	// Tool result content that is not a JSON string (raw bytes) is still
+	// scanned through the raw fallback.
+	s = newToolSearchState()
+	RestoreToolSearchState([]types.Message{{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, Content: rawResult}},
+	}}, s)
+	if !s.IsDiscovered("FromRawResult") {
+		t.Error("raw (non-JSON-string) tool result content must be scanned via the fallback")
+	}
+}
+
+// Map entries whose name is empty or absent contribute nothing — not even an
+// empty-string placeholder.
+func TestExtractToolNamesFromMap_EmptyNameEntriesSkipped(t *testing.T) {
+	data := map[string]any{"tools": []any{
+		map[string]any{"name": ""},
+		map[string]any{"description": "no name field"},
+	}}
+	if got := extractToolNamesFromMap(data); len(got) != 0 {
+		t.Errorf("names = %v, want none (empty-name and nameless entries are skipped)", got)
+	}
+}
+
+// The no-deferred walk must also continue past disabled entries: a disabled
+// tool leading toolOrder cannot truncate the active set.
+func TestFilterToolsForRequest_DisabledLeadingNoDeferred(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"DisabledPlain": disabledPlainTool("DisabledPlain"),
+		"Read":          tsStubTool("Read"),
+		"Edit":          tsStubTool("Edit"),
+	}
+	state := newToolSearchState()
+	order := []string{"DisabledPlain", "Read", "Edit"}
+
+	active, deferred, activated := FilterToolsForRequest(tools, state, order)
+	if activated {
+		t.Fatal("expected no filtering without deferred tools")
+	}
+	activeNames := tsExtractToolNames(active)
+	if len(activeNames) != 2 || activeNames[0] != "Read" || activeNames[1] != "Edit" {
+		t.Errorf("active = %v, want [Read Edit] (disabled leading entry skipped, scan continues)", activeNames)
+	}
+	if len(deferred) != 0 {
+		t.Errorf("deferred = %v, want none", tsExtractToolNames(deferred))
 	}
 }

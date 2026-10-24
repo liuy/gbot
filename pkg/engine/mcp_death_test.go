@@ -58,6 +58,25 @@ func mcpDeathHelper() {
 				Content: []sdk.Content{&sdk.TextContent{Text: fmt.Sprintf("pong:%d", os.Getpid())}},
 			}, nil
 		})
+	// progress: one notification that formats to a human line and one that
+	// formats to empty — the client-side formatting contract needs both
+	// shapes from a real server process. The pause before returning keeps
+	// the notifications inside the client's progress-token registration
+	// window: the SDK may dispatch them on a goroutine that would otherwise
+	// race the CallTool response and its token unregister.
+	srv.AddTool(&sdk.Tool{Name: "progress", Description: "emit progress then finish", InputSchema: map[string]any{"type": "object"}},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			if token := req.Params.GetProgressToken(); token != nil {
+				_ = req.Session.NotifyProgress(ctx, &sdk.ProgressNotificationParams{
+					ProgressToken: token, Message: "wired progress", Progress: 1, Total: 2,
+				})
+				_ = req.Session.NotifyProgress(ctx, &sdk.ProgressNotificationParams{ProgressToken: token})
+				time.Sleep(150 * time.Millisecond) // REAL-TIME: hold the call open for notification dispatch
+			}
+			return &sdk.CallToolResult{
+				Content: []sdk.Content{&sdk.TextContent{Text: "progress-done"}},
+			}, nil
+		})
 	ss, err := srv.Connect(context.Background(), &sdk.StdioTransport{}, nil)
 	if err != nil {
 		os.Exit(1)
@@ -299,6 +318,15 @@ func TestCallNonDeadErrorDoesNotRetry(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "connection died") {
 		t.Errorf("ordinary tool error must not be wrapped as connection-died: %v", err)
+	}
+	// An ordinary tool error must leave the connection in place — evicting
+	// on non-transport failures would drop a healthy server from the table.
+	conn, ok := registry.GetConnection("echo-srv")
+	if !ok {
+		t.Fatal("registry lost the echo-srv entry after an ordinary tool error — eviction must be reserved for dead connections")
+	}
+	if conn.ConnType() != "connected" {
+		t.Errorf("echo-srv state after ordinary tool error = %q, want connected", conn.ConnType())
 	}
 }
 

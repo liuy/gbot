@@ -3,13 +3,19 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -20,6 +26,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/task"
+	webtool "github.com/liuy/gbot/pkg/tool/web"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -43,6 +50,7 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 		"Agent", "Job", "Message",
 		"Task",
 		"Skill", "Repl",
+		"Web", "Lsp", "Computer",
 	}
 	toolMap := refs.Reg.ToolMap()
 	for _, name := range expectedTools {
@@ -243,6 +251,9 @@ func TestWireEngine_BashRegOnNotifyWired(t *testing.T) {
 	}
 	if pending[0].Value != notify.FormatXML() {
 		t.Errorf("enqueued Value = %q, want the FormatXML bytes %q", pending[0].Value, notify.FormatXML())
+	}
+	if pending[0].Timestamp.IsZero() {
+		t.Error("enqueued Timestamp is zero — the notify hook must stamp arrival time so queue consumers can order items")
 	}
 }
 
@@ -907,10 +918,17 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 	if mcpFn == nil {
 		t.Fatal("mcpConnect not set")
 	}
-	// Call the closure — it will try ConnectAgentServers with our inline spec.
-	// The MCP client manager in test mode returns an error or empty result.
-	// We just verify the closure executes without panic.
-	_, _ = mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
+	// Call the closure with an inline spec whose command cannot connect:
+	// ConnectAgentServers swallows the failure (TS initializeAgentMcpServers
+	// never throws), so the closure must return a nil result and a nil error —
+	// the forked agent's tool set is simply missing that server's tools.
+	res, err := mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
+	if err != nil {
+		t.Errorf("connect failure must not surface as an error: %v", err)
+	}
+	if res != nil {
+		t.Errorf("result = %+v, want nil (dead server's tools are absent, not errored)", res)
+	}
 }
 
 // -----------------------------------------------------------------------
@@ -1494,5 +1512,259 @@ func TestWireEngine_SubPrivateTableNotManagerReachable(t *testing.T) {
 	rootID := spawnHoldingAgent(t, rootRefs.Agent.Registry())
 	if _, ok := mgr.BgAgent(rootID); !ok {
 		t.Errorf("BgAgent(root id %q) not found: the root engine is in the manager, its table must resolve", rootID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config-driven web tool wiring
+// ---------------------------------------------------------------------------
+
+// Web search keys from config must reach the registered Web tool: the
+// provider list embedded in the schema is the observable of the
+// WithAPIKeys wiring. One key exactly — a threshold-off wiring bug that
+// drops "the single keyed provider" must be visible.
+func TestCreateTools_CfgWebKeysReachWebTool(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+		Cfg:        &config.Config{Web: map[string]string{"tavily": "tk"}},
+	}
+
+	refs := CreateTools(deps, tl)
+
+	web, ok := refs.Reg.ToolMap()["Web"]
+	if !ok {
+		t.Fatal("Web tool not registered")
+	}
+	schema := string(web.InputSchema())
+	if !strings.Contains(schema, "auto, tavily, duckduckgo") {
+		t.Errorf("Web schema provider list = %q, want tavily registered alongside the keyless duckduckgo fallback", schema)
+	}
+}
+
+// The proxy from config must be the client the Web tool fetches through:
+// a fetch of an unresolvable host can only succeed when the request rides
+// the proxy (the proxy answers on the proxy's own address, no target DNS).
+func TestCreateTools_CfgProxyReachesWebFetch(t *testing.T) {
+	t.Parallel()
+	var proxied int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&proxied, 1)
+		_, _ = io.WriteString(w, "fetched through the configured proxy")
+	}))
+	defer proxy.Close()
+
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+		Cfg:        &config.Config{Proxy: proxy.URL},
+	}
+
+	refs := CreateTools(deps, tl)
+	web, ok := refs.Reg.ToolMap()["Web"]
+	if !ok {
+		t.Fatal("Web tool not registered")
+	}
+
+	res, err := web.Call(context.Background(),
+		json.RawMessage(`{"query":"http://no-such-host.internal/page"}`), nil)
+	if err != nil {
+		t.Fatalf("Web fetch through proxy failed (client not wired to config proxy?): %v", err)
+	}
+	out, ok := res.Data.(*webtool.Output)
+	if !ok {
+		t.Fatalf("Web fetch data = %T, want *webtool.Output", res.Data)
+	}
+	if !strings.Contains(out.Content, "through the configured proxy") {
+		t.Errorf("Web fetch content = %q, want the proxy's response body", out.Content)
+	}
+	if n := atomic.LoadInt32(&proxied); n < 1 {
+		t.Errorf("proxy served %d requests, want >= 1 (fetch bypassed the configured proxy)", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WireEngine MCP connect closure — success and empty-spec contracts
+// ---------------------------------------------------------------------------
+
+// A string ref to a connected server must come back as MCP tool adapters:
+// the closure adapts every discovered tool of the handle, and the result
+// carries a callable (no-op for pure refs) cleanup.
+func TestWireEngine_McpConnectBuildsAdaptersFromRefs(t *testing.T) {
+	t.Parallel()
+	cs := setupInMemoryEchoServer(t)
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.SetConnectionForTest("srv-a", cs)
+	registry.SetToolsForTest([]mcp.DiscoveredTool{
+		{
+			Name: "mcp__srv-a__echo", OriginalName: "echo", ServerName: "srv-a",
+			Description: "echo", InputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+		{
+			Name: "mcp__srv-a__other", OriginalName: "other", ServerName: "srv-a",
+			Description: "other", InputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	})
+
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+		McpReg:     registry,
+	}
+	refs := CreateTools(deps, tl)
+	WireEngine(nil, refs, deps)
+
+	mcpFn := refs.Agent.McpConnectFn()
+	if mcpFn == nil {
+		t.Fatal("mcpConnect not set after WireEngine with non-nil McpReg")
+	}
+
+	res, err := mcpFn(context.Background(), "agent-a", []json.RawMessage{json.RawMessage(`"srv-a"`)})
+	if err != nil {
+		t.Fatalf("string-ref connect: %v", err)
+	}
+	if res == nil {
+		t.Fatal("string-ref connect returned a nil result — the handle guard dropped a valid handle")
+	}
+	if len(res.Tools) != 2 {
+		t.Fatalf("result carries %d tools, want 2 (every discovered tool of the handle)", len(res.Tools))
+	}
+	mt, ok := res.Tools["mcp__srv-a__echo"].(*MCPTool)
+	if !ok {
+		t.Fatalf("tool for mcp__srv-a__echo = %T, want *MCPTool", res.Tools["mcp__srv-a__echo"])
+	}
+	if mt.Name() != "mcp__srv-a__echo" {
+		t.Errorf("adapter Name() = %q, want mcp__srv-a__echo", mt.Name())
+	}
+	if res.Cleanup == nil {
+		t.Fatal("result carries no Cleanup — string refs must still hand back a callable (no-op) cleanup")
+	}
+	if err := res.Cleanup(); err != nil {
+		t.Errorf("Cleanup() = %v, want nil for a pure string-ref connect", err)
+	}
+
+	// No specs = nothing to connect: the closure must return (nil, nil)
+	// rather than dereference an absent handle.
+	emptyRes, emptyErr := mcpFn(context.Background(), "agent-a", nil)
+	if emptyRes != nil || emptyErr != nil {
+		t.Errorf("empty-spec connect = (%v, %v), want (nil, nil)", emptyRes, emptyErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WireEngine REPL tool lister — description error handling
+// ---------------------------------------------------------------------------
+
+// The REPL inventory must blank a description whose lookup errored (the
+// JS side would otherwise surface stale text), while a healthy
+// description passes through to ALL_TOOLS verbatim.
+func TestWireEngine_REPLToolListerBlanksFailedDescriptions(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	refs := CreateTools(deps, tl)
+
+	bad := &mockTool{
+		name:    "DescErr",
+		enabled: true,
+		descFn: func(json.RawMessage) (string, error) {
+			return "stale text", errors.New("description lookup failed")
+		},
+	}
+	good := &mockTool{name: "Plain", enabled: true}
+	eng := New(&Params{
+		Provider: &mockProvider{},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"DescErr": bad, "Plain": good}
+		},
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: &mockDispatcher{},
+	})
+	defer eng.Close()
+
+	WireEngine(eng, refs, deps)
+
+	replInput, _ := json.Marshal(map[string]any{
+		"code": `const b = ALL_TOOLS.find(t => t.name === "DescErr");` +
+			`const g = ALL_TOOLS.find(t => t.name === "Plain");` +
+			`console.log("B:" + (b ? b.description : "<missing>"));` +
+			`console.log("G:" + (g ? g.description : "<missing>"));`,
+		"session_id": "lister-desc-session",
+	})
+	res, err := refs.REPL.Call(context.Background(), replInput, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "lister-desc-session"},
+	})
+	if err != nil {
+		t.Fatalf("REPL.Call failed: %v", err)
+	}
+	blocks := refs.REPL.FormatWireBlocks(res.Data)
+	if len(blocks) != 1 {
+		t.Fatalf("len(blocks) = %d, want 1 text block", len(blocks))
+	}
+	if want := "B:\nG:Plain description\n"; blocks[0].Text != want {
+		t.Errorf("lister output = %q, want %q (errored description blanked, healthy one verbatim)",
+			blocks[0].Text, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WireEngine fork spawn — parent system prompt inheritance
+// ---------------------------------------------------------------------------
+
+// A fork spawn inherits the parent engine's rendered system prompt: the
+// spawn wiring hands RunAgent the live SystemPrompt() bytes and the fork's
+// sub-request carries them verbatim.
+func TestWireEngine_ForkSpawnInheritsParentSystemPrompt(t *testing.T) {
+	t.Parallel()
+	tl := task.NewList(t.TempDir())
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	refs := CreateTools(deps, tl)
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "fork reply"), nil)
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: &mockDispatcher{},
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	WireEngine(eng, refs, deps)
+	eng.SetToolRefs(refs)
+	const parentPrompt = "parent-system-prompt-7f3"
+	eng.SetSystemPrompt(parentPrompt)
+
+	agentInput, _ := json.Marshal(map[string]any{
+		"fork":          true,
+		"description":   "sys prompt probe",
+		"subagent_type": "General",
+		"prompt":        "p",
+	})
+	if _, err := refs.Agent.Call(context.Background(), agentInput, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "fork-sys-session"},
+	}); err != nil {
+		t.Fatalf("Agent.Call(fork): %v", err)
+	}
+	if got := string(mp.lastRequest.System); got != `"parent-system-prompt-7f3"` {
+		t.Errorf("fork sub-request System = %s, want the parent's prompt %q", got, `"parent-system-prompt-7f3"`)
 	}
 }
