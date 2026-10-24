@@ -235,8 +235,7 @@ func TestEnsureToolResultsDir_MkdirErrorUnwraps(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tool-results path is a file")
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Errorf("error must wrap *fs.PathError, got %v", err)
 	}
 }
@@ -279,8 +278,7 @@ func TestPersistToolResult_WriteErrorUnwraps(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tool-results path is a file")
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Errorf("error must wrap *fs.PathError, got %v", err)
 	}
 }

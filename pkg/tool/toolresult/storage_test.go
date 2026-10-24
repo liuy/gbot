@@ -538,8 +538,7 @@ func TestPersistToolResult_OpenFileNonIsExistError(t *testing.T) {
 	if !strings.Contains(err.Error(), "create file") {
 		t.Errorf("error should come from the create step, got: %v", err)
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Errorf("error must wrap *fs.PathError, got %v", err)
 	}
 }
