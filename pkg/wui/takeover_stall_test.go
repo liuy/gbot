@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -223,46 +224,36 @@ func TestTakeover_MetadataFirstFrameAndNoDeltaLossUnderFlood(t *testing.T) {
 		if head.Type != "metadata" {
 			t.Fatalf("ws2 first frame type = %q, want metadata (stale backlog leaked past takeover)", head.Type)
 		}
-
-		// Assert E: exactly one text block in the snapshot, and it must be an
-		// exact concatenation of the first K flood deltas (K >= 32).
-		snapBlocks := extractSnapshotFromMetadata(t, head.Snapshot)
-		if len(snapBlocks) != 1 {
-			t.Fatalf("snapshot has %d blocks, want exactly 1 text block", len(snapBlocks))
-		}
-		if snapBlocks[0].Kind != "text" {
-			t.Fatalf("snapshot block kind = %q, want text", snapBlocks[0].Kind)
-		}
-		snapshotText := snapBlocks[0].Text
-		if snapshotText == "" {
-			t.Fatal("snapshot text is empty, want a non-empty prefix of the flood stream")
-		}
-		var covered strings.Builder
-		deltas := 0
-		for covered.Len() < len(snapshotText) {
-			fmt.Fprintf(&covered, "s%d", deltas)
-			deltas++
-		}
-		if covered.String() != snapshotText {
-			t.Fatalf("snapshot text is not an exact concatenation of flood deltas s0..s%d", deltas-1)
-		}
-		if deltas < 32 {
-			t.Fatalf("snapshot covers only %d deltas, want at least 32 (flood ran before the dial)", deltas)
+		if head.Snapshot != nil {
+			t.Fatalf("metadata still embeds a snapshot (%.60s), want it stripped", head.Snapshot)
 		}
 
-		// Assert F (no-gap invariant): stop the flood, then drain ws2 while
-		// the flood winds down (the writer needs a reader or it parks on the
-		// synchronous pipe). Reading continues until a quiet window coincides
-		// with flood completion; then snapshot + live must equal the full
-		// stream. The quiet window runs on the virtual clock: it only elapses
-		// when flood, writer, and pusher are all durably parked.
+		// Request the tail page; the nonce identifies the response among the
+		// concurrently arriving live event frames.
+		pageReq, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "", "limit": 30, "nonce": 4242})
+		if err := ws2.WriteMessage(websocket.TextMessage, pageReq); err != nil {
+			t.Fatalf("write page request: %v", err)
+		}
+
+		// Assert E/F rewritten as seq-set semantics (v2): the page freezes a
+		// prefix of the flood, every delta numbered above the page's seq must
+		// arrive exactly once as a live frame, every frame numbered at or
+		// below it must be a delta the page already absorbed (wire-late but
+		// harmless — the client drops by seq), and page ⊕ live = full stream.
 		stopFlooding()
-		var live strings.Builder
+		var pageJSON []byte
+		var pageSeq uint64
+		var pageText string
+		type liveDelta struct {
+			seq uint64
+			idx int
+		}
+		var live []liveDelta
 		deadline := time.Now().Add(10 * time.Second)
 		drained := false
 		for !drained {
 			if time.Now().After(deadline) {
-				t.Fatalf("no-gap invariant violated: live tail never went quiet (snapshot=%d chars, live=%d chars)", len(snapshotText), live.Len())
+				t.Fatalf("no-gap invariant violated: live tail never went quiet (page=%d chars, live frames=%d)", len(pageText), len(live))
 			}
 			_ = ws2.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 			_, data, err := ws2.ReadMessage()
@@ -276,40 +267,96 @@ func TestTakeover_MetadataFirstFrameAndNoDeltaLossUnderFlood(t *testing.T) {
 			}
 			var env struct {
 				Type  string `json:"type"`
+				Nonce uint64 `json:"nonce"`
+				Seq   uint64 `json:"seq"`
 				Event struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"event"`
+				Stream []streamBlock `json:"stream"`
 			}
-			if json.Unmarshal(data, &env) != nil || env.Type != "event" || env.Event.Type != "text_delta" {
+			if json.Unmarshal(data, &env) != nil {
 				continue
 			}
-			live.WriteString(env.Event.Text)
+			switch env.Type {
+			case "event":
+				if env.Event.Type != "text_delta" {
+					continue
+				}
+				var idx int
+				if _, err := fmt.Sscanf(env.Event.Text, "s%d", &idx); err != nil {
+					t.Fatalf("unexpected non-flood delta %q", env.Event.Text)
+				}
+				live = append(live, liveDelta{seq: env.Seq, idx: idx})
+			case "history":
+				if env.Nonce != 4242 {
+					continue
+				}
+				pageJSON = data
+				pageSeq = env.Seq
+				if len(env.Stream) != 1 || env.Stream[0].Kind != "text" {
+					t.Fatalf("page stream = %d blocks, want exactly 1 text block", len(env.Stream))
+				}
+				pageText = env.Stream[0].Text
+			}
+		}
+		if pageJSON == nil {
+			t.Fatal("page response never arrived (nonce 4242)")
 		}
 
-		n := counter.Load()
+		// The page must be an exact prefix s0..sK of the flood.
+		var covered strings.Builder
+		k := 0
+		for covered.Len() < len(pageText) {
+			fmt.Fprintf(&covered, "s%d", k)
+			k++
+		}
+		if covered.String() != pageText {
+			t.Fatalf("page text is not an exact concatenation of flood deltas s0..s%d", k-1)
+		}
+		if k < 32 {
+			t.Fatalf("page covers only %d deltas, want at least 32 (flood ran before the dial)", k)
+		}
+
+		n := int(counter.Load())
+		// (i) deltas numbered above the page are exactly {K..N-1} —
+		// continuous, no gap, no duplicate.
+		above := make(map[int]bool)
+		for _, d := range live {
+			if d.seq > pageSeq {
+				above[d.idx] = true
+			}
+		}
+		if len(above) != n-k {
+			t.Fatalf("deltas above page seq = %d unique indices, want %d (duplicates or dropped frames)", len(above), n-k)
+		}
+		for i := k; i < n; i++ {
+			if !above[i] {
+				t.Fatalf("delta s%d (index %d) missing above page seq %d — dropped across the takeover boundary", i, i, pageSeq)
+			}
+		}
+		// (ii) frames numbered at/below the page seq carry deltas the page
+		// already absorbed (wire-late, client drops by seq).
+		for _, d := range live {
+			if d.seq <= pageSeq && d.idx > k-1 {
+				t.Fatalf("delta s%d (index %d) numbered %d <= page seq %d but not absorbed by the page", d.idx, d.idx, d.seq, pageSeq)
+			}
+		}
+		// (iii) page ⊕ live(above, seq order) == the full flood stream.
+		sort.Slice(live, func(a, b int) bool { return live[a].seq < live[b].seq })
+		var rebuilt strings.Builder
+		rebuilt.WriteString(pageText)
+		for _, d := range live {
+			if d.seq > pageSeq {
+				fmt.Fprintf(&rebuilt, "s%d", d.idx)
+			}
+		}
 		var expected strings.Builder
-		for i := int64(0); i < n; i++ {
+		for i := range n {
 			fmt.Fprintf(&expected, "s%d", i)
 		}
-		got := snapshotText + live.String()
-		if got != expected.String() {
-			t.Fatalf("no-gap invariant violated: snapshot+live = %d chars, want %d (missing or duplicated deltas across the takeover boundary)", len(got), expected.Len())
-		}
-
-		// Exact boundary: after equality no further delta frame may arrive.
-		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		if _, data, err := ws2.ReadMessage(); err == nil {
-			var env struct {
-				Type  string `json:"type"`
-				Event struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"event"`
-			}
-			if json.Unmarshal(data, &env) == nil && env.Type == "event" && env.Event.Type == "text_delta" {
-				t.Fatalf("received extra delta %q after exact-boundary equality: duplicate or out-of-era frame", env.Event.Text)
-			}
+		if rebuilt.String() != expected.String() {
+			t.Fatalf("no-gap invariant violated: page+live = %d chars, want %d (missing or duplicated deltas across the takeover boundary)", rebuilt.Len(), expected.Len())
 		}
 	})
 }

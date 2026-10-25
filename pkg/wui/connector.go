@@ -349,12 +349,23 @@ type streamBlock struct {
 	Children      []streamBlock `json:"children"`                // kind == "tool"
 }
 
+// wuiMonotonic is the process-level counter seeding stream-region
+// generations and stamping page/event seq numbers. Process-level (not
+// per-slot) on purpose: a rebuilt slot must never reuse a generation some
+// old anchor still points at, and page seqs must never regress across an
+// engine switch — both fall out of one monotonic source.
+var wuiMonotonic atomic.Uint64
+
 // streamState is one region of a slot's stream (blocks plus the query-active
 // boundary marker). Everything — the map and every region's contents — is
 // protected by slot.ssMu (hub goroutine in onEngineEvent, readLoop goroutine
 // in sendMetadata).
 type streamState struct {
 	blocks []streamBlock
+	// gen identifies this region incarnation for anchor cursors: query_end
+	// replaces the region wholesale, so a block count alone cannot tell an
+	// old anchor "your blocks are gone" from "they are still there".
+	gen int
 	// queryActive marks the two-region boundary: while turns are running,
 	// drained messages live here as user blocks (buildHistory truncates at
 	// queryStartMsgIdx so this is their only representation); idle, history
@@ -844,7 +855,7 @@ func (c *WUIConnector) registerEngine(vs *engine.EngineViewState) {
 		name:        vs.Name,
 		system:      vs.System,
 		jobView:     make(map[string]*jobViewEntry),
-		streams:     map[string]*streamState{"": {}},
+		streams:     map[string]*streamState{"": {gen: int(wuiMonotonic.Add(1))}},
 	}
 	slot.unsubscribe = h.Subscribe(&engineHubShim{engineID: vs.ID, c: c})
 
@@ -1393,14 +1404,14 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		}
 	}
 
-	payload, err := json.Marshal(struct {
+	// Pre-built envelope: Seq is stamped inside the ssMu critical section
+	// below (taking the number and applying the effect must be atomic for the
+	// client's page-absorption rule), the marshal runs after the unlock.
+	frame := struct {
 		Type  string              `json:"type"`
 		Event queryEventWithAbort `json:"event"`
-	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted, Rewound: rewound, RewoundText: rewoundText}})
-	if err != nil {
-		slog.Warn("wui: marshal event failed", "type", event.Type, "error", err)
-		return
-	}
+		Seq   uint64              `json:"seq,omitempty"`
+	}{Type: "event", Event: queryEventWithAbort{QueryEvent: event, Aborted: aborted, Rewound: rewound, RewoundText: rewoundText}}
 
 	slog.Debug("wui:event", "type", event.Type, "engine", engineID,
 		"agentType", agentTypeLog(event.Agent), "parentID", parentIDLog(event.Agent))
@@ -1418,7 +1429,7 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 		}
 		root := slot.streams[""]
 		if root == nil {
-			root = &streamState{}
+			root = &streamState{gen: int(wuiMonotonic.Add(1))}
 			slot.streams[""] = root
 		}
 		updateStreamState(root, event)
@@ -1431,20 +1442,26 @@ func (c *WUIConnector) onEngineEvent(engineID string, event hub.Event) {
 	if slot.active.Load() && c.activeWS.Load() != nil {
 		// Capture decision MUST be under the lock: active flips false→true
 		// under ssMu at every handshake. An event that read false pre-lock,
-		// then waited behind sendMetadata, updates state AFTER the snapshot
-		// marshal — it must land in the live tail, not the inactive branch.
+		// then waited behind sendMetadata, updates state AFTER the page
+		// freeze — it must land in the live tail, not the inactive branch.
 		q = c.outQ.Load()
+		// Seq stamping shares this critical section: the number is taken in
+		// the same atomic step as the effect's application above, so any page
+		// frozen later carries every effect with a smaller seq.
+		frame.Seq = wuiMonotonic.Add(1)
 	}
 	if isQueryEnd {
 		// Only the "" region dies with the query; job regions outlive it.
 		// The map is non-nil here: isQueryEnd implies event.Agent == nil,
 		// which took the root-update branch above and lazy-initialized it.
-		slot.streams[""] = &streamState{}
+		slot.streams[""] = &streamState{gen: int(wuiMonotonic.Add(1))}
 		resetQueryStats(&slot.queryStats)
 		slot.taskToolIDs = make(map[string]bool)
 	}
 	slot.ssMu.Unlock()
 	if q != nil {
+		// frame is plain value types; json.Marshal cannot fail here.
+		payload, _ := json.Marshal(frame)
 		q.push(wsMsg{data: payload}, c.done)
 		if isQueryEnd && event.Error != nil && !aborted {
 			c.sendWS(buildError(event.Error))
@@ -1960,14 +1977,6 @@ func (c *WUIConnector) historyImageDataURL(cb types.ContentBlock) (string, bool)
 	return dataURL, true
 }
 
-// IsBusy exclusion when the engine is streaming. When busy, the assistant's
-// streaming response (after the last user text message) is omitted so the
-// snapshot/streamState provides that data instead (zero overlap). The user's
-// query message itself is included in history.
-//
-// cursor has two namespaces: "" or "N" for in-memory paging (current
-// behavior); "precompact:D" hands off to buildPreCompactHistory which reads
-// SQLite rows strictly before the last compact boundary.
 // isCompactBoundaryMarker checks whether a FlagCompactSummary message is a
 // compact_boundary marker (as opposed to the human-readable summary). The
 // boundary marker's content is a JSON string containing "subtype":"compact_boundary".
@@ -1980,44 +1989,79 @@ func isCompactBoundaryMarker(m types.Message) bool {
 	return false
 }
 
-func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) []byte {
+// viewRev formats the committed-view revision "count:lastID" over an already
+// truncated message view.
+func viewRev(msgs []types.Message) string {
+	if len(msgs) == 0 {
+		return "0:"
+	}
+	return strconv.Itoa(len(msgs)) + ":" + msgs[len(msgs)-1].ID
+}
+
+// sessionRev computes the committed-view revision for cache short-circuiting:
+// identical strings mean an identical committed view, so a page0 built for one
+// is valid for the other. Busy engines truncate at the query boundary so
+// in-flight streaming never churns the rev while it runs.
+func sessionRev(eng engineClient) string {
+	msgs := eng.Messages()
+	if idx := eng.QueryStartMsgIdx(); idx >= 0 && idx < len(msgs) {
+		msgs = msgs[:idx+1]
+	}
+	return viewRev(msgs)
+}
+
+// histUnit is one pagination unit of the merged view: a committed message
+// (rawIdx into the truncated message view) or a compact_boundary marker.
+type histUnit struct {
+	rawIdx int
+	marker bool
+}
+
+// digitsOnly reports whether s is a non-empty run of ASCII digits — the
+// legacy numeric-cursor shape (an overflowing number still qualifies and
+// keeps tail semantics; anything else is malformed). Callers guarantee
+// s != "": the tail-page switch matches the empty cursor first.
+func digitsOnly(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// buildHistory serves one page of the merged committed+stream view. The
+// IsBusy exclusion: when the engine is streaming, the assistant's streaming
+// response (after the last user text message) is omitted so the page's
+// stream window + live events provide that data instead (zero overlap). The
+// user's query message itself is included in history.
+//
+// cursor namespaces: "" (tail page), "a:C:S:G" (anchor into the merged
+// committed+stream view), "N" (legacy numeric alias), and "precompact:D"
+// which hands off to buildPreCompactHistory reading SQLite rows strictly
+// before the last compact boundary.
+func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, nonce ...uint64) []byte {
 	if slot == nil {
 		return nil
 	}
 	if strings.HasPrefix(cursor, "precompact:") {
-		return c.buildPreCompactHistory(slot, cursor, limit)
+		return c.buildPreCompactHistory(slot, cursor, limit, nonce...)
 	}
 	msgs := slot.engine.Messages()
 
 	// Query in progress: exclude messages[idx+1:] (in-flight assistant
-	// streaming covered by snapshot + live events). The user query at
-	// messages[idx] MUST be included — snapshot only carries assistant
-	// streaming blocks, not the user's input. Without this, the current
-	// query vanishes from history (and on reconnect).
+	// streaming covered by the frozen stream window + live events). The user
+	// query at messages[idx] MUST be included — the stream window only
+	// carries assistant streaming blocks, not the user's input. Without this,
+	// the current query vanishes from history (and on reconnect).
 	if idx := slot.engine.QueryStartMsgIdx(); idx >= 0 && idx < len(msgs) {
 		msgs = msgs[:idx+1]
 	}
 
-	if len(msgs) == 0 {
-		return nil
-	}
-
-	tools := slot.engine.Tools()
-
-	// First pass: collect all tool_results keyed by tool_use_id (same as TUI).
-	toolResults := make(map[string]types.ContentBlock)
-	richResults := make(map[string]any)
-	for _, m := range msgs {
-		for _, cb := range m.Content {
-			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
-				toolResults[cb.ToolUseID] = cb
-			}
-		}
-		maps.Copy(richResults, m.ToolResultData)
-	}
-
-	var out []historyChatMsg
-	for _, m := range msgs {
+	// Classification scan: every message becomes a unit, a boundary marker,
+	// or is skipped — mirroring the old render-loop filters exactly.
+	units := make([]histUnit, 0, len(msgs))
+	for i, m := range msgs {
 		if m.Role == types.RoleSystem && !isCompactBoundaryMarker(m) {
 			continue
 		}
@@ -2030,64 +2074,155 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 			// marker becomes a divider; the summary is skipped (its content
 			// is a system instruction for the LLM, not user-visible).
 			if isCompactBoundaryMarker(m) {
-				out = append(out, historyChatMsg{
-					ID:              m.ID,
-					Role:            "system",
-					CompactBoundary: true,
-					StartedAt:       m.Timestamp.UnixMilli(),
-				})
+				units = append(units, histUnit{rawIdx: i, marker: true})
 			}
 			continue
 		}
-		out = append(out, c.buildHistoryChatMsg(m, tools, toolResults, richResults))
-	}
-	if len(out) == 0 {
-		return nil
+		units = append(units, histUnit{rawIdx: i})
 	}
 
-	// Pagination: cursor is the count of messages from the END already
-	// delivered in prior pages. Cursor ""/0 → deliver the most recent page.
-	// The slice is taken from the END so a growing conversation (new messages
-	// appended at the back) never shifts already-delivered page offsets.
-	total := len(out)
+	root := slot.streams[""]
+	sNow, gen := 0, 0
+	if root != nil {
+		sNow, gen = len(root.blocks), root.gen
+	}
+	cNow := len(units)
+
 	if limit <= 0 {
 		limit = 30
 	}
-	offset := 0
-	if cursor != "" {
-		if n, err := strconv.Atoi(cursor); err == nil && n > 0 {
-			offset = n
+
+	// Cursor resolution. The anchor "a:C:S:G" names the exclusive end of the
+	// next window in the merged view; numeric cursors are the legacy alias
+	// (offset from the END of committed, pre-merged-view semantics). Anything
+	// unresolvable yields the terminal empty page — same shape the legacy
+	// out-of-range numeric cursor always produced.
+	cFront, sFront := cNow, sNow
+	terminal := false
+	switch cursor {
+	case "":
+		// Tail page: front is the live edge of both regions.
+	default:
+		if anchor, ok := strings.CutPrefix(cursor, "a:"); ok {
+			parts := strings.Split(anchor, ":")
+			var c, s, g int
+			bad := len(parts) != 3
+			if !bad {
+				var e1, e2, e3 error
+				c, e1 = strconv.Atoi(parts[0])
+				s, e2 = strconv.Atoi(parts[1])
+				g, e3 = strconv.Atoi(parts[2])
+				bad = e1 != nil || e2 != nil || e3 != nil
+			}
+			if bad {
+				slog.Warn("wui: malformed anchor cursor, returning empty page", "cursor", cursor)
+				terminal = true
+			} else {
+				if g != gen && s > 0 {
+					// Generation died (query_end reset / slot rebuild): the
+					// anchored stream blocks were absorbed into history or
+					// cleared, so the correct continuation is committed-only.
+					s = 0
+				}
+				if c > cNow || s > sNow || c < 0 || s < 0 {
+					terminal = true
+				} else {
+					cFront, sFront = c, s
+				}
+			}
+		} else if n, err := strconv.Atoi(cursor); err == nil {
+			if n > 0 {
+				// Legacy numeric cursor: offset N from the end of committed.
+				cFront = cNow - n
+				if cFront < 0 {
+					terminal = true
+				}
+			}
+			// n <= 0: tail semantics (offset 0), pinned by the legacy
+			// "0"/"-3" tests.
+		} else if digitsOnly(cursor) {
+			// Numeric-looking but unparseable (overflow): legacy tail
+			// semantics, pinned by the overflow test.
+		} else {
+			// Neither anchor nor numeric (and not the tail ""): no client
+			// legitimately produces this shape — stop paging loudly.
+			slog.Warn("wui: malformed cursor, returning empty page", "cursor", cursor)
+			terminal = true
 		}
 	}
-	end := max(
-		// exclusive upper bound
-		total-offset, 0)
-	start := max(end-limit, 0)
-	page := out[start:end]
-	hasMore := start > 0
-	nextCursor := ""
-	if hasMore {
-		nextCursor = strconv.Itoa(offset + (end - start))
-	}
 
-	// When the in-memory top is reached AND the engine has a compact boundary,
-	// extend pagination into the SQLite pre-compact region. The limit=0 probe
-	// avoids loading any messages — preCompactMessages returns hasBoundary
-	// without touching the DB rows.
-	if !hasMore {
-		_, _, hasBoundary := slot.engine.PreCompactMessages(0, 0)
-		if hasBoundary {
+	page := []historyChatMsg{}
+	var streamWindow []streamBlock
+	hasMore := false
+	nextCursor := ""
+	if !terminal {
+		// Window: the ≤limit contiguous units ending at (cFront, sFront).
+		streamTake := min(limit, sFront)
+		committedTake := min(limit-streamTake, cFront)
+		if committedTake > 0 {
+			// A tool_use inside the window must pair with its result row even
+			// when the result sits past the window edge (same-turn results
+			// trail the assistant row), so scan from the window's first raw
+			// message to the end of the truncated view.
+			tools := slot.engine.Tools()
+			toolResults := make(map[string]types.ContentBlock)
+			richResults := make(map[string]any)
+			for _, m := range msgs[units[cFront-committedTake].rawIdx:] {
+				for _, cb := range m.Content {
+					if cb.Type == types.ContentTypeToolResult && cb.ToolUseID != "" {
+						toolResults[cb.ToolUseID] = cb
+					}
+				}
+				maps.Copy(richResults, m.ToolResultData)
+			}
+			page = make([]historyChatMsg, 0, committedTake)
+			for _, u := range units[cFront-committedTake : cFront] {
+				if u.marker {
+					m := msgs[u.rawIdx]
+					page = append(page, historyChatMsg{
+						ID:              m.ID,
+						Role:            "system",
+						CompactBoundary: true,
+						StartedAt:       m.Timestamp.UnixMilli(),
+					})
+					continue
+				}
+				page = append(page, c.buildHistoryChatMsg(msgs[u.rawIdx], tools, toolResults, richResults))
+			}
+		}
+		if streamTake > 0 {
+			streamWindow = append([]streamBlock{}, root.blocks[sFront-streamTake:sFront]...)
+		}
+		hasMore = cFront-committedTake > 0 || sFront-streamTake > 0
+		if hasMore {
+			nextCursor = fmt.Sprintf("a:%d:%d:%d", cFront-committedTake, sFront-streamTake, gen)
+		} else if _, _, hasBoundary := slot.engine.PreCompactMessages(0, 0); hasBoundary {
+			// In-memory top reached AND a compact boundary exists: extend
+			// pagination into the SQLite pre-compact region. The limit=0
+			// probe avoids loading messages — preCompactMessages returns
+			// hasBoundary without touching the DB rows.
 			hasMore = true
 			nextCursor = "precompact:0"
 		}
 	}
 
+	n := uint64(0)
+	if len(nonce) > 0 {
+		n = nonce[0]
+	}
 	payload, _ := json.Marshal(struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
+		Stream     []streamBlock    `json:"stream,omitempty"`
 		NextCursor string           `json:"nextCursor"`
 		HasMore    bool             `json:"hasMore"`
-	}{Type: "history", Messages: page, NextCursor: nextCursor, HasMore: hasMore})
+		Rev        string           `json:"rev"`
+		Busy       bool             `json:"busy,omitempty"`
+		Seq        uint64           `json:"seq,omitempty"`
+		Nonce      uint64           `json:"nonce,omitempty"`
+	}{Type: "history", Messages: page, Stream: streamWindow, NextCursor: nextCursor, HasMore: hasMore,
+		Rev: viewRev(msgs), Busy: slot.engine.QueryStartMsgIdx() >= 0,
+		Seq: wuiMonotonic.Add(1), Nonce: n})
 	return payload
 }
 
@@ -2096,12 +2231,16 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int) 
 // preCompactMessages, runs each non-marker message through buildHistoryChatMsg,
 // and emits in-page compact_boundary markers as synthetic
 // historyChatMsg{role:"system", compactBoundary:true}.
-func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, limit int) []byte {
+func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, limit int, nonce ...uint64) []byte {
 	if slot == nil {
 		return nil
 	}
 	if limit <= 0 {
 		limit = 30
+	}
+	n := uint64(0)
+	if len(nonce) > 0 {
+		n = nonce[0]
 	}
 	delivered := 0
 	if rest, ok := strings.CutPrefix(cursor, "precompact:"); ok {
@@ -2122,7 +2261,10 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 			Messages   []historyChatMsg `json:"messages"`
 			NextCursor string           `json:"nextCursor"`
 			HasMore    bool             `json:"hasMore"`
-		}{Type: "history", Messages: []historyChatMsg{}, NextCursor: "", HasMore: false})
+			Seq        uint64           `json:"seq,omitempty"`
+			Nonce      uint64           `json:"nonce,omitempty"`
+		}{Type: "history", Messages: []historyChatMsg{}, NextCursor: "", HasMore: false,
+			Seq: wuiMonotonic.Add(1), Nonce: n})
 		return payload
 	}
 
@@ -2169,8 +2311,29 @@ func (c *WUIConnector) buildPreCompactHistory(slot *engineSlot, cursor string, l
 		Messages   []historyChatMsg `json:"messages"`
 		NextCursor string           `json:"nextCursor"`
 		HasMore    bool             `json:"hasMore"`
-	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore})
+		Seq        uint64           `json:"seq,omitempty"`
+		Nonce      uint64           `json:"nonce,omitempty"`
+	}{Type: "history", Messages: out, NextCursor: nextCursor, HasMore: hasMore,
+		Seq: wuiMonotonic.Add(1), Nonce: n})
 	return payload
+}
+
+// serveHistoryPage answers one history_request: it freezes the active slot's
+// merged view (committed + in-flight) and pushes the page frame inside a
+// single ssMu critical section. Freeze, seq stamp, and push sharing the
+// section is what makes the page wire-order-independent: any event that
+// numbered below the page's seq has its effect in the page, any event after
+// numbers above it, regardless of which frame the queue emits first.
+func (c *WUIConnector) serveHistoryPage(cursor string, limit int, nonce uint64) {
+	slot := c.activeSlot()
+	if slot == nil {
+		return
+	}
+	slot.ssMu.Lock()
+	if payload := c.buildHistory(slot, cursor, limit, nonce); payload != nil {
+		c.sendWS(payload)
+	}
+	slot.ssMu.Unlock()
 }
 
 // formatToolDisplayName mirrors TUI's logic for MCP tool names.
@@ -2985,48 +3148,13 @@ func (c *WUIConnector) SetTransport(h *transport.Hub) {
 	c.transport = h
 }
 
-// buildQueryStartReplay synthesizes the query_start event frame for an
-// engine captured mid-query. The client has no other in-flight signal in
-// the prefill window: history ends at the user message and the snapshot
-// channel is empty (streamState.blocks only gains entries on the first
-// streamed block). Wire shape mirrors onEngineEvent's marshal exactly so
-// the client cannot distinguish a replay from a live event; its native
-// query_start path builds the streaming shell, and the later real
-// turn_start only refreshes the ↑input estimate under the client's
-// `if (streaming)` guard before returning — it cannot rebuild the shell.
-// Returns nil when no query is in flight or the recorded index no longer
-// resolves (messages mutated between the two engine reads).
-func (c *WUIConnector) buildQueryStartReplay(slot *engineSlot) []byte {
-	idx := slot.engine.QueryStartMsgIdx()
-	if idx < 0 {
-		return nil
-	}
-	msgs := slot.engine.Messages()
-	if idx >= len(msgs) {
-		return nil
-	}
-	userMsg := msgs[idx]
-	payload, err := json.Marshal(struct {
-		Type  string              `json:"type"`
-		Event queryEventWithAbort `json:"event"`
-	}{Type: "event", Event: queryEventWithAbort{QueryEvent: types.QueryEvent{
-		Type:    types.EventQueryStart,
-		Message: &userMsg,
-		Model:   slot.engine.Model(),
-	}}})
-	if err != nil {
-		slog.Warn("wui: marshal query_start replay failed", "error", err)
-		return nil
-	}
-	return payload
-}
-
 // sendMetadata sends a composite metadata message containing connect_status,
-// config, engine_list, task_list, history, snapshot, queuedMsgs, and stats.
-// The snapshot embeds the current streamState (under ssMu) so the client
-// receives streaming state and history in a single message. queuedMsgs
-// restores user-typed messages still waiting in the attachment queue so a
-// reconnecting client can re-render its pending queue.
+// config, engine_list, task_list, queuedMsgs, and stats. The committed and
+// in-flight chat content is NOT embedded: metadata carries only rev/busy, and
+// the client fetches the unified tail page via history_request (takeover cost
+// is O(page), not O(streamState)). queuedMsgs restores user-typed messages
+// still waiting in the attachment queue so a reconnecting client can re-render
+// its pending queue.
 //
 // Every sendMetadata starts a new outbound era: frames already queued belong
 // to a view this metadata frame replaces (the client's resetAllState), so
@@ -3040,8 +3168,8 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Config     json.RawMessage `json:"config"`
 		Engines    json.RawMessage `json:"engines"`
 		Tasks      json.RawMessage `json:"tasks,omitempty"`
-		History    json.RawMessage `json:"history"`
-		Snapshot   json.RawMessage `json:"snapshot,omitempty"`
+		Rev        string          `json:"rev"`
+		Busy       bool            `json:"busy,omitempty"`
 		QueuedMsgs []queuedMsgJSON `json:"queuedMsgs,omitempty"`
 		Stats      json.RawMessage `json:"stats"`
 		// Jobs embeds the background-jobs snapshot (feeds + tails) so a
@@ -3088,14 +3216,6 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 			entry.tail = tail
 		}
 	}
-	history := c.buildHistory(slot, "", 30)
-	root := slot.streams[""]
-	var snapshot json.RawMessage
-	if root != nil && len(root.blocks) > 0 {
-		snapshot, _ = json.Marshal(struct {
-			Blocks []streamBlock `json:"blocks"`
-		}{Blocks: root.blocks})
-	}
 
 	payload, _ := json.Marshal(metaPayload{
 		Type:       "metadata",
@@ -3103,8 +3223,8 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Config:     c.buildConfig(slot),
 		Engines:    c.buildEngineList(),
 		Tasks:      c.buildTaskList(slot),
-		History:    history,
-		Snapshot:   snapshot,
+		Rev:        sessionRev(slot.engine),
+		Busy:       slot.engine.QueryStartMsgIdx() >= 0,
 		QueuedMsgs: buildQueuedMsgs(slot.engine.PendingAttachments()),
 		Stats:      c.buildStats(slot),
 		Jobs:       c.buildJobsMetadata(slot),
@@ -3118,24 +3238,12 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		c.outQ.Store(q)
 	}
 	q.push(wsMsg{data: payload}, c.done)
-	// Prefill-window busy restore: snapshot == nil means no streamed blocks
-	// exist, so the metadata frame alone leaves the client with no in-flight
-	// signal. Replayed query_start rides the same ssMu critical section,
-	// making metadata → replay → live events a total order on the wire.
-	// When a snapshot IS present it already restored the streaming shell;
-	// replaying here would let query_start's cleanupStreamingRefs discard
-	// snapshot-rendered content.
-	if snapshot == nil {
-		if replay := c.buildQueryStartReplay(slot); replay != nil {
-			q.push(wsMsg{data: replay}, c.done)
-		}
-	}
 	// Activate inside the same critical section: an event taking ssMu after
-	// this point misses the snapshot (updateStreamState runs after the
-	// marshal) and therefore sees active=true under the lock → captured on
-	// the new queue → delivered live after metadata; one taking it before is
-	// inside the snapshot. Either way no delta is lost between snapshot and
-	// live tail. This pairing only holds because onEngineEvent makes the
+	// this point misses the page freeze (updateStreamState runs first) and
+	// therefore sees active=true under the lock → stamped and pushed live
+	// after metadata; one taking it before is inside whatever page the
+	// client's request freezes. Either way the client's seq rule sorts the
+	// overlap. This pairing only holds because onEngineEvent makes the
 	// capture decision under ssMu — activating here while events decided
 	// pre-lock would reopen the gap.
 	slot.active.Store(true)

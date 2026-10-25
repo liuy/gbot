@@ -538,6 +538,28 @@ function buildTimeDivider(label: string): HTMLElement {
   return container
 }
 
+// ── Tail-page cache (v2 unified paging). Keyed by engine/session; a
+// metadata frame whose rev matches the cached entry re-applies the page
+// without a server round trip. Module level so it survives createChat
+// re-invocations in one page session, mirroring persistedMessages.
+type Page0Entry = {
+  rev: string
+  messages: HistoryChatMsg[]
+  stream?: Block[]
+  nextCursor: string
+  hasMore: boolean
+  seq: number
+}
+
+const page0Cache = new Map<string, Page0Entry>()
+const PAGE0_CACHE_MAX = 8
+
+// Request nonce: random ≥1 so two clients' in-flight requests can never
+// collide (an incrementing counter would alias across takeovers) — a stale
+// page frame from the superseded connection fails the echo check and is
+// dropped whole.
+const nextHistoryNonce = () => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1
+
 export function createChat(initial: { connected: boolean }): ChatHandles {
   // ── Module-level state (persists across createChat calls in the same
   // session, mirroring persistedMessages in ChatInterface.tsx).
@@ -593,6 +615,23 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // client knows (blob-URL thumbnails, original document names/sizes); the
   // server payload carries fresh upload ids.
   let rewindAttachments: { name?: string; size?: number; previewURL?: string }[] | null = null
+
+  // ── v2 unified paging state.
+  // Cache key of the latest metadata frame (engine/session); the page0
+  // cache write on page arrival reuses it.
+  let page0CacheKey = ''
+  // seq of the last applied page (0 = none): event frames numbered at or
+  // below it are already absorbed by that page and get dropped.
+  let appliedPageSeq = 0
+  // Event frames buffered between metadata and the tail page; replayed (seq
+  // sorted) after the page lands.
+  let pendingEvents: ServerMessage[] = []
+  let pendingPageZero = false
+  // Nonce of the in-flight (or last) history_request — pages echoing a
+  // different nonce belong to a superseded connection and are dropped.
+  // Not cleared in resetAllState: every send overwrites it, and no frame
+  // can arrive between the reset and the next send.
+  let expectedHistoryNonce = 0
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = createElement('div', 'relative flex flex-col h-dvh')
@@ -941,7 +980,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     if (aboveCount < REMAINING_THRESHOLD) {
       loadingMore = true
-      conn.send({ type: 'history_request', cursor: nextCursor, limit: 30 })
+      expectedHistoryNonce = nextHistoryNonce()
+      conn.send({ type: 'history_request', cursor: nextCursor, limit: 30, nonce: expectedHistoryNonce })
     }
   }
 
@@ -1012,6 +1052,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     nextCursor = ''
     hasMore = false
     loadingMore = false
+    // The event buffer belongs to the aborted page round trip; the DOM is
+    // cleared below, so buffered frames must not survive into the new view.
+    // expectedHistoryNonce is deliberately NOT reset (see its declaration).
+    pendingEvents = []
+    pendingPageZero = false
     isNearBottom = true
     lastScrollHeight = 0
     inputHistory.load([])
@@ -1411,6 +1456,51 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     pendingBlocks.push(...blocks)
     registerBlocksForStreamState(blocks, null)
     streamHydration.renderSnapshot(blocks, onHydrated)
+  }
+
+  // applyPage0 lands the unified tail page after metadata: committed rows
+  // prepend, the frozen in-flight window hydrates through the snapshot path
+  // (or busy alone builds the prefill shell), then buffered events replay
+  // with the page's seq as the absorption watermark.
+  function applyPage0(msg: Extract<ServerMessage, { type: 'history' }>) {
+    loadHistory(msg)
+    if (msg.stream && msg.stream.length > 0) {
+      // Guard: loadHistory's runningTools path may have self-built a shell
+      // from committed rows — a second one here would double-render.
+      if (!streamContainer) initStreaming('page')
+      renderStreamStateBlocks(msg.stream, () => takeoverBar.finish())
+    } else if (msg.busy && !streamContainer) {
+      initStreaming('page')
+      takeoverBar.finish()
+    } else {
+      takeoverBar.finish()
+    }
+    appliedPageSeq = msg.seq ?? 0
+    for (const buffered of pendingEvents) {
+      if (buffered.type === 'event' && buffered.seq !== undefined && buffered.seq <= appliedPageSeq) continue
+      handleServerMessage(buffered)
+    }
+    pendingEvents = []
+  }
+
+  // prependStreamBlocks lands an older page's in-flight window above the
+  // live stream content (prefetch into a running turn's middle). A missing
+  // container means query_end already folded the turn into committed rows —
+  // the window belongs to that dead turn and is dropped.
+  function prependStreamBlocks(blocks: Block[]) {
+    if (!streamContainer) return
+    const prevHeight = scroll.scrollHeight
+    const prevTop = scroll.scrollTop
+    registerBlocksForStreamState(blocks, null)
+    pendingBlocks.unshift(...blocks)
+    const frag = createFragment()
+    // Cast mirrors stream_hydration's fragment usage: renderStreamBlock
+    // only calls appendChild-style APIs on the parent.
+    for (const b of blocks) renderStreamBlock(frag as unknown as HTMLElement, b, null, null, liveSink)
+    streamContainer.insertBefore(frag, streamContainer.firstChild)
+    if (!isNearBottom) {
+      scroll.scrollTop = prevTop + (scroll.scrollHeight - prevHeight)
+    }
   }
 
   function handleEvent(e: QueryEvent) {
@@ -2285,7 +2375,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   let askEls: HTMLElement[] = []
 
-  const unsubscribe = conn.subscribe((msg: ServerMessage) => {
+  // Named so the page0 replay path can re-dispatch buffered frames through
+  // the identical routing (buffer/drop logic included).
+  const handleServerMessage = (msg: ServerMessage) => {
     switch (msg.type) {
       case 'metadata': {
         // The takeover bar is NOT finished here: it completes when the
@@ -2323,6 +2415,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         taskPanel.setJobs([])
         scrollBtn.classList.add('opacity-0', 'pointer-events-none')
         if (c.sessionID) currentSessionID = c.sessionID
+        page0CacheKey = `${c.engineID ?? ''}/${c.sessionID ?? ''}`
         conn.send({ type: 'session_list_request' })
 
         header.setModels(msg.config.models, msg.config.current.provider, msg.config.current.model)
@@ -2339,17 +2432,27 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           })
           taskPanel.setJobs(items, hydrated)
         }
-        loadHistory({ type: 'history', ...msg.history })
-
-        if (msg.snapshot && msg.snapshot.blocks.length > 0) {
-          if (!streamContainer) {
-            initStreaming('snapshot')
-          }
-          renderStreamStateBlocks(msg.snapshot.blocks, () => takeoverBar.finish())
+        // v2: metadata carries rev/busy instead of embedded history/snapshot.
+        // Same rev on an idle engine → the cached tail page is still exact —
+        // apply it without a round trip. Busy engines never short-circuit
+        // (their tail page is stale the moment it is minted) and are never
+        // cached. Otherwise request the page; its arrival (case 'history')
+        // applies it and replays the buffered event frames.
+        const cached = (!msg.busy && msg.rev !== undefined) ? page0Cache.get(page0CacheKey) : undefined
+        if (cached && cached.rev === msg.rev) {
+          pendingPageZero = false
+          applyPage0({
+            type: 'history',
+            messages: cached.messages,
+            stream: cached.stream,
+            nextCursor: cached.nextCursor,
+            hasMore: cached.hasMore,
+            seq: cached.seq,
+          })
         } else {
-          // No snapshot: the switch window ends with this frame — small
-          // snapshots also finish synchronously inside renderStreamStateBlocks.
-          takeoverBar.finish()
+          pendingPageZero = true
+          expectedHistoryNonce = nextHistoryNonce()
+          conn.send({ type: 'history_request', cursor: '', limit: 30, nonce: expectedHistoryNonce })
         }
 
         if (msg.queuedMsgs && msg.queuedMsgs.length > 0) {
@@ -2496,9 +2599,34 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         rewindAttachments = null
         return
       }
-      case 'history':
-        loadHistory(msg)
+      case 'history': {
+        // Stale-frame gate: a page echoing a different nonce was minted for
+        // a superseded connection's request — drop it whole, keeping this
+        // client's pending state for its own in-flight response.
+        if (msg.nonce !== undefined && msg.nonce !== expectedHistoryNonce) return
+        if (pendingPageZero) {
+          pendingPageZero = false
+          if (!msg.busy && msg.rev !== undefined) {
+            page0Cache.delete(page0CacheKey)
+            page0Cache.set(page0CacheKey, {
+              rev: msg.rev,
+              messages: msg.messages,
+              stream: msg.stream,
+              nextCursor: msg.nextCursor,
+              hasMore: msg.hasMore,
+              seq: msg.seq ?? 0,
+            })
+            if (page0Cache.size > PAGE0_CACHE_MAX) {
+              page0Cache.delete(page0Cache.keys().next().value as string)
+            }
+          }
+          applyPage0(msg)
+        } else {
+          loadHistory(msg)
+          if (msg.stream && msg.stream.length > 0) prependStreamBlocks(msg.stream)
+        }
         return
+      }
       case 'error':
         // A failed switch must not strand the bar at the asymptote: the
         // server answers e.g. an unknown engine with an error frame
@@ -2520,6 +2648,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'event':
+        // Page0 pending: buffer the whole frame (jobs store included — one
+        // page RTT of delay is harmless). The page rebuilds the DOM from a
+        // frozen view; applying deltas around it would double or drop text.
+        if (pendingPageZero) {
+          pendingEvents.push(msg)
+          return
+        }
+        // Live late frame: its effect is already inside the applied page
+        // (the freeze numbered below the page's seq). Frames without a seq
+        // (test injections, legacy fixtures) always pass.
+        if (msg.seq !== undefined && appliedPageSeq !== 0 && msg.seq <= appliedPageSeq) {
+          return
+        }
         handleEvent(msg.event)
         // Background-agent feeds accumulate in the jobs store in parallel
         // with chat rendering; routing drops events that belong to no job.
@@ -2553,7 +2694,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         return
     }
-  })
+  }
+
+  const unsubscribe = conn.subscribe(handleServerMessage)
 
   const cleanup = () => {
     unsubscribe()

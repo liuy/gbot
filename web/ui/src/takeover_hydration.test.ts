@@ -137,26 +137,37 @@ function fillOf(): HTMLElement {
   return document.querySelector('header [data-testid="takeover-bar-fill"]') as HTMLElement
 }
 
+// v2 takeover round trip: stripped metadata, then the tail page whose stream
+// window is what the snapshot channel used to carry. rev is unique per call
+// so every round trip takes the request path (the page0 cache would
+// otherwise short-circuit a repeat metadata with a matching rev).
+let metaRevSeq = 0
 function metadataWithSnapshot(blocks: Block[]) {
-  return {
+  const rev = `r-${++metaRevSeq}`
+  dispatch({
     type: 'metadata',
     connect: { connected: true },
     config: { models: [], current: { provider: 'p', model: 'm' } },
     engines: { engines: [{ id: 'e1', name: 'agent-1', model: 'm' }], activeID: 'e1' },
-    history: { messages: [], nextCursor: '', hasMore: false },
+    rev,
     stats: { usage: { input_tokens: 0, output_tokens: 0 } },
-    snapshot: { blocks },
-  }
+  })
+  dispatch({
+    type: 'history',
+    messages: [],
+    stream: blocks,
+    nextCursor: '',
+    hasMore: false,
+    rev,
+  })
 }
 
-const BOOT_METADATA = metadataWithSnapshot([])
-
 // Opens a takeover window the reconnect way: the bar starts on
-// 'reconnecting', and the snapshot metadata frame is what must close it
-// once hydration completes.
+// 'reconnecting', and the tail page (fetched after the metadata frame) is
+// what must close it once hydration completes.
 function startTakeover() {
   dispatch({ type: 'connect_status', connected: true })
-  dispatch(BOOT_METADATA)
+  metadataWithSnapshot([])
   changeState('reconnecting')
   vi.advanceTimersByTime(100)
   changeState('connected')
@@ -198,7 +209,7 @@ describe('takeover snapshot hydration', () => {
     const blocks = makeSnapshotBlocks()
     const totalMd = expectedMdBodies(blocks)
 
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
 
     // Tail-first: the newest block is visible in this same task...
     expect(containerText()).toContain('block-419:')
@@ -227,7 +238,7 @@ describe('takeover snapshot hydration', () => {
     mount()
     startTakeover()
     const blocks = makeSnapshotBlocks()
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
     vi.advanceTimersByTime(16 * 60)
 
     expect(mdBodyCount()).toBe(expectedMdBodies(blocks))
@@ -274,7 +285,7 @@ describe('takeover snapshot hydration', () => {
     const chat = mount()
     startTakeover()
     const blocks = makeSnapshotBlocks()
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
 
     // User scrolled away from the bottom before backfill starts.
     chat.scrollEl.scrollTop = 0
@@ -297,7 +308,7 @@ describe('takeover snapshot hydration', () => {
     const chat = mount()
     startTakeover()
     const blocks = makeSnapshotBlocks()
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
 
     // The empty-history load pinned scrollTop to scrollHeight with
     // isNearBottom true. Each backfill insert must re-pin through the
@@ -316,7 +327,7 @@ describe('takeover snapshot hydration', () => {
     mount()
     startTakeover()
     const blocks = makeSnapshotBlocks()
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
     vi.advanceTimersByTime(16 * 2)
 
     dispatch({ type: 'event', event: { type: 'text_delta', text: 'live-tail-text' } })
@@ -352,7 +363,7 @@ describe('takeover snapshot hydration', () => {
     mount()
     startTakeover()
     const blocks = makeSnapshotBlocks()
-    dispatch(metadataWithSnapshot(blocks))
+    metadataWithSnapshot(blocks)
     vi.advanceTimersByTime(16 * 2)
 
     dispatch({ type: 'event', event: { type: 'query_end' } })
@@ -368,7 +379,7 @@ describe('takeover snapshot hydration', () => {
     useHydrationTimers()
     mount()
     startTakeover()
-    dispatch(metadataWithSnapshot(makeSnapshotBlocks()))
+    metadataWithSnapshot(makeSnapshotBlocks())
     vi.advanceTimersByTime(16 * 2)
 
     dispatch({ type: 'event', event: { type: 'query_start' } })
@@ -382,10 +393,10 @@ describe('takeover snapshot hydration', () => {
     useHydrationTimers()
     mount()
     startTakeover()
-    dispatch(metadataWithSnapshot(makeSnapshotBlocks()))
+    metadataWithSnapshot(makeSnapshotBlocks())
     vi.advanceTimersByTime(16 * 2)
 
-    dispatch(metadataWithSnapshot([{ kind: 'text', id: '', text: 'second-takeover' }]))
+    metadataWithSnapshot([{ kind: 'text', id: '', text: 'second-takeover' }])
 
     expect(containerText()).toContain('second-takeover')
     expect(containerText()).not.toContain('block-0:')
@@ -401,7 +412,7 @@ describe('takeover snapshot hydration', () => {
     useHydrationTimers()
     mount()
     startTakeover()
-    dispatch(metadataWithSnapshot([{ kind: 'text', id: '', text: 'small-snapshot-text' }]))
+    metadataWithSnapshot([{ kind: 'text', id: '', text: 'small-snapshot-text' }])
 
     expect(containerText()).toContain('small-snapshot-text')
     expect(mdBodyCount()).toBe(1)

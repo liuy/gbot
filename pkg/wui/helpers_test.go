@@ -713,7 +713,8 @@ func drainInitialFrames(t *testing.T, ws *websocket.Conn) {
 
 // readMetadata reads one WS message, asserts it is a metadata frame, and
 // returns the raw JSON of each sub-field. Tests use this to extract connect,
-// config, stats, snapshot, etc. from the composite metadata frame.
+// config, stats, etc. from the composite metadata frame. Rev/Busy are
+// pointers so absence (omitempty) is distinguishable from zero values.
 func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 	Connect    json.RawMessage
 	Config     json.RawMessage
@@ -721,6 +722,8 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 	Tasks      json.RawMessage
 	History    json.RawMessage
 	Snapshot   json.RawMessage
+	Rev        *string
+	Busy       *bool
 	QueuedMsgs json.RawMessage
 	Stats      json.RawMessage
 } {
@@ -742,6 +745,8 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 		Tasks      json.RawMessage `json:"tasks"`
 		History    json.RawMessage `json:"history"`
 		Snapshot   json.RawMessage `json:"snapshot"`
+		Rev        *string         `json:"rev"`
+		Busy       *bool           `json:"busy"`
 		QueuedMsgs json.RawMessage `json:"queuedMsgs"`
 		Stats      json.RawMessage `json:"stats"`
 	}
@@ -755,6 +760,8 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 		Tasks      json.RawMessage
 		History    json.RawMessage
 		Snapshot   json.RawMessage
+		Rev        *string
+		Busy       *bool
 		QueuedMsgs json.RawMessage
 		Stats      json.RawMessage
 	}{
@@ -764,26 +771,47 @@ func readMetadata(t *testing.T, ws *websocket.Conn) struct {
 		Tasks:      raw.Tasks,
 		History:    raw.History,
 		Snapshot:   raw.Snapshot,
+		Rev:        raw.Rev,
+		Busy:       raw.Busy,
 		QueuedMsgs: raw.QueuedMsgs,
 		Stats:      raw.Stats,
 	}
 }
 
-// extractSnapshotFromMetadata parses the snapshot field (a json.RawMessage
-// already extracted by readMetadata) and returns the stream blocks.
-// Returns nil if the snapshot is empty or absent.
-func extractSnapshotFromMetadata(t *testing.T, snapshotRaw json.RawMessage) []streamBlock {
+// extractPageStream parses the in-flight stream window from a history page
+// frame (the takeover successor of the old metadata snapshot field).
+func extractPageStream(t *testing.T, raw []byte) []streamBlock {
 	t.Helper()
-	if len(snapshotRaw) == 0 {
-		return nil
+	var env struct {
+		Type   string        `json:"type"`
+		Stream []streamBlock `json:"stream"`
 	}
-	var snap struct {
-		Blocks []streamBlock `json:"blocks"`
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal history page: %v (raw: %.200s)", err, raw)
 	}
-	if err := json.Unmarshal(snapshotRaw, &snap); err != nil {
-		t.Fatalf("unmarshal snapshot: %v", err)
+	if env.Type != "history" {
+		t.Fatalf("expected history page frame, got type %q", env.Type)
 	}
-	return snap.Blocks
+	return env.Stream
+}
+
+// extractEventSeq parses the monotonic seq stamp from a {type:"event"} frame.
+func extractEventSeq(t *testing.T, raw []byte) uint64 {
+	t.Helper()
+	var env struct {
+		Type string `json:"type"`
+		Seq  uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal event frame: %v (raw: %.200s)", err, raw)
+	}
+	if env.Type != "event" {
+		t.Fatalf("expected event frame, got type %q", env.Type)
+	}
+	if env.Seq == 0 {
+		t.Fatal("event frame carries no seq stamp")
+	}
+	return env.Seq
 }
 
 func mbFatalf(t *testing.T, format string, args ...any) {

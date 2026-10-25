@@ -2317,7 +2317,6 @@ describe('chat integration', () => {
       connect: { connected: true },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: { messages: [], nextCursor: '', hasMore: false },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
       jobs: {
         jobs: [
@@ -2345,7 +2344,6 @@ describe('chat integration', () => {
       connect: { connected: true },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'a' },
-      history: { messages: [], nextCursor: '', hasMore: false },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
       jobs: { jobs: [{ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check', startedMs: 1 }] },
     } as const
@@ -3307,15 +3305,15 @@ describe('chat integration', () => {
   it('metadata restore renders queued messages with attachment chips', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
-    // A busy engine reconnect: non-empty snapshot flips streaming back on
-    // (metadata's resetAllState runs first), then queuedMsgs restores the queue.
+    // A busy engine reconnect: the page frame's stream window flips
+    // streaming back on (metadata's resetAllState ran first), then queuedMsgs
+    // restores the queue.
     dispatch({
       type: 'metadata',
       connect: { connected: true },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: { messages: [], nextCursor: '', hasMore: false },
-      snapshot: { blocks: [{ kind: 'text', id: '', text: 'working' }] },
+      busy: true,
       queuedMsgs: [{
         uuid: 'q-1',
         text: 'review this',
@@ -3325,6 +3323,17 @@ describe('chat integration', () => {
         ],
       }],
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    expect(
+      sent.find((m) => (m as { type: string }).type === 'history_request'),
+    ).toMatchObject({ type: 'history_request', cursor: '', limit: 30 })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'working' }],
+      nextCursor: '',
+      hasMore: false,
+      busy: true,
     })
     expect(document.body.textContent).toContain('Tap to CANCEL')
     expect(document.body.textContent).toContain('[report.pdf]')
@@ -3339,11 +3348,18 @@ describe('chat integration', () => {
       connect: { connected: true },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: { messages: [], nextCursor: '', hasMore: false },
-      snapshot: { blocks: [{ kind: 'text', id: '', text: 'working' }] },
+      busy: true,
       // uuid:'' mirrors a locally-pushed queue entry awaiting its server uuid
       queuedMsgs: [{ uuid: '', text: 'with file', attachments: [{ name: 'doc.pdf', mime: 'application/pdf' }] }],
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'working' }],
+      nextCursor: '',
+      hasMore: false,
+      busy: true,
     })
     dispatch({ type: 'queued', uuid: 'srv-1' })
     expect(document.body.textContent).toContain('Tap to CANCEL')
@@ -3670,28 +3686,29 @@ describe('artifact integration', () => {
       connect: { connected: true, model: 'test' },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: {
-        messages: [
-          {
-            id: 'u1', role: 'user', startedAt: 1000, text: 'make a page',
-            thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0 },
-          },
-          {
-            // One assistant message per query on the wire; Write+Edit of the
-            // same file inside it dedupes to a single Updated card.
-            id: 'a1', role: 'assistant', startedAt: 1000, text: '',
-            thinking: [], tools: [],
-            blocks: [
-              { kind: 'tool', tool: { id: 'w1', name: 'Write', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
-              { kind: 'tool', tool: { id: 'e1', name: 'Edit', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
-              { kind: 'tool', tool: { id: 'w2', name: 'Write', summary: '/pd/artifacts/other.html', durationNs: 1000 } },
-            ],
-            usage: { inputTokens: 0, outputTokens: 0 },
-          },
-        ],
-        nextCursor: '', hasMore: false,
-      },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [
+        {
+          id: 'u1', role: 'user', startedAt: 1000, text: 'make a page',
+          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0 },
+        },
+        {
+          // One assistant message per query on the wire; Write+Edit of the
+          // same file inside it dedupes to a single Updated card.
+          id: 'a1', role: 'assistant', startedAt: 1000, text: '',
+          thinking: [], tools: [],
+          blocks: [
+            { kind: 'tool', tool: { id: 'w1', name: 'Write', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
+            { kind: 'tool', tool: { id: 'e1', name: 'Edit', summary: '/pd/artifacts/game.html', durationNs: 1000 } },
+            { kind: 'tool', tool: { id: 'w2', name: 'Write', summary: '/pd/artifacts/other.html', durationNs: 1000 } },
+          ],
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+      ],
+      nextCursor: '', hasMore: false,
     })
 
     const cards = artifactCards()
@@ -3801,7 +3818,6 @@ describe('wui asset hash reload', () => {
         : { connected: true, wuiHash },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: { messages: [], nextCursor: '', hasMore: false },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
     }
   }

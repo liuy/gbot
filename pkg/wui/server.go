@@ -23,7 +23,9 @@ import (
 
 // EnableCompression negotiates permessage-deflate: chat frames are JSON
 // (8-15x compressible) and remote clients can sit on ~1Mbps tailscale links
-// where an uncompressed ~1MB takeover metadata frame costs ~16 seconds.
+// where an uncompressed frame costs seconds of wire time. Takeover metadata
+// stays small by design (rev/busy instead of embedded history/snapshot); the
+// page content arrives on its own history_request round trip.
 var chatUpgrader = websocket.Upgrader{
 	CheckOrigin:       func(*http.Request) bool { return true },
 	EnableCompression: true,
@@ -302,11 +304,10 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 			var msg struct {
 				Cursor string `json:"cursor"`
 				Limit  int    `json:"limit"`
+				Nonce  uint64 `json:"nonce,omitempty"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
-				if histMsg := c.buildHistory(c.activeSlot(), msg.Cursor, msg.Limit); histMsg != nil {
-					c.sendWS(histMsg)
-				}
+				c.serveHistoryPage(msg.Cursor, msg.Limit, msg.Nonce)
 			}
 		case "session_list_request":
 			if payload := c.buildSessionList(); payload != nil {

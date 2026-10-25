@@ -143,12 +143,16 @@ func TestMultiEngine_DualStreamSwitch(t *testing.T) {
 	// While main is streaming, engineB also buffers events.
 	hubB.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "b-2"})
 
-	// Switch to engineB. Metadata contains snapshot with accumulated "b-1b-2".
+	// Switch to engineB. The takeover page's stream window carries the
+	// accumulated "b-1b-2".
 	c.handleEngineSwitch("engineB")
 	metaB := readMetadata(t, ws)
-	snapB := extractSnapshotFromMetadata(t, metaB.Snapshot)
+	if metaB.History != nil || metaB.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", metaB.History, metaB.Snapshot)
+	}
+	snapB := extractPageStream(t, requestHistory(t, ws, "", 30, 1))
 	if len(snapB) != 1 || snapB[0].Text != "b-1b-2" {
-		t.Fatalf("engineB snapshot = %v, want 1 block with text 'b-1b-2'", snapB)
+		t.Fatalf("engineB page stream = %v, want 1 block with text 'b-1b-2'", snapB)
 	}
 
 	// Send a live event to engineB.
@@ -158,12 +162,15 @@ func TestMultiEngine_DualStreamSwitch(t *testing.T) {
 	// While engineB is active, main buffers events silently.
 	hubMain.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "main-3"})
 
-	// Switch back to main. Metadata snapshot contains "main-1main-2main-3".
+	// Switch back to main. The page stream carries "main-1main-2main-3".
 	c.handleEngineSwitch("main")
 	metaMain := readMetadata(t, ws)
-	snapMain := extractSnapshotFromMetadata(t, metaMain.Snapshot)
+	if metaMain.History != nil || metaMain.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", metaMain.History, metaMain.Snapshot)
+	}
+	snapMain := extractPageStream(t, requestHistory(t, ws, "", 30, 1))
 	if len(snapMain) != 1 || snapMain[0].Text != "main-1main-2main-3" {
-		t.Fatalf("main snapshot = %v, want 1 block with text 'main-1main-2main-3'", snapMain)
+		t.Fatalf("main page stream = %v, want 1 block with text 'main-1main-2main-3'", snapMain)
 	}
 
 	// Send live event to main.
@@ -460,10 +467,14 @@ func TestIntegration_SubAgentEventsSurviveEngineSwitch(t *testing.T) {
 		t.Fatal("sub-agent text should be buffered while inactive")
 	}
 
-	// Switch back to main — metadata contains the snapshot with nested children.
+	// Switch back to main — the takeover page's stream window carries the
+	// nested children.
 	c.handleEngineSwitch("main")
 	meta := readMetadata(t, ws)
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
+	}
+	snapBlocks := extractPageStream(t, requestHistory(t, ws, "", 30, 1))
 	// 2 root blocks: text "Let me check" + Agent tool.
 	// The "done" text_delta hasn't happened yet when the snapshot is taken.
 	if len(snapBlocks) != 2 {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -368,8 +369,9 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws) // drain the single metadata frame
 
-	// Request next page
-	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "30", "limit": 30})
+	// Request next page (legacy numeric cursor must still resolve), with a
+	// nonce the response frame must echo back.
+	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "30", "limit": 30, "nonce": 7})
 	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
 		t.Fatalf("write history_request: %v", err)
 	}
@@ -380,6 +382,7 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 		Messages   []historyChatMsg `json:"messages"`
 		NextCursor string           `json:"nextCursor"`
 		HasMore    bool             `json:"hasMore"`
+		Nonce      uint64           `json:"nonce"`
 	}
 	if err := json.Unmarshal(p2Data, &p2Env); err != nil {
 		t.Fatalf("unmarshal page 2: %v", err)
@@ -390,19 +393,27 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	if len(p2Env.Messages) != 30 {
 		t.Errorf("page 2 messages = %d, want 30", len(p2Env.Messages))
 	}
+	if p2Env.Messages[0].ID != "msg-5" {
+		t.Errorf("page 2 first message = %q, want msg-5 (window [5,35))", p2Env.Messages[0].ID)
+	}
 	if !p2Env.HasMore {
 		t.Error("page 2 hasMore = false, want true")
 	}
-	if p2Env.NextCursor != "60" {
-		t.Errorf("page 2 nextCursor = %q, want \"60\"", p2Env.NextCursor)
+	// Legacy "30" on 65 messages = anchor window ending at committed 35 →
+	// next window ends at 5.
+	if !regexp.MustCompile(`^a:5:0:\d+$`).MatchString(p2Env.NextCursor) {
+		t.Errorf("page 2 nextCursor = %q, want a:5:0:<gen>", p2Env.NextCursor)
+	}
+	if p2Env.Nonce != 7 {
+		t.Errorf("page 2 nonce = %d, want 7 (echo of the request nonce)", p2Env.Nonce)
 	}
 }
 
-// requestHistory sends a history_request with the given cursor/limit and
-// returns the raw envelope JSON for caller-side assertions.
-func requestHistory(t *testing.T, ws *websocket.Conn, cursor string, limit int) []byte {
+// requestHistory sends a history_request with the given cursor/limit/nonce
+// and returns the raw envelope JSON for caller-side assertions.
+func requestHistory(t *testing.T, ws *websocket.Conn, cursor string, limit int, nonce uint64) []byte {
 	t.Helper()
-	req, err := json.Marshal(map[string]any{"type": "history_request", "cursor": cursor, "limit": limit})
+	req, err := json.Marshal(map[string]any{"type": "history_request", "cursor": cursor, "limit": limit, "nonce": nonce})
 	if err != nil {
 		t.Fatalf("marshal history_request: %v", err)
 	}
@@ -442,7 +453,7 @@ func TestBuildHistory_PreCompactTransitionPage(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "", 30)
+	data := requestHistory(t, ws, "", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -503,7 +514,7 @@ func TestBuildHistory_PreCompactFinalPage(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "precompact:0", 30)
+	data := requestHistory(t, ws, "precompact:0", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -576,7 +587,7 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 	drainInitialFrames(t, ws)
 
 	// Page 1: 30 msgs, hasMore=true, nextCursor="precompact:30".
-	d1 := requestHistory(t, ws, "precompact:0", 30)
+	d1 := requestHistory(t, ws, "precompact:0", 30, 1)
 	var env1 struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -597,7 +608,7 @@ func TestBuildHistory_PreCompactMultiPage(t *testing.T) {
 	}
 
 	// Page 2: 20 msgs, hasMore=false, nextCursor="".
-	d2 := requestHistory(t, ws, "precompact:30", 30)
+	d2 := requestHistory(t, ws, "precompact:30", 30, 1)
 	var env2 struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -638,7 +649,7 @@ func TestBuildHistory_PreCompactNoBoundary(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "", 30)
+	data := requestHistory(t, ws, "", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -686,7 +697,7 @@ func TestBuildHistory_PreCompactMalformedCursor(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "precompact:abc", 30)
+	data := requestHistory(t, ws, "precompact:abc", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -731,7 +742,7 @@ func TestBuildHistory_PreCompactEmptyPage(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "precompact:0", 30)
+	data := requestHistory(t, ws, "precompact:0", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -790,7 +801,7 @@ func TestBuildPreCompactHistory_InPageBoundaryMarker(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "precompact:0", 30)
+	data := requestHistory(t, ws, "precompact:0", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`
@@ -894,29 +905,8 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	// Prefill replay: queryStartMsgIdx=3 with empty blocks → snapshot absent
-	// → a query_start event frame for msgs[3] must follow the metadata.
-	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
-	_, replayData, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected replayed query_start after metadata: %v", err)
-	}
-	var replayEnv struct {
-		Type  string `json:"type"`
-		Event struct {
-			Type    string `json:"type"`
-			Message *struct {
-				ID string `json:"id"`
-			} `json:"message"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(replayData, &replayEnv); err != nil {
-		t.Fatalf("unmarshal replay: %v", err)
-	}
-	if replayEnv.Type != "event" || replayEnv.Event.Type != "query_start" ||
-		replayEnv.Event.Message == nil || replayEnv.Event.Message.ID != "goal" {
-		t.Fatalf("replay frame = %s, want event/query_start for message id \"goal\"", string(replayData))
-	}
+	// v2: no replay frame follows the metadata (deleted); the page's busy
+	// field carries the prefill signal instead.
 
 	// Explicitly request page 1 so we observe exactly what buildHistory returns.
 	req, err := json.Marshal(map[string]any{"type": "history_request", "cursor": "", "limit": 30})
@@ -927,6 +917,13 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	data := readWSMessage(t, ws)
+	page := parseHistPage(t, data)
+	if !page.Busy {
+		t.Error("page busy = false, want true (queryStartMsgIdx=3, prefill window)")
+	}
+	if len(page.Stream) != 0 {
+		t.Errorf("page stream = %d blocks, want none (prefill window has no streamed blocks)", len(page.Stream))
+	}
 	msgs := mustUnmarshalMessages(t, data)
 
 	ids := make(map[string]bool, len(msgs))
@@ -942,7 +939,7 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 	}
 	for _, banned := range []string{"skill-a", "tr", "next-a"} {
 		if ids[banned] {
-			t.Errorf("history must NOT include in-flight assistant/tool message %q (would overlap with snapshot)", banned)
+			t.Errorf("history must NOT include in-flight assistant/tool message %q (would overlap with the stream window)", banned)
 		}
 	}
 }
@@ -982,7 +979,7 @@ func TestBuildHistory_CompactBoundaryInlinePosition(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	data := requestHistory(t, ws, "", 30)
+	data := requestHistory(t, ws, "", 30, 1)
 	var env struct {
 		Type       string           `json:"type"`
 		Messages   []historyChatMsg `json:"messages"`

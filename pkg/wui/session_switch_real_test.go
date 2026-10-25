@@ -67,9 +67,9 @@ func newRealEngineConnector(t *testing.T, eng *engine.Engine) *WUIConnector {
 
 // TestSessionSwitch_RealEngine_HistoryAndList verifies the full production
 // path with a real engine + store: clicking a session in the sidebar must
-// (a) switch the engine's in-memory messages, (b) push a metadata frame whose
-// history carries the NEW session's transcript, and (c) refresh the session
-// list with the new session marked current.
+// (a) switch the engine's in-memory messages, (b) push a stripped metadata
+// frame whose follow-up page carries the NEW session's transcript, and (c)
+// refresh the session list with the new session marked current.
 func TestSessionSwitch_RealEngine_HistoryAndList(t *testing.T) {
 	store, sidA, sidB := seedRealSessions(t, "main")
 
@@ -96,6 +96,9 @@ func TestSessionSwitch_RealEngine_HistoryAndList(t *testing.T) {
 	if cs.SessionID != sidB {
 		t.Fatalf("connect.sessionID = %q, want session B %q", cs.SessionID, sidB)
 	}
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
+	}
 
 	var hist struct {
 		Messages []struct {
@@ -103,8 +106,8 @@ func TestSessionSwitch_RealEngine_HistoryAndList(t *testing.T) {
 			Text string `json:"text"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(meta.History, &hist); err != nil {
-		t.Fatalf("unmarshal history: %v", err)
+	if err := json.Unmarshal(requestHistory(t, ws, "", 30, 1), &hist); err != nil {
+		t.Fatalf("unmarshal history page: %v", err)
 	}
 	if len(hist.Messages) != 1 || hist.Messages[0].Text != "hello from beta" {
 		t.Fatalf("history after switch = %+v, want the beta session transcript", hist.Messages)

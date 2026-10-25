@@ -197,26 +197,27 @@ func dupJobReminderItem(uuid, jobID string) types.QueuedItem {
 	}
 }
 
-// dupFreshClientMetadata dials a fresh WS client and returns its metadata
-// frame's history and snapshot — the pair the frontend merges into the view.
-func dupFreshClientMetadata(t *testing.T, c *WUIConnector) (historyJSON, snapshotJSON string) {
+// dupFreshClientMetadata dials a fresh WS client and returns the JSON of the
+// unified page frame it fetches after takeover — the messages + stream pair
+// the frontend merges into the view.
+func dupFreshClientMetadata(t *testing.T, c *WUIConnector) string {
 	t.Helper()
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	meta := readMetadata(t, ws)
-	return string(meta.History), string(meta.Snapshot)
+	readMetadata(t, ws)
+	return string(requestHistory(t, ws, "", 30, 1))
 }
 
 // dupRenderedCount models the frontend's history render
 // (mapHistoryToChatMessages): a message's visible text is its blocks array
 // when present, else the flat text field; empty-text user rows are skipped.
-// Counts needle across the rendered history plus the raw snapshot blocks.
-func dupRenderedCount(t *testing.T, historyJSON, snapshotJSON, needle string) int {
+// Counts needle across the rendered messages plus the page's stream blocks.
+func dupRenderedCount(t *testing.T, pageJSON, needle string) int {
 	t.Helper()
-	var hist struct {
+	var page struct {
 		Messages []struct {
 			Role   string `json:"role"`
 			Text   string `json:"text"`
@@ -225,12 +226,21 @@ func dupRenderedCount(t *testing.T, historyJSON, snapshotJSON, needle string) in
 				Text string `json:"text"`
 			} `json:"blocks"`
 		} `json:"messages"`
+		Stream []struct {
+			Kind     string `json:"kind"`
+			Text     string `json:"text"`
+			Children []struct {
+				Kind     string `json:"kind"`
+				Text     string `json:"text"`
+				Children []any  `json:"children"`
+			} `json:"children"`
+		} `json:"stream"`
 	}
-	if err := json.Unmarshal([]byte(historyJSON), &hist); err != nil {
-		t.Fatalf("unmarshal history: %v", err)
+	if err := json.Unmarshal([]byte(pageJSON), &page); err != nil {
+		t.Fatalf("unmarshal page: %v", err)
 	}
 	count := 0
-	for _, m := range hist.Messages {
+	for _, m := range page.Messages {
 		if m.Role == "user" && strings.TrimSpace(m.Text) == "" && len(m.Blocks) == 0 {
 			continue
 		}
@@ -242,7 +252,12 @@ func dupRenderedCount(t *testing.T, historyJSON, snapshotJSON, needle string) in
 			count += strings.Count(b.Text, needle)
 		}
 	}
-	count += strings.Count(snapshotJSON, needle)
+	for _, b := range page.Stream {
+		count += strings.Count(b.Text, needle)
+		for _, child := range b.Children {
+			count += strings.Count(child.Text, needle)
+		}
+	}
 	return count
 }
 
@@ -313,22 +328,20 @@ func TestTakeover_AutoTurnMidRunAssistantRenderOnce(t *testing.T) {
 		t.Fatal("assistant row never reached engine history while the tool ran")
 	}
 
-	// Fresh client connects mid-run and receives the composite metadata
-	// frame — the same history + snapshot pair the frontend merges.
-	historyJSON, snapshotJSON := dupFreshClientMetadata(t, c)
+	// Fresh client connects mid-run and fetches the unified page — the same
+	// messages + stream pair the frontend merges.
+	pageJSON := dupFreshClientMetadata(t, c)
 
-	inHistory := strings.Count(historyJSON, marker)
-	inSnapshot := strings.Count(snapshotJSON, marker)
-	merged := dupRenderedCount(t, historyJSON, snapshotJSON, marker)
+	merged := dupRenderedCount(t, pageJSON, marker)
 	if merged != 1 {
-		t.Fatalf("auto-turn assistant text %q appears %d times in a fresh client's merged view while the auto-turn runs (history=%d, snapshot=%d, frontend-rendered=%d), want exactly 1\nhistory=%s\nsnapshot=%s",
-			marker, merged, inHistory, inSnapshot, merged, historyJSON, snapshotJSON)
+		t.Fatalf("auto-turn assistant text %q appears %d times in a fresh client's merged view while the auto-turn runs, want exactly 1\npage=%s",
+			marker, merged, pageJSON)
 	}
 	// The boundary must keep the reminder row itself: it is a user-side row
 	// (msgs[:idx+1] admits it) and must render once from history like any
 	// queued user input, never vanish behind the truncation.
-	if n := dupRenderedCount(t, historyJSON, snapshotJSON, "make check"); n != 1 {
-		t.Fatalf("reminder row renders %d times in a fresh client's merged view, want exactly 1\nhistory=%s\nsnapshot=%s",
-			n, historyJSON, snapshotJSON)
+	if n := dupRenderedCount(t, pageJSON, "make check"); n != 1 {
+		t.Fatalf("reminder row renders %d times in a fresh client's merged view, want exactly 1\npage=%s",
+			n, pageJSON)
 	}
 }

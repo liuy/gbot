@@ -62,37 +62,25 @@ func TestTakeover_NewConnectionReceivesHistoryThenLiveStream(t *testing.T) {
 		}
 
 		// Conn2 connects → takeover. Drain the metadata frame which contains
-		// connect, config, engines, history, stats.
+		// connect, config, engines, stats.
 		ws2 := hs.dialWS(t)
 		meta := readMetadata(t, ws2)
 		hs.awaitTakeover(t)
 
-		// Verify history is inside the metadata frame.
-		var hist struct {
-			Type     string `json:"type"`
-			Messages []struct {
-				Role string `json:"role"`
-				Text string `json:"text"`
-			} `json:"messages"`
+		// v2: metadata no longer embeds history/snapshot; the unified page
+		// carries both (committed rows in messages, in-flight in stream).
+		if meta.History != nil || meta.Snapshot != nil {
+			t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
 		}
-		if err := json.Unmarshal(meta.History, &hist); err != nil {
-			t.Fatalf("ws2 history unmarshal: %v", err)
+		page := parseHistPage(t, requestHistory(t, ws2, "", 30, 1))
+		if len(page.Messages) != 2 {
+			t.Fatalf("page messages = %d, want 2", len(page.Messages))
 		}
-		if hist.Type != "history" {
-			t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
+		if page.Messages[0].ID != "u1" || page.Messages[1].ID != "a1" {
+			t.Fatalf("page messages = %s,%s, want u1,a1", page.Messages[0].ID, page.Messages[1].ID)
 		}
-		if len(hist.Messages) != 2 {
-			t.Fatalf("ws2 history has %d messages, want 2", len(hist.Messages))
-		}
-
-		// Verify snapshot is embedded in the metadata frame — d0..d4 accumulated
-		// into a single text block.
-		snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
-		if len(snapBlocks) != 1 {
-			t.Fatalf("snapshot should have 1 text block (accumulated d0..d4), got %d", len(snapBlocks))
-		}
-		if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0d1d2d3d4" {
-			t.Errorf("snapshot text = kind=%s text=%q, want text 'd0d1d2d3d4'", snapBlocks[0].Kind, snapBlocks[0].Text)
+		if len(page.Stream) != 1 || page.Stream[0].Kind != "text" || page.Stream[0].Text != "d0d1d2d3d4" {
+			t.Fatalf("page stream = %+v, want one text block 'd0d1d2d3d4'", page.Stream)
 		}
 
 		// Now send live events d5, d6, d7. These arrive as plain event frames
@@ -601,17 +589,24 @@ func TestBufferClearedOnQueryEnd(t *testing.T) {
 
 		// Connect WS2 → takeover → read metadata frame.
 		ws2 := hs.dialWS(t)
-		// The metadata frame contains history (with the committed response).
+		// The committed response rides the unified page, not the metadata.
 		meta := readMetadata(t, ws2)
 		hs.awaitTakeover(t)
-		var hist struct {
-			Type string `json:"type"`
+		if meta.History != nil || meta.Snapshot != nil {
+			t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
 		}
-		if err := json.Unmarshal(meta.History, &hist); err != nil {
-			t.Fatalf("ws2 history unmarshal: %v", err)
+		page := parseHistPage(t, requestHistory(t, ws2, "", 30, 1))
+		foundCommitted := false
+		for _, m := range page.Messages {
+			if m.Text == "committed response" {
+				foundCommitted = true
+			}
 		}
-		if hist.Type != "history" {
-			t.Fatalf("ws2 history msg type = %q, want \"history\"", hist.Type)
+		if !foundCommitted {
+			t.Fatalf("page missing the committed response: %+v", page.Messages)
+		}
+		if len(page.Stream) != 0 {
+			t.Fatalf("page stream = %+v, want none (query_end cleared the region; sub-agent events targeted a dead parent)", page.Stream)
 		}
 
 		// Send a live event. Since tu1 was cleared, the event targets a
@@ -722,18 +717,18 @@ func TestTakeover_StatsMessageSentAfterReplay(t *testing.T) {
 	}
 }
 
-// TestTakeover_SnapshotIncludesPreAttachmentBlocks verifies that snapshot
-// includes ALL streaming blocks from query start, even when a queued
-// attachment message is drained mid-query at a turn boundary.
+// TestTakeover_SnapshotIncludesPreAttachmentBlocks verifies that the takeover
+// page's stream window includes ALL streaming blocks from query start, even
+// when a queued attachment message is drained mid-query at a turn boundary.
 //
 // Scenario: query in progress, turn 1 produces text + tool blocks, then a
 // queued user message is drained (EventAttachment), then turn 2 starts.
-// Takeover snapshot must contain the turn-1 blocks AND the attachment echo.
+// The page stream must contain the turn-1 blocks AND the attachment echo.
 func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
 	c := newTestConnector(t)
 
-	// Conn1 connects first, becomes active.
-	ws1 := dialAndStore(t, c)
+	// Conn1 connects first, becomes active (cleanup is dialAndStore's own).
+	_ = dialAndStore(t, c)
 
 	// Empty history — all content comes from streaming.
 	c.mock().SetMessagesFn(func() []types.Message { return nil })
@@ -779,11 +774,11 @@ func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 	meta := readMetadata(t, ws2)
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
+	}
 
-	// Drain connect_status that ws1 might get from takeover
-	_ = ws1
-
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	snapBlocks := extractPageStream(t, requestHistory(t, ws2, "", 30, 1))
 
 	// Snapshot must contain:
 	// 1. text block "hello world" (turn 1)
@@ -859,8 +854,8 @@ func TestTakeover_SnapshotIncludesPreAttachmentBlocks(t *testing.T) {
 func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
 	c := newTestConnector(t)
 
-	// Conn1 connects first, becomes active.
-	ws1 := dialAndStore(t, c)
+	// Conn1 connects first, becomes active (cleanup is dialAndStore's own).
+	_ = dialAndStore(t, c)
 
 	// Empty history — all content comes from streaming.
 	c.mock().SetMessagesFn(func() []types.Message { return nil })
@@ -888,10 +883,11 @@ func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 	meta := readMetadata(t, ws2)
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
+	}
 
-	_ = ws1
-
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	snapBlocks := extractPageStream(t, requestHistory(t, ws2, "", 30, 1))
 
 	var textContents []string
 	var userTexts []string
@@ -911,7 +907,7 @@ func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
 		}
 	}
 	if !foundWorking {
-		t.Errorf("snapshot missing auto-turn streaming text 'working', texts: %v", textContents)
+		t.Errorf("page stream missing auto-turn streaming text 'working', texts: %v", textContents)
 	}
 
 	foundMakeCheck := false
@@ -936,8 +932,8 @@ func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
 func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 	c := newTestConnector(t)
 
-	// Conn1 connects first, becomes active.
-	ws1 := dialAndStore(t, c)
+	// Conn1 connects first, becomes active (cleanup is dialAndStore's own).
+	_ = dialAndStore(t, c)
 
 	// Engine has: [query1User, query1Response, makeCheckAttachment]
 	// processAttachments calls snapshotQueryStart() after appendMessages,
@@ -981,10 +977,12 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
 	meta := readMetadata(t, ws2)
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
+	}
 
-	_ = ws1
-
-	snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
+	pageRaw := requestHistory(t, ws2, "", 30, 1)
+	snapBlocks := extractPageStream(t, pageRaw)
 
 	var textContents []string
 	var userTexts []string
@@ -1032,7 +1030,7 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 			Text string `json:"text"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(meta.History, &hist); err != nil {
+	if err := json.Unmarshal(pageRaw, &hist); err != nil {
 		t.Fatalf("unmarshal history: %v", err)
 	}
 	foundQuery1Response := false
@@ -1053,12 +1051,13 @@ func TestTakeover_SnapshotQueryEndAttachmentPath(t *testing.T) {
 	}
 }
 
-// TestTakeover_PrefillReplaysQueryStart verifies that a client subscribing to
-// an engine captured in the prefill window (query started, no streamed blocks
-// yet) receives a synthetic query_start event frame right after the metadata
-// frame. History ends at the user message and the snapshot is absent in this
-// window, so without the replay the client has no in-flight signal at all.
-func TestTakeover_PrefillReplaysQueryStart(t *testing.T) {
+// TestTakeover_PrefillBusyPage verifies that a client subscribing to an
+// engine captured in the prefill window (query started, no streamed blocks
+// yet) learns the in-flight state from the page's busy field: metadata
+// carries busy=true, no event frame follows it (the query_start replay is
+// gone), and the page holds the user query message with busy=true and an
+// empty stream window.
+func TestTakeover_PrefillBusyPage(t *testing.T) {
 	c := newTestConnector(t)
 
 	// ws1 connects first (drains its metadata with empty history), then the
@@ -1073,83 +1072,39 @@ func TestTakeover_PrefillReplaysQueryStart(t *testing.T) {
 	})
 	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
 
-	// ws2 takes over → metadata frame, then the replayed query_start frame.
+	// ws2 takes over → metadata frame only.
 	mux2 := http.NewServeMux()
 	RegisterChatWS(mux2, c)
 	srv2 := httptest.NewServer(mux2)
 	t.Cleanup(srv2.Close)
 	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
-	readMetadata(t, ws2)
-
-	// Raw ReadMessage with its own deadline — readWSMessage resets to 30s and
-	// would turn a missing replay frame into a 30s hang instead of a fast red.
-	_ = ws2.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
-	_, data, err := ws2.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected replayed query_start frame after metadata, got read error (prefill window not replayed): %v", err)
+	meta := readMetadata(t, ws2)
+	if meta.Busy == nil || !*meta.Busy {
+		t.Fatalf("prefill metadata busy = %v, want true (query in flight)", meta.Busy)
+	}
+	if meta.History != nil || meta.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
 	}
 
-	// Raw map cross-check: assert exact wire keys, including the absence of
-	// aborted/rewound (omitempty zero values must stay omitted).
-	var rawFrame map[string]any
-	if err := json.Unmarshal(data, &rawFrame); err != nil {
-		t.Fatalf("replay frame unmarshal: %v", err)
+	// The page is the in-flight signal: busy=true, no stream blocks, the
+	// user query row in messages. (The request also pins that no event frame
+	// sneaks between metadata and the page: the page must be the next frame.)
+	page := parseHistPage(t, requestHistory(t, ws2, "", 30, 1))
+	if !page.Busy {
+		t.Error("page busy = false, want true (frozen mid-prefill)")
 	}
-	if rawFrame["type"] != "event" {
-		t.Fatalf("replay frame type = %v, want \"event\"", rawFrame["type"])
+	if len(page.Stream) != 0 {
+		t.Errorf("page stream = %+v, want none (no streamed blocks in the prefill window)", page.Stream)
 	}
-	event, ok := rawFrame["event"].(map[string]any)
-	if !ok {
-		t.Fatalf("replay frame missing event object: %s", string(data))
-	}
-	if event["type"] != "query_start" {
-		t.Fatalf("replay event type = %v, want \"query_start\"", event["type"])
-	}
-	if _, exists := event["agent"]; exists {
-		t.Fatalf("replay event must not carry agent (main query path): %s", string(data))
-	}
-	for _, banned := range []string{"aborted", "rewound"} {
-		if _, exists := event[banned]; exists {
-			t.Fatalf("replay frame must not contain %q key: %s", banned, string(data))
-		}
+	if len(page.Messages) != 1 || page.Messages[0].ID != "u1" || page.Messages[0].Text != "prefill query" {
+		t.Errorf("page messages = %+v, want the user query row u1", page.Messages)
 	}
 
-	var env struct {
-		Event struct {
-			Message *struct {
-				ID   string `json:"id"`
-				Role string `json:"role"`
-			} `json:"message"`
-			Model string `json:"model"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		t.Fatalf("replay frame typed unmarshal: %v", err)
-	}
-	if env.Event.Message == nil || env.Event.Message.ID != "u1" || env.Event.Message.Role != "user" {
-		t.Fatalf("replay event.message = %+v, want id \"u1\" role \"user\"", env.Event.Message)
-	}
-	if env.Event.Model != "glm-5.2" {
-		t.Fatalf("replay event.model = %q, want \"glm-5.2\"", env.Event.Model)
-	}
-
-	// Live events must still flow after the replay — the metadata → replay →
-	// live frames form one total order on the wire.
-	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "late"})
-	_, data, err = ws2.ReadMessage()
-	if err != nil {
-		t.Fatalf("post-replay live event read: %v", err)
-	}
-	var late struct {
-		Event struct {
-			Text string `json:"text"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(data, &late); err != nil {
-		t.Fatalf("late frame unmarshal: %v", err)
-	}
-	if late.Event.Text != "late" {
-		t.Fatalf("post-replay live event text = %q, want \"late\"", late.Event.Text)
+	// No event frame may follow the metadata unprompted (no replay exists).
+	// Runs last: a read timeout is terminal for a gorilla connection.
+	_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // REAL-TIME
+	if _, data, err := ws2.ReadMessage(); err == nil {
+		t.Fatalf("prefill takeover must not push frames after metadata (replay deleted), got: %s", string(data))
 	}
 }
 
@@ -1171,10 +1126,11 @@ func TestTakeover_IdleEngineNoReplay(t *testing.T) {
 	})
 }
 
-// TestTakeover_SnapshotPresentNoReplay verifies that when streamed blocks
-// exist (snapshot channel populated), the replay is suppressed — query_start's
-// client-side cleanup would otherwise discard snapshot-rendered content.
-func TestTakeover_SnapshotPresentNoReplay(t *testing.T) {
+// TestTakeover_SnapshotBecomesPageStream verifies that when streamed blocks
+// exist, the takeover delivers them through the page's stream window (the
+// successor of the old metadata snapshot channel) — and still sends no frame
+// after the metadata itself.
+func TestTakeover_SnapshotBecomesPageStream(t *testing.T) {
 	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
 		_ = hs.dialDrained(t)
 
@@ -1185,31 +1141,36 @@ func TestTakeover_SnapshotPresentNoReplay(t *testing.T) {
 
 		ws2 := hs.dialWS(t)
 		meta := readMetadata(t, ws2)
-
-		// Anchor the snapshot channel: it must still carry the streamed block.
-		snapBlocks := extractSnapshotFromMetadata(t, meta.Snapshot)
-		if len(snapBlocks) != 1 {
-			t.Fatalf("snapshot should have 1 text block, got %d", len(snapBlocks))
-		}
-		if snapBlocks[0].Kind != "text" || snapBlocks[0].Text != "d0" {
-			t.Fatalf("snapshot block = kind=%s text=%q, want text \"d0\"", snapBlocks[0].Kind, snapBlocks[0].Text)
+		if meta.History != nil || meta.Snapshot != nil {
+			t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", meta.History, meta.Snapshot)
 		}
 
-		// Snapshot present → replay suppressed: no frame may follow the metadata.
+		// The streamed block rides the page's stream window (and the page
+		// must be the very next frame after metadata).
+		stream := extractPageStream(t, requestHistory(t, ws2, "", 30, 1))
+		if len(stream) != 1 {
+			t.Fatalf("page stream should have 1 text block, got %d", len(stream))
+		}
+		if stream[0].Kind != "text" || stream[0].Text != "d0" {
+			t.Fatalf("page stream block = kind=%s text=%q, want text \"d0\"", stream[0].Kind, stream[0].Text)
+		}
+
+		// Nothing may follow the metadata unprompted.
 		// The 300ms observation span runs on the bubble's virtual clock: it
 		// advances only when every goroutine is durably blocked, so "no frame
 		// within 300ms" is proven deterministically and in zero real time.
+		// Runs last: a read timeout is terminal for a gorilla connection.
 		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		if _, data, err := ws2.ReadMessage(); err == nil {
-			t.Fatalf("snapshot-present takeover must not replay query_start (would discard snapshot content), got: %s", string(data))
+			t.Fatalf("takeover must not push frames after metadata, got: %s", string(data))
 		}
 	})
 }
 
-// TestTakeover_ReplayIdxPastMessagesNoReplay covers the stale-index guard:
-// the recorded query start index no longer resolves against the current
-// message list (messages shrank between the engine's two reads), so the
-// replay must be dropped rather than synthesize a phantom message.
+// TestTakeover_ReplayIdxPastMessagesNoReplay pins the no-frame takeover
+// contract on a stale query-start index (index pointing past the message
+// list): with the query_start replay deleted, nothing may follow the
+// metadata regardless of the recorded index.
 func TestTakeover_ReplayIdxPastMessagesNoReplay(t *testing.T) {
 	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
 		_ = hs.dialDrained(t)
@@ -1226,68 +1187,11 @@ func TestTakeover_ReplayIdxPastMessagesNoReplay(t *testing.T) {
 		ws2 := hs.dialWS(t)
 		readMetadata(t, ws2)
 
-		// Stale index → no replay: the 300ms observation span proves no frame
-		// follows the metadata, on the bubble's virtual clock.
+		// The 300ms observation span proves no frame follows the metadata,
+		// on the bubble's virtual clock.
 		_ = ws2.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		if _, data, err := ws2.ReadMessage(); err == nil {
-			t.Fatalf("stale query start index must not replay, got: %s", string(data))
+			t.Fatalf("stale query start index must not produce frames after metadata, got: %s", string(data))
 		}
 	})
-}
-
-// TestBuildQueryStartReplay unit-covers the helper's guard paths. The
-// wire-level tests only exercise idx=0 with a healthy index; a mutated
-// bounds check would panic inside the WS handler where net/http recovers
-// it, indistinguishable from a clean no-replay, so the guards are pinned
-// here where a panic fails the test directly.
-func TestBuildQueryStartReplay(t *testing.T) {
-	c := newTestConnector(t)
-	slot := c.activeSlotTest(t)
-
-	// No query in flight.
-	if got := c.buildQueryStartReplay(slot); got != nil {
-		t.Fatalf("idle engine replay = %s, want nil", string(got))
-	}
-
-	// In flight, one user message: frame must carry message + model.
-	c.mock().SetMessagesFn(func() []types.Message {
-		return []types.Message{
-			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),
-				Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "prefill query"}}},
-		}
-	})
-	c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
-	payload := c.buildQueryStartReplay(slot)
-	if payload == nil {
-		t.Fatal("prefill engine replay = nil, want query_start frame")
-	}
-	var env struct {
-		Type  string `json:"type"`
-		Event struct {
-			Type    string `json:"type"`
-			Message *struct {
-				ID string `json:"id"`
-			} `json:"message"`
-			Model string `json:"model"`
-		} `json:"event"`
-	}
-	if err := json.Unmarshal(payload, &env); err != nil {
-		t.Fatalf("unmarshal replay: %v", err)
-	}
-	if env.Type != "event" || env.Event.Type != "query_start" ||
-		env.Event.Message == nil || env.Event.Message.ID != "u1" || env.Event.Model != "glm-5.2" {
-		t.Fatalf("replay frame = %s, want event/query_start u1 glm-5.2", string(payload))
-	}
-
-	// Index equal to len (message shrank to exactly the boundary) and index
-	// past the end — both must replay nil. Two distinct boundaries: the ==
-	// and > mutants of the bounds comparison only diverge on one of them.
-	c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
-	if got := c.buildQueryStartReplay(slot); got != nil {
-		t.Fatalf("boundary index replay = %s, want nil", string(got))
-	}
-	c.mock().SetQueryStartMsgIdxFn(func() int { return 2 })
-	if got := c.buildQueryStartReplay(slot); got != nil {
-		t.Fatalf("stale index replay = %s, want nil", string(got))
-	}
 }

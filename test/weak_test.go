@@ -334,6 +334,12 @@ var checkPatterns = []checkPattern{
 				if strings.Contains(line, "errors.Is(") || strings.Contains(line, "errors.As(") {
 					return true
 				}
+				// errors.AsType is the repo's generic-aware successor of
+				// errors.As — same content-verification status. No paren:
+				// call sites read errors.AsType[*T](err).
+				if strings.Contains(line, "errors.AsType") {
+					return true
+				}
 				if strings.Contains(line, "errMsg") || strings.Contains(line, "errStr") {
 					return true
 				}

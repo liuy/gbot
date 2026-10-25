@@ -384,11 +384,11 @@ describe('live reminder insertion', () => {
 
   it('metadata push during the idle auto-turn renders the reminder exactly once', () => {
     // The idle-drain contract: history owns the row (snapshotQueryStart
-    // indexes after the drain append), so the streamState snapshot must
-    // not carry an echo copy — a session switch / takeover during the
-    // auto-turn would render the row twice (history row + snapshot row).
-    // The frame below is the fixed wire: history carries the envelope, the
-    // snapshot only the auto-turn's streamed assistant text.
+    // indexes after the drain append), so the page's stream window must not
+    // carry an echo copy — a session switch / takeover during the auto-turn
+    // would render the row twice (history row + stream row). The frames
+    // below are the fixed wire: the page carries the envelope in messages,
+    // the stream window only the auto-turn's streamed assistant text.
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
@@ -396,23 +396,22 @@ describe('live reminder insertion', () => {
       connect: { connected: true },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: {
-        messages: [{
-          id: 'u1', role: 'user', text: '<message from="main">\nhello\n</message>',
-          thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
-          error: '', status: 'done', startedAt: 1760424000000,
-        }],
-        nextCursor: '', hasMore: false,
-      },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
-      snapshot: {
-        blocks: [
-          { kind: 'text', id: '', text: 'noted, thanks' },
-        ],
-      },
     })
-    // The history row is the single reminder row; the snapshot's streamed
-    // text renders without adding a second copy of the envelope.
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'u1', role: 'user', text: '<message from="main">\nhello\n</message>',
+        thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 1760424000000,
+      }],
+      stream: [
+        { kind: 'text', id: '', text: 'noted, thanks' },
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // The history row is the single reminder row; the page's streamed text
+    // renders without adding a second copy of the envelope.
     expect(reminderRows()).toHaveLength(1)
     expect(document.body.textContent).toContain('noted, thanks')
   })

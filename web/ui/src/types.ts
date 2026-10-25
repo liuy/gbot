@@ -24,7 +24,7 @@ export type ServerMessage =
   | { type: 'queued'; uuid: string }
   | { type: 'cancel_result'; removed?: string[]; restored?: { text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[] }
   | { type: 'restore_result'; attachments?: { id: string; name?: string; mime: string; size?: number }[] }
-  | { type: 'event'; event: QueryEvent }
+  | { type: 'event'; event: QueryEvent; seq?: number }
   | {
       type: 'ask'
       id: string
@@ -39,7 +39,7 @@ export type ServerMessage =
       deadline_unix?: number
     }
   | { type: 'error'; message: string }
-  | { type: 'history'; messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
+  | { type: 'history'; messages: HistoryChatMsg[]; stream?: Block[]; nextCursor: string; hasMore: boolean; rev?: string; busy?: boolean; seq?: number; nonce?: number }
   | { type: 'task_list'; tasks: TaskWireItem[] }
   | { type: 'job_list'; jobs: JobWireItem[] }
   | { type: 'job_output'; jobID: string; tail: string }
@@ -59,8 +59,8 @@ export type ServerMessage =
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
       jobs?: { jobs: (JobWireItem & { blocks?: Block[]; tail?: string })[] }
-      history: { messages: HistoryChatMsg[]; nextCursor: string; hasMore: boolean }
-      snapshot?: { blocks: Block[] }
+      rev?: string
+      busy?: boolean
       queuedMsgs?: { uuid: string; text: string; attachments?: { name?: string; mime: string }[] }[]
       stats: { usage?: ServerUsage; queryStartMs?: number; toolCount?: number; thinkingMs?: number; contextUsed?: number; contextTotal?: number }
     }

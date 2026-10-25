@@ -442,24 +442,26 @@ describe('streamState block tree rendering', () => {
 
   it('streamState after metadata with running tool reuses existing container, does not create new message', () => {
     mount()
-    // metadata with history: assistant response with Agent tool (running)
+    // v2 round trip: metadata + tail page whose messages carry an assistant
+    // response with a running Agent tool.
     dispatch({
       type: 'metadata',
       connect: { connected: true, model: 'test' },
       config: { models: [], current: { provider: 'p', model: 'm' } },
       engines: { engines: [], activeID: 'main' },
-      history: {
-        messages: [{
-          id: 'a1', role: 'assistant', startedAt: 1000, text: '', thinking: [], tools: [],
-          blocks: [
-            { kind: 'text', text: 'Let me review' },
-            { kind: 'tool', tool: { id: 'agent1', name: 'Agent', summary: 'Reviewer', isRunning: true } },
-          ],
-          usage: { inputTokens: 0, outputTokens: 0 },
-        }],
-        nextCursor: '', hasMore: false,
-      },
       stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'a1', role: 'assistant', startedAt: 1000, text: '', thinking: [], tools: [],
+        blocks: [
+          { kind: 'text', text: 'Let me review' },
+          { kind: 'tool', tool: { id: 'agent1', name: 'Agent', summary: 'Reviewer', isRunning: true } },
+        ],
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }],
+      nextCursor: '', hasMore: false,
     })
 
     // history loaded — should have 1 assistant message with running Agent tool

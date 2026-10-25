@@ -71,6 +71,7 @@ function mountChat() {
 function clickEngineSwitch() {
   dispatch({ type: 'connect_status', connected: true })
   dispatch(METADATA)
+  dispatch(PAGE)
   // Engine picker trigger is the first breadcrumb combo in the header.
   const trigger = document.querySelector(
     'header button.text-\\[15px\\]:not(.hidden)',
@@ -96,8 +97,15 @@ const METADATA = {
     ],
     activeID: 'e1',
   },
-  history: { messages: [], nextCursor: '', hasMore: false },
   stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+}
+
+// The tail page answering every metadata round trip (empty session).
+const PAGE = {
+  type: 'history',
+  messages: [],
+  nextCursor: '',
+  hasMore: false,
 }
 
 beforeEach(() => {
@@ -249,6 +257,7 @@ describe('takeover bar wiring', () => {
     mountChat()
     dispatch({ type: 'connect_status', connected: true })
     dispatch(METADATA)
+    dispatch(PAGE)
     const headerEl = document.querySelector('header') as HTMLElement
     expect(headerEl).toBeTruthy()
     const fill = fillOf(headerEl)
@@ -257,7 +266,7 @@ describe('takeover bar wiring', () => {
     expect(fill.style.width).toBe('0%')
   })
 
-  it('engine switch click starts the bar; the metadata frame completes it', () => {
+  it('engine switch click starts the bar; the tail page completes it', () => {
     useBarTimers()
     mountChat()
     clickEngineSwitch()
@@ -268,8 +277,12 @@ describe('takeover bar wiring', () => {
     const fill = fillOf(document.querySelector('header') as HTMLElement)
     expect(fill.style.opacity).toBe('1')
     expect(parseFloat(fill.style.width)).toBeGreaterThan(0)
-    // The metadata frame is what ends the loading window.
+    // v2: metadata alone keeps the window open — it no longer embeds the
+    // rendered content, so the bar waits for the tail page.
     dispatch(METADATA)
+    expect(parseFloat(fill.style.width)).toBeLessThan(100)
+    // The page frame is what ends the loading window.
+    dispatch(PAGE)
     expect(fill.style.width).toBe('100%')
     vi.advanceTimersByTime(300)
     expect(fill.style.opacity).toBe('0')
@@ -297,6 +310,7 @@ describe('takeover bar wiring', () => {
     mountChat()
     dispatch({ type: 'connect_status', connected: true })
     dispatch(METADATA)
+    dispatch(PAGE)
     dispatch({
       type: 'session_list',
       sessions: [{ id: 's2', title: 'second session', updatedAt: 1 }],
@@ -312,11 +326,12 @@ describe('takeover bar wiring', () => {
     expect(parseFloat(fill.style.width)).toBeGreaterThan(0)
   })
 
-  it('reconnect auto-takeover: reconnecting starts the bar, replayed metadata completes it', () => {
+  it('reconnect auto-takeover: reconnecting starts the bar, replayed page completes it', () => {
     useBarTimers()
     mountChat()
     dispatch({ type: 'connect_status', connected: true })
     dispatch(METADATA)
+    dispatch(PAGE)
     // serveChatWS takes over on every (re)connect without any client-sent
     // switch, so the reconnect window itself is a takeover window.
     changeState('reconnecting')
@@ -326,16 +341,18 @@ describe('takeover bar wiring', () => {
     expect(parseFloat(fill.style.width)).toBeGreaterThan(0)
     changeState('connected')
     dispatch(METADATA)
+    dispatch(PAGE)
     expect(fill.style.width).toBe('100%')
     vi.advanceTimersByTime(300)
     expect(fill.style.opacity).toBe('0')
   })
 
-  it('upgrade reconnect (1012 path) runs the bar until metadata replays', () => {
+  it('upgrade reconnect (1012 path) runs the bar until the page replays', () => {
     useBarTimers()
     mountChat()
     dispatch({ type: 'connect_status', connected: true })
     dispatch(METADATA)
+    dispatch(PAGE)
     changeState('upgrading')
     vi.advanceTimersByTime(100)
     const fill = fillOf(document.querySelector('header') as HTMLElement)
@@ -343,6 +360,7 @@ describe('takeover bar wiring', () => {
     expect(parseFloat(fill.style.width)).toBeGreaterThan(0)
     changeState('connected')
     dispatch(METADATA)
+    dispatch(PAGE)
     expect(fill.style.width).toBe('100%')
     vi.advanceTimersByTime(300)
     expect(fill.style.opacity).toBe('0')
@@ -353,6 +371,7 @@ describe('takeover bar wiring', () => {
     mountChat()
     dispatch({ type: 'connect_status', connected: true })
     dispatch(METADATA)
+    dispatch(PAGE)
     changeState('reconnecting')
     vi.advanceTimersByTime(100)
     // 5 failed retries later the connection machinery gives up; the retry

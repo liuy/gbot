@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1027,8 +1028,8 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	if !p1.HasMore {
 		t.Error("page 1 hasMore = false, want true")
 	}
-	if p1.NextCursor != "10" {
-		t.Errorf("page 1 nextCursor = %q, want \"10\"", p1.NextCursor)
+	if !regexp.MustCompile(`^a:15:0:\d+$`).MatchString(p1.NextCursor) {
+		t.Errorf("page 1 nextCursor = %q, want a:15:0:<gen>", p1.NextCursor)
 	}
 
 	// Page 2: next 10 (msg-14 … msg-5)
@@ -1056,8 +1057,8 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	if !p2.HasMore {
 		t.Error("page 2 hasMore = false, want true")
 	}
-	if p2.NextCursor != "20" {
-		t.Errorf("page 2 nextCursor = %q, want \"20\"", p2.NextCursor)
+	if !regexp.MustCompile(`^a:5:0:\d+$`).MatchString(p2.NextCursor) {
+		t.Errorf("page 2 nextCursor = %q, want a:5:0:<gen>", p2.NextCursor)
 	}
 
 	// Page 3: last 5 (msg-4 … msg-0)
@@ -2890,8 +2891,13 @@ func swapMutA2WarnHandler(t *testing.T) *mutA2WarnHandler {
 type mutA2HistPayload struct {
 	Type       string           `json:"type"`
 	Messages   []historyChatMsg `json:"messages"`
+	Stream     []streamBlock    `json:"stream"`
 	NextCursor string           `json:"nextCursor"`
 	HasMore    bool             `json:"hasMore"`
+	Rev        string           `json:"rev"`
+	Busy       bool             `json:"busy"`
+	Seq        uint64           `json:"seq"`
+	Nonce      uint64           `json:"nonce"`
 }
 
 func mutA2UserMsg(id, text string) types.Message {
@@ -3704,13 +3710,21 @@ func TestMutA2BuildHistoryEmptyAfterFilter(t *testing.T) {
 		Content: []types.ContentBlock{types.NewTextBlock("informational")},
 	}
 	mock.SetMessagesFn(func() []types.Message { return []types.Message{sys} })
-	if got := c.buildHistory(mutA2Slot(mock), "", 30); got != nil {
-		t.Errorf("buildHistory(all filtered) = %.60s, want nil payload", got)
+	p := mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "", 30))
+	if len(p.Messages) != 0 || p.HasMore {
+		t.Errorf("all filtered: messages=%d hasMore=%v, want empty page/hasMore=false", len(p.Messages), p.HasMore)
 	}
-	// No messages at all: nil payload, not an empty history frame.
+	if p.Rev != "1:sys" {
+		t.Errorf("all filtered rev = %q, want 1:sys (rev counts the raw truncated view)", p.Rev)
+	}
+	// No messages at all: empty page frame, rev "0:".
 	mock.SetMessagesFn(func() []types.Message { return nil })
-	if got := c.buildHistory(mutA2Slot(mock), "", 30); got != nil {
-		t.Errorf("buildHistory(no messages) = %.60s, want nil payload", got)
+	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "", 30))
+	if len(p.Messages) != 0 || p.HasMore {
+		t.Errorf("no messages: messages=%d hasMore=%v, want empty page/hasMore=false", len(p.Messages), p.HasMore)
+	}
+	if p.Rev != "0:" {
+		t.Errorf("no messages rev = %q, want \"0:\"", p.Rev)
 	}
 }
 
@@ -3786,8 +3800,8 @@ func TestMutA2BuildHistoryDefaultLimit(t *testing.T) {
 	if p.Messages[0].Text != "t05" || p.Messages[29].Text != "t34" {
 		t.Errorf("page bounds = %q..%q, want t05..t34", p.Messages[0].Text, p.Messages[29].Text)
 	}
-	if !p.HasMore || p.NextCursor != "30" {
-		t.Errorf("hasMore/nextCursor = %v/%q, want true/30", p.HasMore, p.NextCursor)
+	if !p.HasMore || !regexp.MustCompile(`^a:5:0:\d+$`).MatchString(p.NextCursor) {
+		t.Errorf("hasMore/nextCursor = %v/%q, want true/a:5:0:<gen>", p.HasMore, p.NextCursor)
 	}
 }
 
@@ -3804,14 +3818,14 @@ func TestMutA2BuildHistoryCursorPaging(t *testing.T) {
 	if p.Messages[0].Text != "t20" || p.Messages[9].Text != "t29" {
 		t.Errorf("page bounds = %q..%q, want t20..t29", p.Messages[0].Text, p.Messages[9].Text)
 	}
-	if p.NextCursor != "15" {
-		t.Errorf("nextCursor = %q, want 15 (5 delivered + 10 in page)", p.NextCursor)
+	if !regexp.MustCompile(`^a:20:0:\d+$`).MatchString(p.NextCursor) {
+		t.Errorf("nextCursor = %q, want a:20:0:<gen> (window ends 20 from head)", p.NextCursor)
 	}
 
 	// Cursor "1": offset must advance by exactly one.
 	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "1", 0))
-	if p.NextCursor != "31" {
-		t.Errorf("nextCursor for cursor 1 = %q, want 31", p.NextCursor)
+	if !regexp.MustCompile(`^a:4:0:\d+$`).MatchString(p.NextCursor) {
+		t.Errorf("nextCursor for cursor 1 = %q, want a:4:0:<gen>", p.NextCursor)
 	}
 
 	// Negative cursor: treated as offset 0, never a negative slice bound.
@@ -5254,7 +5268,7 @@ func TestMutA3_SendMetadataComposite(t *testing.T) {
 	m := &mockEngine{projectDir: dir}
 	msgs := make([]types.Message, 31)
 	for i := range msgs {
-		msgs[i] = types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("m%d", i))}}
+		msgs[i] = types.Message{ID: fmt.Sprintf("msg-%d", i), Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("m%d", i))}}
 	}
 	m.messagesFn = func() []types.Message { return msgs }
 	histDir := filepath.Join(dir, "history")
@@ -5337,20 +5351,21 @@ func TestMutA3_SendMetadataComposite(t *testing.T) {
 	if cfgHead.Type != "config" {
 		t.Fatalf("config sub-frame type = %q, want config", cfgHead.Type)
 	}
-	var history struct {
-		Messages   []struct{ Text string } `json:"messages"`
-		NextCursor string                  `json:"nextCursor"`
-		HasMore    bool                    `json:"hasMore"`
+	// v2: history/snapshot are stripped; rev/busy replace them.
+	var metaTail struct {
+		History  json.RawMessage `json:"history"`
+		Snapshot json.RawMessage `json:"snapshot"`
+		Rev      string          `json:"rev"`
+		Busy     bool            `json:"busy"`
 	}
-	frameJSONFieldA3(t, frames[0], "history", &history)
-	if len(history.Messages) != 30 {
-		t.Fatalf("history page = %d messages, want 30", len(history.Messages))
+	if err := json.Unmarshal([]byte(frames[0]), &metaTail); err != nil {
+		t.Fatalf("unmarshal metadata tail fields: %v", err)
 	}
-	if history.Messages[0].Text != "m1" {
-		t.Fatalf("first page message = %q, want m1 (oldest trimmed)", history.Messages[0].Text)
+	if metaTail.History != nil || metaTail.Snapshot != nil {
+		t.Fatalf("metadata embeds history/snapshot (%.40s / %.40s), want both stripped", metaTail.History, metaTail.Snapshot)
 	}
-	if history.NextCursor != "30" || !history.HasMore {
-		t.Fatalf("nextCursor=%q hasMore=%v, want 30/true", history.NextCursor, history.HasMore)
+	if metaTail.Rev != "31:msg-30" || metaTail.Busy {
+		t.Fatalf("metadata rev/busy = %q/%v, want 31:msg-30/false", metaTail.Rev, metaTail.Busy)
 	}
 	if !slot.active.Load() {
 		t.Fatal("sendMetadata must activate the slot")
