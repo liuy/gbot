@@ -4194,3 +4194,29 @@ describe('queued message history rendering', () => {
     expect(document.querySelector('[data-tool-root][data-tool-name="Bash"]')).toBeTruthy()
   })
 })
+
+describe('STT mic availability', () => {
+  it('config frame stt:true enables the mic; absent renders the slashed unavailable state', () => {
+    mount()
+    const mic = () =>
+      document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+      stt: true,
+    })
+    expect(mic().classList.contains('stt-mic-off')).toBe(false)
+
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+    })
+    expect(mic().classList.contains('stt-mic-off')).toBe(true)
+    expect(mic().disabled).toBe(true)
+  })
+})

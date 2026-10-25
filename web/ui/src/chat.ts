@@ -61,6 +61,7 @@ import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
 import { t } from './i18n'
+import { SttSession } from './stt'
 import { getConnection } from './ws'
 import { createUpgradeCapsule, setStreamFreeze } from './upgrade_mode'
 import { notifyCapsule } from './capsule'
@@ -695,6 +696,28 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const inputBar = createInputBar({ connected: initial.connected })
   inputBar.root.className = 'px-5 pb-3 pt-1'
   inputBar.onThinkingSelect((effort) => conn.send({ type: 'thinking_switch', effort }))
+
+  // Dictation session: one mic tap = one utterance over /ws/stt. Text
+  // joins happen inside input_bar (it owns the textarea); the session
+  // passes raw deltas through.
+  const sttSession = new SttSession({
+    onText: (txt) => inputBar.appendSttDelta(txt),
+    onPartial: (txt) => inputBar.replaceSttSpan(txt),
+    onDone: (txt) => inputBar.commitSttUtterance(txt),
+    onListening: (on) => inputBar.setSttListening(on),
+    onUtteranceStart: () => inputBar.beginSttUtterance(),
+    onStatus: (m) => {
+      inputBar.setSttStatus(m)
+      if (m) inputBar.endSttUtterance()
+    },
+    getPromptTexts: () =>
+      messages
+        .slice(-10)
+        .flatMap((m) =>
+          m.blocks.filter((b) => b.kind === 'text').map((b) => (b as { text: string }).text),
+        ),
+  })
+  inputBar.onMicToggle(() => void sttSession.toggle())
 
   const taskPanel = createTaskPanel({
     // conn is assigned below the panel construction; the closures only run
@@ -2290,6 +2313,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModel(c.model ?? '')
         header.hideContextBreakdown()
         inputBar.setConnected(c.connected)
+        if (!c.connected) void sttSession.stop()
         resetAllState()
         if (c.inputHistory) inputHistory.load(c.inputHistory)
         taskPanel.setTasks([])
@@ -2304,6 +2328,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModels(msg.config.models, msg.config.current.provider, msg.config.current.model)
         header.setEngines(msg.engines.engines, msg.engines.activeID)
         inputBar.setThinking(msg.config.thinking ?? 'auto')
+        inputBar.setSttAvailable(!!msg.config.stt)
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
         if (msg.jobs) {
           const hydrated = new Map<string, { blocks?: Block[]; tail?: string }>()
@@ -2368,6 +2393,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModel(msg.model ?? '')
         header.hideContextBreakdown()
         inputBar.setConnected(msg.connected)
+        if (!msg.connected) void sttSession.stop()
     resetAllState()
     if (msg.sessionID && msg.sessionID !== currentSessionID) {
       // New session (sidebar new / session_new): the meter's sums are the
@@ -2402,6 +2428,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'config':
         header.setModels(msg.models, msg.current.provider, msg.current.model)
         inputBar.setThinking(msg.thinking ?? 'auto')
+        inputBar.setSttAvailable(!!msg.stt)
         return
       case 'model_switched':
         contextTotal = msg.contextTotal

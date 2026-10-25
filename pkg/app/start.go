@@ -637,6 +637,7 @@ func Start(opts Options) (*Instance, error) {
 
 	if needWS && wsMux != nil {
 		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
+		wc.SetSTTDefault(cfg.STT.Default)
 		if supervisedMode() {
 			supervisedClose.Store(func() { wc.CloseForUpgrade() })
 		}
@@ -676,6 +677,7 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterReloadRoute(wsMux, orch.Reload)
 		wui.RegisterRemoteDesktopRoutes(wsMux)
 		wui.RegisterVNCProxyRoutes(wsMux)
+		wui.RegisterSTTRoutes(wsMux)
 		wui.RegisterLogRoutes(wsMux, logPath)
 		// TUI-mode processes are gated from hot-restart entirely (the child
 		// would die on raw-mode EIO after Ready — 2026-09-22 incident).

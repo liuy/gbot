@@ -37,6 +37,7 @@ export interface SettingsProvider {
 export interface SettingsPayload {
   providers: SettingsProvider[]
   default: { provider: string; model: string }
+  stt?: { provider: string; model: string }
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
@@ -180,6 +181,24 @@ export async function saveDefaultModel(provider: string, model: string): Promise
   }
 }
 
+export async function saveSttDefault(provider: string, model: string): Promise<void> {
+  const res = await fetch('/api/settings/stt', {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify({ provider, model }),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body.error) msg = body.error
+    } catch {
+      // status text is enough
+    }
+    throw new Error(msg)
+  }
+}
+
 // Language is per-browser state in localStorage (same as theme/hljs), not
 // settings.json: "auto" removes the key so the locale follows the system.
 function saveLanguage(language: Locale | 'auto'): void {
@@ -247,11 +266,13 @@ const TYPE_LABELS: Record<string, string> = {
   openai: 'OPENAI',
   responses: 'RESPONSES',
   anthropic: 'ANTHROPIC',
+  audio: 'AUDIO',
 }
 const TYPE_BADGE_CLASS: Record<string, string> = {
   openai: 'text-[#7fd4ff] bg-blue/10',
   responses: 'text-[#c9a3ff] bg-[#9D5CFF]/15',
   anthropic: 'text-[#e8b98a] bg-[#FFB547]/10',
+  audio: 'text-[#7fe0ae] bg-[#3DD68C]/10',
 }
 const AUTO_BADGE_CLASS = 'text-t2 bg-t2/10'
 
@@ -363,58 +384,84 @@ export function createSettingsPage(): SettingsPageHandles {
   })
   addProviderBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('addProviderBtn')))
 
-  const defaultCard = createNode('div', {
-    className: 'mx-3 mb-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden cursor-pointer select-none',
-    attrs: { 'data-default-card': '' },
-  })
-  const defaultHead = createElement('div', 'flex items-center gap-2 px-3.5 py-3')
-  const defaultTitle = createElement('div', 'font-mono text-[13px] font-medium flex-1')
-  const defaultChev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
-  defaultHead.append(defaultTitle, defaultChev)
-  // Picker: providers as group labels, their models as radio rows.
-  const defaultPanel = createElement('div', 'hidden border-t border-hairline max-h-[260px] overflow-y-auto')
-  defaultPanel.setAttribute('data-default-panel', '')
-  const renderDefaultPanel = () => {
-    defaultPanel.replaceChildren()
-    for (const p of payload.providers) {
-      const group = createElement('div', 'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1')
-      group.textContent = p.name
-      defaultPanel.appendChild(group)
-      for (const name of Object.keys(p.models ?? {})) {
-        const isSel = p.name === payload.default.provider && name === payload.default.model
-        const row = createElement('div', 'flex items-center gap-2.5 px-3.5 py-2 cursor-pointer')
-        row.setAttribute('data-default-model', `${p.name}/${name}`)
-        const dot = createElement(
-          'span',
-          'w-[14px] h-[14px] rounded-full border flex items-center justify-center ' +
-            (isSel ? 'border-blue' : 'border-t3'),
-        )
-        if (isSel) dot.appendChild(createElement('span', 'w-[7px] h-[7px] rounded-full bg-blue'))
-        const label = createElement('span', 'text-xs font-mono' + (isSel ? ' text-blue' : ''))
-        label.textContent = name
-        row.append(dot, label)
-        row.addEventListener('click', async (e) => {
-          e.stopPropagation()
-          try {
-            await saveDefaultModel(p.name, name)
-            payload.default = { provider: p.name, model: name }
-            defaultTitle.textContent = `${p.name} / ${name}`
-            renderDefaultPanel()
-            toast(t('savedRestart'))
-          } catch (err) {
-            toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
-          }
-        })
-        defaultPanel.appendChild(row)
+  // Default-model cards, one factory for both kinds: LLM lists non-audio
+  // providers (chat), STT lists audio providers only — audio never mixes
+  // into the chat picker.
+  const createDefaultCard = (kind: 'llm' | 'stt') => {
+    const card = createNode('div', {
+      className: 'mx-3 mb-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden cursor-pointer select-none',
+      attrs: kind === 'llm' ? { 'data-default-card': '' } : { 'data-stt-card': '' },
+    })
+    const head = createElement('div', 'flex items-center gap-2 px-3.5 py-3')
+    const kindBadge = createNode('span', {
+      className: 'text-[10px] font-semibold rounded-full px-2 py-0.5 text-[#7fd4ff] bg-blue/10 shrink-0',
+      text: kind.toUpperCase(),
+    })
+    const title = createElement('div', 'font-mono text-[13px] font-medium flex-1')
+    const chev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
+    head.append(kindBadge, title, chev)
+    const panel = createElement('div', 'hidden border-t border-hairline max-h-[260px] overflow-y-auto')
+    if (kind === 'llm') panel.setAttribute('data-default-panel', '')
+    else panel.setAttribute('data-stt-panel', '')
+    const current = () => (kind === 'llm' ? payload.default : payload.stt ?? { provider: '', model: '' })
+    const renderPanel = () => {
+      panel.replaceChildren()
+      const wantAudio = kind === 'stt'
+      for (const p of payload.providers) {
+        const isAudio = p.type === 'audio'
+        if (isAudio !== wantAudio) continue
+        const group = createElement('div', 'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1')
+        group.textContent = p.name
+        panel.appendChild(group)
+        for (const name of Object.keys(p.models ?? {})) {
+          const cur = current()
+          const isSel = p.name === cur.provider && name === cur.model
+          const row = createElement('div', 'flex items-center gap-2.5 px-3.5 py-2 cursor-pointer')
+          row.setAttribute(
+            kind === 'llm' ? 'data-default-model' : 'data-stt-model',
+            `${p.name}/${name}`,
+          )
+          const dot = createElement(
+            'span',
+            'w-[14px] h-[14px] rounded-full border flex items-center justify-center ' +
+              (isSel ? 'border-blue' : 'border-t3'),
+          )
+          if (isSel) dot.appendChild(createElement('span', 'w-[7px] h-[7px] rounded-full bg-blue'))
+          const label = createElement('span', 'text-xs font-mono' + (isSel ? ' text-blue' : ''))
+          label.textContent = name
+          row.append(dot, label)
+          row.addEventListener('click', async (e) => {
+            e.stopPropagation()
+            try {
+              if (kind === 'llm') {
+                await saveDefaultModel(p.name, name)
+                payload.default = { provider: p.name, model: name }
+              } else {
+                await saveSttDefault(p.name, name)
+                payload.stt = { provider: p.name, model: name }
+              }
+              title.textContent = `${p.name} / ${name}`
+              card.classList.remove('opacity-55')
+              renderPanel()
+              toast(t('savedRestart'))
+            } catch (err) {
+              toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
+            }
+          })
+          panel.appendChild(row)
+        }
       }
     }
+    card.append(head, panel)
+    head.addEventListener('click', () => {
+      renderPanel()
+      const open = panel.classList.toggle('hidden')
+      chev.classList.toggle('rotate-90', !open)
+    })
+    return { card, title }
   }
-  defaultCard.append(defaultHead, defaultPanel)
-  defaultHead.addEventListener('click', () => {
-    renderDefaultPanel()
-    const open = defaultPanel.classList.toggle('hidden')
-    defaultChev.classList.toggle('rotate-90', !open)
-  })
+  const llmDefaultCard = createDefaultCard('llm')
+  const sttDefaultCard = createDefaultCard('stt')
 
   const segBtnStyle = (b: HTMLElement, selected: boolean) => {
     b.className =
@@ -875,7 +922,9 @@ export function createSettingsPage(): SettingsPageHandles {
     }
     // Mirror Kotlin's charset rule so the likeliest paste (a full URL) gets
     // an i18n toast here instead of the hardcoded-Chinese backstop there.
-    if (/\s/.test(host) || host.includes('/') || host.includes(':')) {
+    // Full-origin hosts (http(s)://…) carry scheme+port in the string; the
+    // colon/slash ban applies to bare hostnames only.
+    if (/\s/.test(host) || (!/^https?:\/\//.test(host) && (host.includes('/') || host.includes(':')))) {
       toast(t('remoteHostInvalid'))
       return
     }
@@ -1311,7 +1360,8 @@ export function createSettingsPage(): SettingsPageHandles {
     provList,
     addProviderBtn,
     sectionLabel('defaultModelSection'),
-    defaultCard,
+    llmDefaultCard.card,
+    sttDefaultCard.card,
   )
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
@@ -1542,12 +1592,13 @@ export function createSettingsPage(): SettingsPageHandles {
   const editScreen = createElement('div', '')
   editScreen.setAttribute('data-screen', 'edit')
 
-  const protoSel = createElement('div', 'grid grid-cols-3 gap-2 px-3')
+  const protoSel = createElement('div', 'grid grid-cols-2 gap-2 px-3')
   const protos: Array<{ el: HTMLElement; p: string }> = []
   for (const p of [
     { id: 'openai', name: 'OpenAI', path: '/chat/completions' },
     { id: 'responses', name: 'Responses', path: '/v1/responses' },
     { id: 'anthropic', name: 'Anthropic', path: '/v1/messages' },
+    { id: 'audio', name: 'Audio', path: 'OpenAI Audio API' },
   ]) {
     const tile = createNode('div', {
       className: 'py-2.5 px-2 rounded-xl text-center cursor-pointer bg-ink2 border border-hairline',
@@ -1761,7 +1812,15 @@ export function createSettingsPage(): SettingsPageHandles {
     for (const p of payload.providers) {
       provList.appendChild(createProviderCard(p))
     }
-    defaultTitle.textContent = `${payload.default.provider} / ${payload.default.model}`
+    llmDefaultCard.title.textContent = `${payload.default.provider} / ${payload.default.model}`
+    // Unconfigured STT greys the card instead of showing an empty picker.
+    if (payload.stt) {
+      sttDefaultCard.title.textContent = `${payload.stt.provider} / ${payload.stt.model}`
+      sttDefaultCard.card.classList.remove('opacity-55')
+    } else {
+      sttDefaultCard.title.textContent = t('sttNotConfigured')
+      sttDefaultCard.card.classList.add('opacity-55')
+    }
   }
 
   const createProviderCard = (p: SettingsProvider): HTMLElement => {
@@ -1801,12 +1860,22 @@ export function createSettingsPage(): SettingsPageHandles {
   }
 
   // ------------------------------------------------------------- edit form
+  // Tile selection: uniform blue tint for every protocol — the AUDIO badge
+  // on the card carries the green identity, the tiles stay one family.
+  const protoSelTint = (selectedType: string | null) => {
+    for (const t of protos) {
+      const selected = selectedType !== null && t.p === selectedType
+      t.el.classList.toggle('border-blue/50', selected)
+      t.el.classList.toggle('bg-blue/10', selected)
+      t.el.classList.toggle('border-hairline', !selected)
+      t.el.classList.toggle('bg-ink2', !selected)
+    }
+  }
+
   const selectProto = (p: string) => {
     form.type = p
-    for (const t of protos) t.el.classList.toggle('border-blue/50', t.p === p)
-    for (const t of protos) t.el.classList.toggle('bg-blue/10', t.p === p)
-    for (const t of protos) t.el.classList.toggle('border-hairline', t.p !== p)
-    for (const t of protos) t.el.classList.toggle('bg-ink2', t.p !== p)
+    updateFetchLabel()
+    protoSelTint(p)
   }
 
 
@@ -1827,10 +1896,7 @@ export function createSettingsPage(): SettingsPageHandles {
     updateFetchLabel() // programmatic fill fires no input event — refresh the fetch label here
 
     const explicit = TYPE_LABELS[form.type] !== undefined
-    for (const t of protos) t.el.classList.toggle('border-blue/50', explicit && t.p === form.type)
-    for (const t of protos) t.el.classList.toggle('bg-blue/10', explicit && t.p === form.type)
-    for (const t of protos) t.el.classList.toggle('border-hairline', !(explicit && t.p === form.type))
-    for (const t of protos) t.el.classList.toggle('bg-ink2', !(explicit && t.p === form.type))
+    protoSelTint(explicit ? form.type : null)
 
     renderKeys()
     renderModels()
@@ -1942,11 +2008,14 @@ export function createSettingsPage(): SettingsPageHandles {
     const card = createNode('div', { className: 'border-b border-hairline last:border-b-0' })
     const mrow = createElement('div', 'flex items-center gap-2 px-3 py-2 cursor-pointer')
     mrow.setAttribute('data-model-row', '')
+    // Audio models have no editable detail — the row is the name plus
+    // delete, no disclosure chevron, no STT tag, no context counter.
+    const isAudio = form.type === 'audio'
     // Leading disclosure chevron (left = expand in place; the provider
     // cards' right chevron means drill-in) and a lone trailing delete —
     // maximum separation, one trailing control per Material 3 lists.
     const chev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
-    mrow.appendChild(chev)
+    if (!isAudio) mrow.appendChild(chev)
     // The model name is the map key — an inline input (styled as plain
     // text until focused) so renaming and "+ Add Model" share one shape.
     const nameInp = createNode('input', {
@@ -1990,9 +2059,26 @@ export function createSettingsPage(): SettingsPageHandles {
         mods.appendChild(createNode('span', { className: 'text-[9px] text-[#9D5CFF] bg-ink3 rounded px-1.5 py-0.5', text: mod }))
       }
     }
-    renderMods()
-    mrow.appendChild(mods)
-    mrow.appendChild(createNode('span', { className: 'text-[9px] text-t3 bg-ink3 rounded px-1.5 py-0.5', text: `${m.context ?? ''}` }))
+    if (!isAudio) {
+      renderMods()
+      mrow.appendChild(mods)
+      mrow.appendChild(createNode('span', { className: 'text-[9px] text-t3 bg-ink3 rounded px-1.5 py-0.5', text: `${m.context ?? ''}` }))
+    }
+    // STT tag when this row IS the configured stt default (audio provider):
+    // the one marker that says which voice model the mic actually uses.
+    if (
+      payload.stt &&
+      payload.stt.provider === form.provider?.name &&
+      payload.stt.model === currentKey
+    ) {
+      mrow.appendChild(
+        createNode('span', {
+          className: 'text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold',
+          text: 'STT',
+          attrs: { 'data-stt-badge': '' },
+        }),
+      )
+    }
     // 36px hit box around a small glyph — a bare 11px span has a tap
     // target far below thumb accuracy on a phone (Material floor: 48dp).
     const mdel = createNode('span', {
@@ -2016,10 +2102,18 @@ export function createSettingsPage(): SettingsPageHandles {
       inp.addEventListener('input', () => oninput(inp.value))
       return inp
     }
-    detail.append(
-      prow(t('contextLabel'), smallInput(m.context, (v) => (m.context = v))),
-      prow(t('maxTokensLabel'), smallInput(m.max_tokens, (v) => (m.max_tokens = v))),
-    )
+    if (form.type === 'audio') {
+      // Chat session params (context/max_tokens/modality/thinking) are
+      // meaningless for voice models — the note answers the natural
+      // "where do I set the context window?" question instead of four
+      // dead fields.
+      detail.append(createNode('div', { className: 'mt-2.5 text-[11px] text-t3', ...L('sttModelNoParams') }))
+    } else {
+      detail.append(
+        prow(t('contextLabel'), smallInput(m.context, (v) => (m.context = v))),
+        prow(t('maxTokensLabel'), smallInput(m.max_tokens, (v) => (m.max_tokens = v))),
+      )
+    }
     const segRow = (label: string, seg: HTMLElement) => detail.appendChild(prow(label, seg))
     const seg = createElement('div', 'flex gap-1 flex-1')
     for (const kind of ['text', 'image', 'audio', 'video'] as const) {
@@ -2043,7 +2137,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       seg.appendChild(b)
     }
-    segRow(t('inputLabel'), seg)
+    if (form.type !== 'audio') segRow(t('inputLabel'), seg)
     const tseg = createElement('div', 'flex gap-1 flex-1')
     const current = m.thinking ?? 'auto'
     for (const opt of THINK_OPTS) {
@@ -2060,7 +2154,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       tseg.appendChild(b)
     }
-    segRow(t('thinkingLabel'), tseg)
+    if (form.type !== 'audio') segRow(t('thinkingLabel'), tseg)
 
     mrow.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).isSameNode(mdel)) {
@@ -2070,6 +2164,7 @@ export function createSettingsPage(): SettingsPageHandles {
         renderModels()
         return
       }
+      if (isAudio) return
       const open = detail.classList.toggle('hidden')
       chev.classList.toggle('rotate-90', !open)
     })
@@ -2083,7 +2178,10 @@ export function createSettingsPage(): SettingsPageHandles {
     // an editable input (the map key). Placeholder keys must be UNIQUE —
     // a shared '' key made each Add overwrite the previous unnamed row.
     const name = `__new_${++newModelSeq}`
-    form.models[name] = { context: '200k', max_tokens: '32k', input: ['text'], thinking: 'auto' }
+    form.models[name] =
+      form.type === 'audio'
+        ? {}
+        : { context: '200k', max_tokens: '32k', input: ['text'], thinking: 'auto' }
     renderModels()
   })
 
@@ -2154,12 +2252,17 @@ export function createSettingsPage(): SettingsPageHandles {
             // their metadata; auto-managed ones refresh in place.
             const isNew = !form.models[id]
             if (!isNew && !managed?.has(id)) continue
-            form.models[id] = {
-              context: typeof entry === 'object' && entry.context ? entry.context : '1M',
-              max_tokens: '32k',
-              input: typeof entry === 'object' && entry.input?.length ? entry.input : ['text'],
-              thinking: 'auto',
-            }
+            // Audio models take no chat session params — meta stays empty so
+            // the detail row renders the voice-specific note instead.
+            form.models[id] =
+              form.type === 'audio'
+                ? {}
+                : {
+                    context: typeof entry === 'object' && entry.context ? entry.context : '1M',
+                    max_tokens: '32k',
+                    input: typeof entry === 'object' && entry.input?.length ? entry.input : ['text'],
+                    thinking: 'auto',
+                  }
             if (isNew) added++
           }
           if (managed) form.provider!.free_fetched = newIDs

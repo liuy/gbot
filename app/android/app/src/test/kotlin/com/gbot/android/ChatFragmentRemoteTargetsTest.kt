@@ -115,8 +115,21 @@ class ChatFragmentRemoteTargetsTest {
 			.isEqualTo(ChatFragment.MSG_HOST_INVALID)
 	}
 
-	@Test
-	fun validate_badPorts_rejected() {
+    @Test
+    fun validate_originHostsAccepted_bareHostWithSlashStillRejected() {
+        // https:// and http:// origins carry scheme+port in the host string
+        // (tailscale-serve form); the colon/slash ban only guards bare
+        // hostnames, where a slash is a paste error.
+        assertThat(ChatFragment.validateRemoteTargets(listOf(ChatFragment.RemoteTarget("tail", "https://machine.ts.net", 443))))
+            .isNull()
+        assertThat(ChatFragment.validateRemoteTargets(listOf(ChatFragment.RemoteTarget("nas", "http://nas.box.local", 8765))))
+            .isNull()
+        assertThat(ChatFragment.validateRemoteTargets(listOf(ChatFragment.RemoteTarget("a", "host/path", 1))))
+            .isEqualTo(ChatFragment.MSG_HOST_INVALID)
+    }
+
+    @Test
+    fun validate_badPorts_rejected() {
 		assertThat(ChatFragment.validateRemoteTargets(listOf(ChatFragment.RemoteTarget("a", "h", 0))))
 			.isEqualTo(ChatFragment.MSG_PORT_INVALID)
 		assertThat(ChatFragment.validateRemoteTargets(listOf(ChatFragment.RemoteTarget("a", "h", 65536))))

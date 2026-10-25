@@ -32,6 +32,7 @@ export type IconName =
   | 'settings'
   | 'door-exit'
   | 'trash'
+  | 'mic'
 
 export type IconVariant = 'outline' | 'solid' | 'mixed'
 
@@ -206,6 +207,11 @@ const ICONS: Record<IconName, IconDef> = {
     path: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
+  },
+  mic: {
+    path: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 1.6,
   },
 }
 

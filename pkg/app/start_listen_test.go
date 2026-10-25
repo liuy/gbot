@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func freeTCPPort(t *testing.T) string {
@@ -133,5 +135,69 @@ func TestStart_FailFastOnOccupiedPort(t *testing.T) {
 		t.Fatal("expected Start to fail on occupied port")
 	} else if !strings.Contains(err.Error(), "ws server") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// sttHome is a minimal home whose settings carry an audio provider and
+// stt.default — the config frame must then advertise stt:true and the
+// dictation endpoint must be mounted.
+func sttHome(t *testing.T) string {
+	t.Helper()
+	pinSharedCaches(t)
+	home := t.TempDir()
+	settings := `{"providers":[
+		{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}},
+		{"name":"audiocpp","type":"audio","url":"http://127.0.0.1:1","models":{"stt-stream":{}}}],
+		"model":{"default":"t/m"},"stt":{"default":"audiocpp/stt-stream"}}`
+	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0o755); err != nil {
+		t.Fatalf("mkdir .gbot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gbot", "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	return home
+}
+
+// The wui boot wires the dictation surface: /ws/stt upgrades, and the chat
+// metadata's config advertises stt:true only when SetSTTDefault ran.
+func TestStart_MountsSttSurface(t *testing.T) {
+	t.Setenv("HOME", sttHome(t))
+	t.Setenv("GBOT_PPROF_ADDR", "off")
+	t.Setenv("GBOT_WS_ADDR", "")
+	port := freeTCPPort(t)
+	startInTempProject(t)
+	inst, err := Start(Options{WSPort: port})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	shutdownInstance(t, inst)
+	waitForHTTP(t, "http://127.0.0.1:"+port, 5*time.Second)
+
+	ws, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+port+"/ws/stt", nil)
+	if err != nil {
+		t.Fatalf("dial /ws/stt: %v (route must be mounted)", err)
+	}
+	defer ws.Close()
+
+	// The chat WS metadata carries config.stt — the mic visibility flag.
+	chat, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+port+"/ws/chat", nil)
+	if err != nil {
+		t.Fatalf("dial /ws/chat: %v", err)
+	}
+	defer chat.Close()
+	deadline := time.Now().Add(10 * time.Second) // REAL-TIME
+	for {
+		_ = chat.SetReadDeadline(deadline)
+		_, data, err := chat.ReadMessage()
+		if err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+		if !strings.Contains(string(data), `"connect"`) {
+			continue
+		}
+		if !strings.Contains(string(data), `"stt":true`) {
+			t.Fatalf("metadata config lacks stt:true: %s", data)
+		}
+		return
 	}
 }

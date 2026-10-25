@@ -65,6 +65,15 @@ type Config struct {
 	// consolidates conversation memory. Disabled defaults to false (enabled)
 	// using inverted Disabled semantics matching SessionNotes.
 	Dream DreamConfig `json:"dream"`
+
+	// STT holds the speech-to-text default ("provider/model"). Resolved by
+	// ResolveSTT; only audio-type providers are eligible.
+	STT STTConfig `json:"stt"`
+}
+
+// STTConfig configures the default speech-to-text model.
+type STTConfig struct {
+	Default string `json:"default,omitempty"` // "provider/model" or "model"
 }
 
 // SessionNotesConfig configures the session memory sub-agent.
@@ -130,6 +139,7 @@ const (
 	ProviderTypeOpenAI    = "openai"
 	ProviderTypeAnthropic = "anthropic"
 	ProviderTypeResponses = "responses"
+	ProviderTypeAudio     = "audio"
 )
 
 // RemoteDevice is one VNC target for the wui remote-desktop console. Addr is
@@ -144,7 +154,7 @@ type RemoteDevice struct {
 // ProviderType returns the resolved provider type.
 func (p *Provider) ProviderType() string {
 	switch p.Type {
-	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeResponses:
+	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeResponses, ProviderTypeAudio:
 		return p.Type
 	default:
 		if u, err := url.Parse(p.URL); err == nil {
@@ -329,14 +339,25 @@ func (c *Config) ResolveModelByName(name string) (*Provider, string, error) {
 }
 
 // resolveProviderModel is the shared resolution core for ResolveModel and
-// ResolveModelByName.
+// ResolveModelByName. Audio providers are excluded everywhere — they serve
+// STT via ResolveSTT, never chat.
 func (c *Config) resolveProviderModel(providerName, modelName string) (*Provider, string, error) {
 	// Empty model → first provider's first model.
 	if modelName == "" {
 		if len(c.Providers) == 0 {
 			return nil, "", fmt.Errorf("no providers configured")
 		}
-		p := &c.Providers[0]
+		var p *Provider
+		for i := range c.Providers {
+			if c.Providers[i].ProviderType() == ProviderTypeAudio {
+				continue
+			}
+			p = &c.Providers[i]
+			break
+		}
+		if p == nil {
+			return nil, "", fmt.Errorf("no providers configured")
+		}
 		first := p.FirstModelName()
 		if first == "" {
 			return nil, "", fmt.Errorf("provider %q has no models", p.Name)
@@ -350,6 +371,9 @@ func (c *Config) resolveProviderModel(providerName, modelName string) (*Provider
 		if p == nil {
 			return nil, "", fmt.Errorf("provider %q not found", providerName)
 		}
+		if p.ProviderType() == ProviderTypeAudio {
+			return nil, "", fmt.Errorf("provider %q is an audio provider, not usable for chat", providerName)
+		}
 		matched := FindClosestMatch(modelName, p.ModelNames())
 		if matched == "" {
 			return nil, "", fmt.Errorf("model %q not found in provider %q", modelName, p.Name)
@@ -360,12 +384,60 @@ func (c *Config) resolveProviderModel(providerName, modelName string) (*Provider
 	// No provider → cross-provider fuzzy search.
 	for i := range c.Providers {
 		p := &c.Providers[i]
+		if p.ProviderType() == ProviderTypeAudio {
+			continue
+		}
 		matched := FindClosestMatch(modelName, p.ModelNames())
 		if matched != "" {
 			return p, matched, nil
 		}
 	}
 	return nil, "", fmt.Errorf("model %q not found in any provider", modelName)
+}
+
+// ErrNotAudioProvider is returned by ResolveSTT when the resolved provider or
+// model belongs to a non-audio (chat) provider. The HTTP handler maps it to a
+// 400.
+var ErrNotAudioProvider = errors.New("stt default must resolve to an audio provider")
+
+// ResolveSTT resolves Config.STT.Default into an audio provider and model
+// name. Empty Default is an error (mic button stays hidden).
+func (c *Config) ResolveSTT() (*Provider, string, error) {
+	d := c.STT.Default
+	if d == "" {
+		return nil, "", fmt.Errorf("stt: no default configured")
+	}
+	var providerName, modelName string
+	if before, after, ok := strings.Cut(d, "/"); ok {
+		providerName, modelName = before, after
+	} else {
+		modelName = d
+	}
+	if providerName != "" {
+		p := c.findProvider(providerName)
+		if p == nil {
+			return nil, "", fmt.Errorf("stt: provider %q not found", providerName)
+		}
+		if p.ProviderType() != ProviderTypeAudio {
+			return nil, "", ErrNotAudioProvider
+		}
+		matched := FindClosestMatch(modelName, p.ModelNames())
+		if matched == "" {
+			return nil, "", fmt.Errorf("stt: model %q not found in provider %q", modelName, p.Name)
+		}
+		return p, matched, nil
+	}
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if p.ProviderType() != ProviderTypeAudio {
+			continue
+		}
+		matched := FindClosestMatch(modelName, p.ModelNames())
+		if matched != "" {
+			return p, matched, nil
+		}
+	}
+	return nil, "", ErrNotAudioProvider
 }
 
 // IsPluginEnabled reports whether a discovered plugin should be loaded.
@@ -728,6 +800,89 @@ func SaveDefaultModel(provider, model string) error {
 		return err
 	}
 	raw["model"] = specJSON
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	// See SaveProviders: chmod after WriteFile so a restrictive umask cannot
+	// defeat the preserved mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveSTTDefault sets stt.default in the user settings file, preserving every
+// other key (including the rest of the stt object) verbatim. Same safety
+// contract as SaveDefaultModel: validation inside the file lock, backup first,
+// atomic tmp+rename. Sentinel errors map to 400s in the HTTP handler.
+func SaveSTTDefault(provider, model string) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage)
+		}
+	}
+	var providers []Provider
+	if pj, ok := raw["providers"]; ok {
+		if err := json.Unmarshal(pj, &providers); err != nil {
+			providers = nil
+		}
+	}
+	known := false
+	for _, p := range providers {
+		if p.Name != provider {
+			continue
+		}
+		if p.ProviderType() != ProviderTypeAudio {
+			return ErrNotAudioProvider
+		}
+		if !p.Models.Has(model) {
+			return ErrUnknownModel
+		}
+		known = true
+		break
+	}
+	if !known {
+		return ErrUnknownProvider
+	}
+	stt := make(map[string]string)
+	if old, ok := raw["stt"]; ok {
+		_ = json.Unmarshal(old, &stt)
+	}
+	stt["default"] = provider + "/" + model
+	sttJSON, err := json.Marshal(stt)
+	if err != nil {
+		return err
+	}
+	raw["stt"] = sttJSON
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err

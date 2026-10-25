@@ -1,9 +1,11 @@
 package com.gbot.android
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.Drawable
@@ -21,6 +23,7 @@ import android.view.ViewGroup
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -169,8 +172,13 @@ class ChatFragment : Fragment() {
                 val name = t.name.trim()
                 val host = t.host.trim()
                 if (name.isEmpty()) return MSG_NAME_REQUIRED
-                if (host.isEmpty() || host.any { it.isWhitespace() } ||
-                    '/' in host || ':' in host
+                if (host.isEmpty() || host.any { it.isWhitespace() }) return MSG_HOST_INVALID
+                // The colon/slash ban is for bare hostnames (port lives in its
+                // own field). A full-origin host (https://machine.ts.net)
+                // carries scheme and port inside the string — getUserMedia
+                // needs it for the secure context.
+                if (!host.startsWith("https://") && !host.startsWith("http://") &&
+                    ('/' in host || ':' in host)
                 ) return MSG_HOST_INVALID
                 if (t.port !in 1..65535) return MSG_PORT_INVALID
                 if (!seen.add(name)) return MSG_NAME_DUPLICATE
@@ -255,8 +263,17 @@ class ChatFragment : Fragment() {
         // like ConnectionForegroundService.resolveTarget. An unparsable
         // remote config (blank host) degrades to the local daemon rather
         // than a malformed URL.
-        internal fun buildTargetUrl(target: String, host: String, port: Int): String =
-            if (target == TARGET_REMOTE && host.isNotBlank()) "http://$host:$port/" else LOCAL_URL
+        internal fun buildTargetUrl(target: String, host: String, port: Int): String {
+            if (target != TARGET_REMOTE || host.isBlank()) return LOCAL_URL
+            // Full-origin hosts carry their own scheme and port: getUserMedia
+            // (mic) requires a secure context, so tailscale-serve entries are
+            // entered as https://machine.ts.net — bare hosts keep the legacy
+            // http://host:port form (insecure: no mic, everything else works).
+            if (host.startsWith("https://") || host.startsWith("http://")) {
+                return host.trimEnd('/') + "/"
+            }
+            return "http://$host:$port/"
+        }
         // Unlike the helpers above this one goes through android.net.Uri, which
         // is stubbed (throws) in plain JUnit — its test runs on Robolectric.
         /**
@@ -334,6 +351,20 @@ class ChatFragment : Fragment() {
             )
         }
 
+    // getUserMedia({audio}) is a three-layer grant on Android: manifest
+    // declaration, runtime permission, then the WebView's chrome client
+    // handing the capture resource to the page. The launcher bridges the
+    // async runtime prompt back to the suspended onPermissionRequest.
+    private var pendingMicRequest: PermissionRequest? = null
+    private val micPermissionLauncher: ActivityResultLauncher<String> =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val request = pendingMicRequest
+            pendingMicRequest = null
+            if (request != null) {
+                if (granted) request.grant(request.resources) else request.deny()
+            }
+        }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -377,6 +408,41 @@ class ChatFragment : Fragment() {
         // is a separate process whose JobScheduler queue stalls on-device).
         webView?.setDownloadListener { url, _, _, mimeType, _ -> onWebViewDownload(url, mimeType) }
         webView?.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // Capture the app context on the binder thread: the posted
+                // runnable must not depend on fragment attachment
+                // (requireContext() throws once detached — see the
+                // NativeThemeBridge note further down this file).
+                val app = context?.applicationContext ?: return
+                // WebView callbacks arrive on a binder thread — grant/deny
+                // must run on the fragment's UI thread.
+                activity?.runOnUiThread {
+                    // Only a pure audio request is granted: a mixed
+                    // [video, audio] payload would hand out VIDEO_CAPTURE
+                    // with no CAMERA check ever having run.
+                    val audioOnly = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE) &&
+                        request.resources.size == 1
+                    if (!audioOnly) {
+                        request.deny()
+                        return@runOnUiThread
+                    }
+                    if (ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        request.grant(request.resources)
+                    } else {
+                        // Suspends the request while the system prompt runs;
+                        // the launcher callback grants or denies on answer.
+                        // pendingMicRequest is deliberately NOT persisted
+                        // across fragment recreation — the request belongs
+                        // to a WebView that dies with the view, and the
+                        // reloaded page simply re-asks.
+                        pendingMicRequest = request
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            }
+
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,

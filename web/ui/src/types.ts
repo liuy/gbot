@@ -50,11 +50,12 @@ export type ServerMessage =
       models: { provider: string; model: string }[]
       current: { provider: string; model: string }
       thinking: string
+      stt?: boolean
     }
   | {
       type: 'metadata'
       connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string; wuiHash?: string }
-      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string }
+      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string; stt?: boolean }
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
       jobs?: { jobs: (JobWireItem & { blocks?: Block[]; tail?: string })[] }

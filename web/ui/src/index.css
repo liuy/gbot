@@ -79,6 +79,16 @@ body {
 .diff-add { background: rgba(61,214,140,0.1); margin-top: 0; }
 .diff-del { background: rgba(255,92,92,0.1); margin-top: 0; }
 .glow-blue { box-shadow: 0 0 20px -6px rgba(0,180,255,0.5); }
+/* STT listening state (visual authority: stt-input-proto.html) — green mic
+   with an expanding ring, plus a faint green card border while dictating. */
+.stt-mic-on { color: var(--color-green) !important; }
+.stt-mic-err { color: var(--color-red) !important; }
+.stt-mic-off { color: var(--color-red) !important; }
+.stt-mic-off:hover { color: var(--color-red) !important; }
+.card-listening {
+  border-color: rgba(61, 214, 140, 0.35);
+  box-shadow: 0 0 24px rgba(61, 214, 140, 0.1);
+}
 .fade-top { background: linear-gradient(to bottom, #06080F 60%, rgba(6,8,15,0)); }
 .truncate-sm { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-enter { animation: modalIn 0.18s ease-out; }

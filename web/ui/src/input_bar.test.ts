@@ -666,12 +666,15 @@ describe('createInputBar — thinking effort control', () => {
     const ib = mount()
     expect(strip(ib).classList.contains('hidden')).toBe(true)
     expect(caption(ib).classList.contains('invisible')).toBe(true)
-    // Row is exactly plus → textarea → send.
+    // Row is exactly plus → mic (hidden until STT is configured) → textarea → send.
     const plus = ib.root.querySelector('button[aria-label="Attach file"]')!
-    expect((plus.nextSibling as HTMLElement).contains(ib.textarea as unknown as Node)).toBe(true)
-    // The send anchor directly follows the textarea wrapper — no pill
-    // between them; the button itself sits inside its anchor.
-    expect(sendBtn(ib).closest('div')!.previousSibling).toBe(plus.nextSibling)
+    const micAnchor = plus.nextSibling as HTMLElement
+    expect(micAnchor.querySelector('button[aria-label="Voice input"]')).toBeTruthy()
+    expect((micAnchor.nextSibling as HTMLElement).contains(ib.textarea as unknown as Node)).toBe(true)
+    // The send anchor follows the textarea — no effort pill ever sits in
+    // the row.
+    const sendAnchorPrev = sendBtn(ib).closest('div')!.previousSibling as HTMLElement
+    expect(sendAnchorPrev.contains(ib.textarea as unknown as Node)).toBe(true)
   })
 
   it('setThinking(high) shows the caption under the arrow, not in the row', () => {
@@ -807,5 +810,143 @@ describe('queue bubble enter animation', () => {
     const second = ib.bubbles.querySelectorAll('div')[1]
     if (!second) throw new Error('second bubble missing')
     expect(second.className).toContain('modal-enter')
+  })
+})
+
+describe('createInputBar — STT rendering', () => {
+  it('mic always visible; unavailable renders red with slash', () => {
+    const ib = mount()
+    const micSel = 'button[aria-label="Voice input"]'
+    // Unavailable: resident, red, slashed, disabled.
+    const mic = ib.root.querySelector(micSel)! as HTMLButtonElement
+    expect(mic.classList.contains('hidden')).toBe(false)
+    expect(mic.classList.contains('stt-mic-off')).toBe(true)
+    expect(mic.querySelector('.stt-mic-slash')!.classList.contains('hidden')).toBe(false)
+    expect(mic.disabled).toBe(true)
+    ib.setSttAvailable(true)
+    // Available: slash gone, blue, enabled.
+    expect(mic.classList.contains('stt-mic-off')).toBe(false)
+    expect(mic.querySelector('.stt-mic-slash')!.classList.contains('hidden')).toBe(true)
+    expect(mic.disabled).toBe(false)
+    // Position: plus → mic → textarea wrap → send. The row is mic's
+    // anchor's PARENT (micAnchor is itself a flex div — closest('div.flex')
+    // would resolve to the anchor and make any index assertion a tautology).
+    const row = mic.closest('div')!.parentElement!
+    const children = Array.from(row.children)
+    expect(children.indexOf(mic.closest('div')!)).toBe(1)
+    expect(children.indexOf(mic.closest('div')!)).toBeLessThan(children.length - 2)
+    // Connected gating: disable on disconnect, re-enable on reconnect.
+    ib.setConnected(false)
+    expect(mic.disabled).toBe(true)
+    ib.setConnected(true)
+    expect(mic.disabled).toBe(false)
+  })
+
+  it('onMicToggle fires on mic click; setSttListening paints the state', () => {
+    const ib = mount()
+    ib.setSttAvailable(true)
+    const fired = vi.fn()
+    ib.onMicToggle(fired)
+    ;(ib.root.querySelector('button[aria-label="Voice input"]') as HTMLElement).click()
+    expect(fired).toHaveBeenCalledTimes(1)
+    // The error red clears when the new attempt reaches listening (green
+    // repaint); failed attempts stay red — the tap itself never clears it.
+    ib.setSttStatus('boom')
+    expect(ib.root.querySelector('.stt-mic')!.classList.contains('stt-mic-err')).toBe(true)
+    ib.setSttListening(true)
+    const mic = ib.root.querySelector('button[aria-label="Voice input"]')!
+    // The green mic + card glow IS the listening indicator — no text.
+    expect(mic.classList.contains('stt-mic-on')).toBe(true)
+    expect(mic.classList.contains('stt-mic-err')).toBe(false)
+    ib.setSttListening(false)
+    expect(mic.classList.contains('stt-mic-on')).toBe(false)
+  })
+
+  it('setSttStatus flags the mic red on error and clears on recovery', () => {
+    const ib = mount()
+    ib.setSttStatus('boom')
+    expect(ib.root.querySelector('.stt-mic')!.classList.contains('stt-mic-err')).toBe(true)
+    ib.setSttStatus(null)
+    expect(ib.root.querySelector('.stt-mic')!.classList.contains('stt-mic-err')).toBe(false)
+  })
+
+  it('appendSttDelta joins CJK gaps and ASCII word boundaries', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('你好')
+    expect(ib.textarea.value).toBe('你好')
+    ib.appendSttDelta(' 是流式')
+    expect(ib.textarea.value).toBe('你好是流式')
+    ib.textarea.value = 'hello'
+    ib.appendSttDelta('work')
+    expect(ib.textarea.value).toBe('hello work')
+  })
+  it('caret follows the transcript to the end while deltas land', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('你好')
+    expect(ib.textarea.selectionStart).toBe(2)
+    ib.appendSttDelta(' 是流式')
+    expect(ib.textarea.selectionStart).toBe(5)
+    ib.commitSttUtterance('定稿')
+    expect(ib.textarea.selectionStart).toBe(2)
+  })
+
+  it('commitSttUtterance replaces an unedited span with the final text', () => {
+    const ib = mount()
+    ib.textarea.value = '前缀 '
+    ib.beginSttUtterance()
+    ib.appendSttDelta('临时')
+    ib.appendSttDelta(' 内容')
+    ib.commitSttUtterance('全句')
+    expect(ib.textarea.value).toBe('前缀 全句')
+  })
+
+  it('commitSttUtterance never touches a user-edited span', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('临时')
+    ib.textarea.value = '我改过了'
+    ib.commitSttUtterance('全句')
+    expect(ib.textarea.value).toBe('我改过了')
+  })
+
+  it('empty done (mis-tap auto-close) is a no-op', () => {
+    const ib = mount()
+    ib.textarea.value = '既有文字'
+    ib.beginSttUtterance()
+    ib.commitSttUtterance('')
+    expect(ib.textarea.value).toBe('既有文字')
+  })
+
+  it('replaceSttSpan replaces the span with join rules', () => {
+    const ib = mount()
+    ib.textarea.value = '你好'
+    ib.beginSttUtterance()
+    ib.appendSttDelta('临时')
+    ib.replaceSttSpan('替换后')
+    expect(ib.textarea.value).toBe('你好替换后')
+    // Leading space before a CJK span gets stripped by the join rule.
+    ib.replaceSttSpan(' 是流式')
+    expect(ib.textarea.value).toBe('你好是流式')
+  })
+
+  it('commit after partial still replaces (partials are not user edits)', () => {
+    const ib = mount()
+    ib.textarea.value = '前缀 '
+    ib.beginSttUtterance()
+    ib.appendSttDelta('临时')
+    ib.replaceSttSpan('替换后')
+    ib.commitSttUtterance('定稿')
+    expect(ib.textarea.value).toBe('前缀 定稿')
+  })
+
+  it('endSttUtterance keeps the text but freezes the span', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('保留文字')
+    ib.endSttUtterance()
+    ib.commitSttUtterance('不应生效')
+    expect(ib.textarea.value).toBe('保留文字')
   })
 })

@@ -24,6 +24,11 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 	// still use other providers).
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
+		// Audio providers are STT-only; the free-model mirror is an LLM
+		// concern and audio providers never carry FreeFetched.
+		if p.ProviderType() == ProviderTypeAudio {
+			continue
+		}
 		// Non-empty FreeFetched = this provider mirrors the OpenRouter free
 		// top-10 (the fetch button manages it). Absent = hand-managed.
 		if len(p.FreeFetched) == 0 {
@@ -76,6 +81,12 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 	// For other providers, use their first model.
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
+		// Audio providers are STT-only: they have no llm.Provider
+		// representation and would fall through the switch into the
+		// anthropic default below.
+		if p.ProviderType() == ProviderTypeAudio {
+			continue
+		}
 		apiKey := p.ResolveKey()
 		if apiKey == "" {
 			continue

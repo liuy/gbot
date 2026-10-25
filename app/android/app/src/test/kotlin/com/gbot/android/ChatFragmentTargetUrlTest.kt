@@ -35,8 +35,24 @@ class ChatFragmentTargetUrlTest {
 		assertThat(ChatFragment.buildTargetUrl("remote", "   ", 8765)).isEqualTo("http://127.0.0.1:8765/")
 	}
 
-	@Test
-	fun unknownTarget_degradesToTheLocalUrl() {
+    @Test
+    fun remoteTarget_httpsOrigin_passesThroughWithASingleTrailingSlash() {
+        assertThat(ChatFragment.buildTargetUrl("remote", "https://machine.ts.net", 8765))
+            .isEqualTo("https://machine.ts.net/")
+        assertThat(ChatFragment.buildTargetUrl("remote", "https://machine.ts.net/", 8765))
+            .isEqualTo("https://machine.ts.net/")
+        assertThat(ChatFragment.buildTargetUrl("remote", "https://machine.ts.net//", 8765))
+            .isEqualTo("https://machine.ts.net/")
+    }
+
+    @Test
+    fun remoteTarget_httpOrigin_passesThrough_theInsecureForm() {
+        assertThat(ChatFragment.buildTargetUrl("remote", "http://nas.box", 9000))
+            .isEqualTo("http://nas.box/")
+    }
+
+    @Test
+    fun unknownTarget_degradesToTheLocalUrl() {
 		assertThat(ChatFragment.buildTargetUrl("bogus", "nas.box", 9000))
 			.isEqualTo("http://127.0.0.1:8765/")
 	}

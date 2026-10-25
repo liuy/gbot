@@ -25,6 +25,7 @@ var settingsHTTPTimeout = 10 * time.Second
 //   - GET  /api/settings/raw        — the on-disk settings.json verbatim (read-only)
 //   - PUT  /api/settings/providers  — replace the providers array (backup + atomic write)
 //   - PUT  /api/settings/default    — set the default model tier
+//   - PUT  /api/settings/stt        — set the default STT model (audio providers only)
 //   - POST /api/settings/test       — live connection probe against one provider
 //   - POST /api/settings/models     — fetch the model id list from an endpoint
 //
@@ -35,6 +36,7 @@ func RegisterSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/settings/raw", handleGetRawSettings)
 	mux.HandleFunc("PUT /api/settings/default", handleDefaultPut)
 	mux.HandleFunc("PUT /api/settings/providers", handlePutProviders)
+	mux.HandleFunc("PUT /api/settings/stt", handleSttDefaultPut)
 	mux.HandleFunc("POST /api/settings/test", handleTestProvider)
 	mux.HandleFunc("POST /api/settings/models", handleFetchModels)
 }
@@ -44,6 +46,7 @@ func RegisterSettingsRoutes(mux *http.ServeMux) {
 type settingsPayload struct {
 	Providers []config.Provider `json:"providers"`
 	Default   settingsDefault   `json:"default"`
+	Stt       *settingsDefault  `json:"stt,omitempty"`
 }
 
 type settingsDefault struct {
@@ -63,11 +66,15 @@ func handleGetProviders(w http.ResponseWriter, r *http.Request) {
 	if p, m, err := cfg.ResolveModel(); err == nil {
 		def.Provider, def.Model = p.Name, m
 	}
+	var sttDef *settingsDefault
+	if p, m, err := cfg.ResolveSTT(); err == nil {
+		sttDef = &settingsDefault{Provider: p.Name, Model: m}
+	}
 	if cfg.Providers == nil {
 		cfg.Providers = []config.Provider{}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def})
+	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def, Stt: sttDef})
 }
 
 // handleGetRawSettings returns the on-disk settings.json verbatim for the
@@ -111,6 +118,7 @@ var knownProviderTypes = map[string]bool{
 	"openai":    true,
 	"anthropic": true,
 	"responses": true,
+	"audio":     true,
 }
 
 // validateProviders returns the first rule violation as a user-facing
@@ -170,8 +178,10 @@ func handleTestProvider(w http.ResponseWriter, r *http.Request) {
 // the URL); errors are status-code or transport text only — the key lives
 // in headers and never reaches an error message.
 func probeProvider(ctx context.Context, p *config.Provider) (int, error) {
+	// Audio providers probe keyless — a local audio.cpp deployment is the
+	// normal shape and carries no key. Every other type requires one.
 	key := p.ResolveKey()
-	if key == "" {
+	if key == "" && p.ProviderType() != config.ProviderTypeAudio {
 		return 0, errors.New("no API key configured")
 	}
 	base := strings.TrimRight(p.URL, "/")
@@ -180,6 +190,14 @@ func probeProvider(ctx context.Context, p *config.Provider) (int, error) {
 	var req *http.Request
 	var err error
 	switch p.ProviderType() {
+	case config.ProviderTypeAudio:
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+		if err != nil {
+			return 0, err
+		}
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
 	case config.ProviderTypeAnthropic:
 		// The ping needs a model name for the messages body.
 		model := p.FirstModelName()
@@ -298,6 +316,9 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 
 	p := config.Provider{URL: req.URL, Type: req.Type}
 	if p.ProviderType() == config.ProviderTypeAnthropic {
+		// Anthropic has no /models route. Audio.cpp serves the standard
+		// OpenAI list (with a mode field — probeLiveMode reads the same
+		// endpoint), so audio fetches like any OpenAI provider.
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "manual"})
 		return
 	}
@@ -370,6 +391,32 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		Mode   string         `json:"mode"`
 		Models []fetchedModel `json:"models"`
 	}{Mode: "fetched", Models: models})
+}
+
+// handleSttDefaultPut sets stt.default in settings.json. Validation (audio
+// provider + known model) lives inside config.SaveSTTDefault under the same
+// lock as the write, mirroring handleDefaultPut.
+func handleSttDefaultPut(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if err := config.SaveSTTDefault(req.Provider, req.Model); err != nil {
+		switch {
+		case errors.Is(err, config.ErrUnknownProvider),
+			errors.Is(err, config.ErrUnknownModel),
+			errors.Is(err, config.ErrNotAudioProvider):
+			errorJSON(w, http.StatusBadRequest, err.Error())
+		default:
+			errorJSON(w, http.StatusInternalServerError, "save: "+err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // writeJSON marshals v with the status code.

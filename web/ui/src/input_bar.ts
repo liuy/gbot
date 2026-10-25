@@ -4,6 +4,7 @@ import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPop
 import { createElement, createNode, cx } from './dom'
 import { renderIcon } from './icons'
 import { createIconButton } from './buttons'
+import { joinSttText } from './stt'
 
 // AttachmentRef is the in-memory representation of a file the user has added
 // to the chip strip but not yet sent. Image refs carry a blob URL for the
@@ -117,6 +118,17 @@ export interface InputBarHandles {
   onHistoryDown: (cb: () => string | null) => void
   onHistoryReset: (cb: () => void) => void
   onHistoryPicker: (cb: () => string[]) => void
+  // STT rendering: progressive append + commit-replace. joinSttText runs
+  // here and only here — this module owns the textarea value.
+  setSttAvailable: (a: boolean) => void
+  setSttListening: (on: boolean) => void
+  beginSttUtterance: () => void
+  appendSttDelta: (text: string) => void
+  replaceSttSpan: (text: string) => void
+  commitSttUtterance: (finalText: string) => void
+  endSttUtterance: () => void
+  setSttStatus: (msg: string | null) => void
+  onMicToggle: (cb: () => void) => void
 }
 
 export function createInputBar(initial: {
@@ -136,6 +148,20 @@ export function createInputBar(initial: {
   let historyDownCb: (() => string | null) | null = null
   let historyResetCb: (() => void) | null = null
   let nextPasteID = 1
+  let micToggleCb: (() => void) | null = null
+  let sttAvailable = false
+  // STT span markers: pendingStart anchors this utterance's span; appended
+  // is the span content as last rendered by STT (delta appends + partial
+  // replaces). commit compares against appended — user edits diverge and
+  // suppress the final replace.
+  let pendingStart = -1
+  let appended = ''
+  // Value assignment leaves the caret wherever the browser parks it —
+  // dictation must read like typing, so the caret rides the end.
+  const caretToEnd = () => {
+    const end = textarea.value.length
+    textarea.setSelectionRange(end, end)
+  }
 
   const histItemClass =
     'w-full px-3 py-2 rounded-lg text-left text-[13px] text-t2 cursor-pointer leading-[1.4] truncate'
@@ -393,10 +419,48 @@ export function createInputBar(initial: {
     if (!effortRow.contains(ev.relatedTarget as Node)) closeStrip()
   })
 
-  // Match the 2px the effort badge lifts the send column, so both row
-  // ends read level.
-  plusBtn.classList.add('mb-0.5')
+  // Mic button — resident left of plus (visual authority: stt-input-proto).
+  // Always visible: STT-unavailable renders red with a slash (a "disabled
+  // capability" reads better than a button that silently appears/disappears
+  // across config reloads); listening state is pure CSS.
+  const micBtn = createIconButton({
+    icon: 'mic',
+    label: 'Voice input',
+    variant: 'default',
+    size: 'sm',
+    // 21 not the siblings' 24: the mic glyph's full-height capsule+stem
+    // reads a notch larger than a plus cross at equal size.
+    iconSize: 21,
+    // Optical: the glyph fills the box top-to-bottom while the plus cross
+    // floats centered — without this 1px nudge the mic reads high.
+    className: 'relative flex-shrink-0 stt-mic stt-mic-off translate-y-px disabled:opacity-40 disabled:cursor-not-allowed',
+  })
+  micBtn.disabled = true
+  // The disable slash overlays the glyph (icon spans the whole button).
+  const micSlash = createNode('span', {
+    className: 'stt-mic-slash absolute inset-0',
+    attrs: { 'aria-hidden': 'true' },
+  })
+  micSlash.innerHTML =
+    '<svg viewBox="0 0 24 24" class="w-full h-full"><line x1="4.5" y1="19.5" x2="19.5" y2="4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+  micBtn.appendChild(micSlash)
+  micBtn.addEventListener('click', () => {
+    if (!micBtn.disabled) micToggleCb?.()
+  })
+  // flex on the anchor: tailwind-merge strips `flex` from the button itself
+  // (it conflicts with the initial `hidden`), so the bare button renders
+  // inline-block and inherits a 6-7px line-box descender gap — the flex
+  // parent blockifies it back to geometry with no baseline gap.
+  const micAnchor = createElement('div', 'relative flex-shrink-0 flex')
+  micAnchor.appendChild(micBtn)
+
+
+  // -ml-2 lives on the button, not the anchor: display:none (STT not
+  // configured) neutralizes it, so the textarea stays dead-center without
+  // STT and the pair tightens into one cluster when it appears.
+  micBtn.classList.add('-ml-2')
   row.appendChild(plusBtn)
+  row.appendChild(micAnchor)
   row.appendChild(taWrap)
   row.appendChild(sendAnchor)
   card.appendChild(effortRow)
@@ -1039,6 +1103,7 @@ export function createInputBar(initial: {
       uploading = u
       textarea.disabled = u || !connected
       plusBtn.disabled = u || !connected
+      micBtn.disabled = u || !sttAvailable || !connected
       if (u && attachHost.isOpen()) closeAttachPanel()
       recomputeCanSend()
     },
@@ -1163,10 +1228,71 @@ export function createInputBar(initial: {
     onHistoryPicker: (cb) => {
       historyPickerCb = cb
     },
+    setSttAvailable: (a) => {
+      sttAvailable = a
+      micBtn.classList.toggle('stt-mic-off', !a)
+      micSlash.classList.toggle('hidden', a)
+      micBtn.disabled = !a || !connected
+    },
+    setSttListening: (on) => {
+      // The error red clears only when a new attempt reaches listening
+      // (repainted green); a failed attempt keeps it red — the tap itself
+      // never clears it.
+      if (on) micBtn.classList.remove('stt-mic-err')
+      micBtn.classList.toggle('stt-mic-on', on)
+      card.classList.toggle('card-listening', on)
+    },
+    beginSttUtterance: () => {
+      pendingStart = textarea.value.length
+      appended = ''
+    },
+    appendSttDelta: (text) => {
+      if (pendingStart < 0 || !text) return
+      const joined = joinSttText(textarea.value, text)
+      appended += joined.slice(textarea.value.length)
+      textarea.value = joined
+      caretToEnd()
+      recomputeCanSend()
+    },
+    replaceSttSpan: (text) => {
+      if (pendingStart < 0) return
+      const prefix = textarea.value.slice(0, pendingStart)
+      const joined = joinSttText(prefix, text)
+      textarea.value = joined
+      // partial is STT rendering, not a user edit — the span baseline
+      // moves with it or every later commit reads as "edited".
+      appended = textarea.value.slice(pendingStart)
+      caretToEnd()
+      recomputeCanSend()
+    },
+    commitSttUtterance: (finalText) => {
+      if (pendingStart < 0) return
+      if (textarea.value.slice(pendingStart) !== appended) return // user edited
+      const prefix = textarea.value.slice(0, pendingStart)
+      textarea.value = joinSttText(prefix, finalText)
+      caretToEnd()
+      recomputeCanSend()
+    },
+    endSttUtterance: () => {
+      pendingStart = -1
+      appended = ''
+    },
+    setSttStatus: (msg) => {
+      // Errors are a MIC COLOR signal (red until the next click) plus a
+      // console/log line — the chat surface stays text-free.
+      micBtn.classList.remove('stt-mic-on')
+      card.classList.remove('card-listening')
+      micBtn.classList.toggle('stt-mic-err', msg !== null)
+      if (msg) console.log(`[stt] ${msg}`)
+    },
+    onMicToggle: (cb) => {
+      micToggleCb = cb
+    },
     setConnected: (c: boolean) => {
       connected = c
       textarea.disabled = !c
       plusBtn.disabled = !c
+      micBtn.disabled = !sttAvailable || !c
       if (!c && attachHost.isOpen()) closeAttachPanel()
       recomputeCanSend()
     },

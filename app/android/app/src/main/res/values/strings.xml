@@ -6,6 +6,7 @@
     <string name="notification_channel_description">Shows when GBot is connected to the gbot server</string>
     <string name="notification_title">GBot is running</string>
     <string name="notification_text">Connected to gbot on port %d</string>
+    <string name="notification_text_origin">Connected to gbot at %s</string>
     <string name="notification_downloading">downloading %s</string>
     <!-- Artifact download notifications -->
     <string name="download_channel_name">Downloads</string>

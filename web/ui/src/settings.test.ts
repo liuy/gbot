@@ -54,6 +54,7 @@ interface MockOptions {
   models?: ModelsResult
   testResult?: { ok: boolean; latencyMs?: number; error?: string }
   putError?: string
+  onPutStt?: (body: { provider: string; model: string }) => void
   logs?: string
   logsError?: boolean
   devices?: RemoteDevice[]
@@ -135,6 +136,10 @@ function makeFetchHandler(
     }
     if (url === '/api/settings/models') {
       return { ok: true, status: 200, json: async () => opts.models ?? { mode: 'fetched', models: [] } }
+    }
+    if (url === '/api/settings/stt' && method === 'PUT') {
+      opts.onPutStt?.(JSON.parse(String(init?.body)) as { provider: string; model: string })
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
     throw new Error('unexpected fetch ' + method + ' ' + url)
   })
@@ -1631,6 +1636,34 @@ describe('remote endpoints card list + detail form', () => {
     expect(native.setRemoteTargets).not.toHaveBeenCalled()
   })
 
+  it('full-origin host (https://…) saves clean; a bare host/path still toasts invalid', async () => {
+    const native = stubNative([])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'tail')
+    input(formInput(page, '[data-remote-host]'), 'https://machine.ts.net')
+    input(formInput(page, '[data-remote-port]'), '8765')
+    clickSave(page)
+    await flushMicrotasks()
+    // Origin hosts carry scheme+port in the string — the validation passes
+    // and the save path runs to its own 'Saved' toast.
+    expect(native.setRemoteTargets).toHaveBeenCalledWith(
+      JSON.stringify([{ name: 'tail', host: 'https://machine.ts.net', port: 8765 }]),
+    )
+    expect(toastText(page)).toBe('Saved')
+    // The colon/slash ban still guards bare hostnames: a path in a
+    // scheme-less host is a paste error, not an origin.
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'nas')
+    input(formInput(page, '[data-remote-host]'), 'host/path')
+    input(formInput(page, '[data-remote-port]'), '8765')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe('Invalid host (hostname only — no port or path)')
+    expect(native.setRemoteTargets).toHaveBeenCalledTimes(1)
+    expect(formVisible(page)).toBe(true)
+  })
+
   it('duplicate names toast and never call the bridge (name is the identity)', async () => {
     const native = stubNative([{ name: 'nas', host: 'nas.box.local', port: 9000 }])
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
@@ -2380,5 +2413,119 @@ describe('config reload card', () => {
       expect(String((zhDict as Record<string, unknown>)[key] ?? '')).not.toBe('')
       expect(String((zhTWDict as Record<string, unknown>)[key] ?? '')).not.toBe('')
     }
+  })
+})
+
+describe('STT settings surface', () => {
+  const STT_PAYLOAD: SettingsPayload = {
+    ...PAYLOAD,
+    providers: [
+      ...PAYLOAD.providers,
+      {
+        name: 'audiocpp',
+        url: 'http://127.0.0.1:8082/v1',
+        type: 'audio',
+        keys: [],
+        models: { 'stt-stream': {}, stt: {} },
+      },
+    ],
+    stt: { provider: 'audiocpp', model: 'stt-stream' },
+  }
+
+  it('protocol tiles are 2×2 with Audio', async () => {
+    const page = await openPage(makeFetchHandler({ payload: STT_PAYLOAD }), STT_PAYLOAD)
+    const protos = page.root.querySelectorAll('[data-proto]')
+    expect(protos.length).toBe(4)
+    expect(page.root.querySelector('[data-proto="audio"]')!.textContent).toContain('OpenAI Audio API')
+    const grid = (page.root.querySelector('[data-proto="audio"]') as HTMLElement).parentElement!
+    expect(grid.className).toContain('grid-cols-2')
+  })
+
+  it('STT card lists audio providers only; LLM card filters them out', async () => {
+    const page = await openPage(makeFetchHandler({ payload: STT_PAYLOAD }), STT_PAYLOAD)
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement    ;(sttCard.firstElementChild as HTMLElement).click()
+    const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
+    expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/stt-stream"]').length).toBe(1)
+    expect(sttPanel.textContent).not.toContain('zhipu')
+
+    const llmCard = page.root.querySelector('[data-default-card]') as HTMLElement
+    ;(llmCard.firstElementChild as HTMLElement).click()
+    const llmPanel = page.root.querySelector('[data-default-panel]') as HTMLElement
+    expect(llmPanel.textContent).not.toContain('audiocpp')
+    expect(llmPanel.textContent).toContain('zhipu')
+  })
+
+  it('unconfigured STT card is greyed; selecting a model PUTs /api/settings/stt', async () => {
+    let putBody: { provider: string; model: string } | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: { ...STT_PAYLOAD, stt: undefined },
+        onPutStt: (b) => (putBody = b),
+      }),
+      { ...STT_PAYLOAD, stt: undefined },
+    )
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    expect(sttCard.classList.contains('opacity-55')).toBe(true)
+    expect(sttCard.textContent).toContain('Not configured')
+
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    const row = page.root.querySelector('[data-stt-model="audiocpp/stt-stream"]') as HTMLElement
+    row.click()
+    await vi.waitFor(() =>
+      expect(putBody).toEqual({ provider: 'audiocpp', model: 'stt-stream' }),
+    )
+    await vi.waitFor(() => {
+      expect(sttCard.classList.contains('opacity-55')).toBe(false)
+      expect((sttCard.querySelector('.font-mono') as HTMLElement).textContent).toBe(
+        'audiocpp / stt-stream',
+      )
+    })
+  })
+
+  it('audio provider card shows an AUDIO badge; model rows carry the STT tag on the default, no disclosure', async () => {
+    const page = await openPage(makeFetchHandler({ payload: STT_PAYLOAD }), STT_PAYLOAD)
+    const audioCard = Array.from(page.root.querySelectorAll('[data-provider-card]')).find(
+      (c) => c.textContent!.includes('audiocpp'),
+    ) as HTMLElement
+    expect(audioCard.querySelector('[data-type-badge]')!.textContent).toBe('AUDIO')
+
+    audioCard.click()
+    await vi.waitFor(() => {
+      const rows = page.root.querySelectorAll('[data-model-row]')
+      // The row configured as stt.default wears the STT tag (which voice
+      // model the mic uses); others stay bare. No disclosure chevron —
+      // voice models have no editable detail.
+      const tagged = Array.from(rows).filter((r) => r.querySelector('[data-stt-badge]'))
+      expect(tagged.length).toBe(1)
+      expect((tagged[0].querySelector('[data-model-name]') as HTMLInputElement).value).toBe('stt-stream')
+      for (const r of Array.from(rows)) {
+        expect(r.textContent).not.toContain('›')
+      }
+    })
+  })
+
+  it('audio type shows the fetch-models affordance and the keyless hint', async () => {
+    const page = await openPage(makeFetchHandler({ payload: STT_PAYLOAD }), STT_PAYLOAD)
+    const audioCard = Array.from(page.root.querySelectorAll('[data-provider-card]')).find(
+      (c) => c.textContent!.includes('audiocpp'),
+    ) as HTMLElement
+    audioCard.click()
+    // audio.cpp serves the standard /models list — the fetch affordance
+    // applies (only Anthropic drops it).
+    await vi.waitFor(() => {
+      expect(
+        (page.root.querySelector('[data-fetch-models]') as HTMLElement).style.display,
+      ).toBe('')
+    })
+    expect(page.root.textContent).toContain('fetch from API')
+    // Audio model detail renders the voice note instead of chat params —
+    // unconditional click: a silent miss must fail the test, not skip it.
+    const firstModel = page.root.querySelector('[data-model-name]') as HTMLElement
+    expect(firstModel).toBeTruthy()
+    firstModel.click()
+    await vi.waitFor(() => {
+      expect(page.root.textContent).toContain('Voice models take no session params')
+      expect(page.root.textContent).not.toContain('Context')
+    })
   })
 })

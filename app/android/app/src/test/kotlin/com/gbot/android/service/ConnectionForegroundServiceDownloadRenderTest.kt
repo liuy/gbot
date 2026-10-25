@@ -140,6 +140,7 @@ class ConnectionForegroundServiceDownloadRenderTest {
 	@Test
 	fun buildStatusNotification_unknownTotalRendersIndeterminateProgress() {
 		val notification = service.buildStatusNotification(
+			"127.0.0.1",
 			8765,
 			ArtifactDownloader.DownloadState.Downloading("big.bin", 1000, -1, 123L),
 		)
@@ -153,15 +154,32 @@ class ConnectionForegroundServiceDownloadRenderTest {
 
 	@Test
 	fun buildStatusNotification_idleAndFinishedRenderTheConnectionForm() {
-		val idle = service.buildStatusNotification(8765, ArtifactDownloader.DownloadState.Idle)
+		val idle = service.buildStatusNotification("127.0.0.1", 8765, ArtifactDownloader.DownloadState.Idle)
 		assertThat(idle.extras.getString(Notification.EXTRA_TITLE)).isEqualTo("GBot is running")
 		assertThat(idle.extras.getString(Notification.EXTRA_TEXT))
 			.isEqualTo("Connected to gbot on port 8765")
 		assertThat(idle.extras.getInt(Notification.EXTRA_PROGRESS_MAX)).isEqualTo(0)
 
-		val finished = service.buildStatusNotification(8765, ArtifactDownloader.DownloadState.Finished)
+		val finished = service.buildStatusNotification("127.0.0.1", 8765, ArtifactDownloader.DownloadState.Finished)
 		assertThat(finished.extras.getString(Notification.EXTRA_TITLE)).isEqualTo("GBot is running")
 		assertThat(finished.extras.getInt(Notification.EXTRA_PROGRESS_MAX)).isEqualTo(0)
+	}
+
+	@Test
+	fun buildStatusNotification_originHostRendersTheOriginNotThePort() {
+		// The port extra is meaningless for an origin host — naming it would
+		// point the user at a port the connection does not use.
+		val idle = service.buildStatusNotification("https://machine.ts.net", 8765, ArtifactDownloader.DownloadState.Idle)
+		assertThat(idle.extras.getString(Notification.EXTRA_TEXT))
+			.isEqualTo("Connected to gbot at https://machine.ts.net")
+
+		val downloading = service.buildStatusNotification(
+			"https://machine.ts.net",
+			8765,
+			ArtifactDownloader.DownloadState.Downloading("big.bin", 10, 100, 123L),
+		)
+		assertThat(downloading.extras.getString(Notification.EXTRA_TEXT))
+			.isEqualTo("Connected to gbot at https://machine.ts.net")
 	}
 
 	private fun freeUnusedPort(): Int =

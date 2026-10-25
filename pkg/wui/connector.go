@@ -595,6 +595,11 @@ type WUIConnector struct {
 	providers       map[string]llm.Provider
 	providerConfigs map[string]*config.Provider
 
+	// sttDefault mirrors config.STT.Default (set via SetSTTDefault at
+	// startup); buildConfig uses it with providerConfigs to decide whether
+	// the mic button is offered.
+	sttDefault string
+
 	// createEngine builds a new engine, registers it in the manager, and
 	// subscribes this connector to its hub. Set by main.go via
 	// SetCreateEngineFn. nil when engine_new is not supported.
@@ -680,6 +685,28 @@ func (c *WUIConnector) ActiveID() string {
 		return ""
 	}
 	return *p
+}
+
+// SetSTTDefault records the configured STT default ("provider/model") for
+// buildConfig's mic-availability flag.
+func (c *WUIConnector) SetSTTDefault(d string) {
+	c.sttDefault = d
+}
+
+// sttAvailable reports whether the STT default resolves to a model on an
+// audio provider. Uses the startup-cached sttDefault + providerConfigs, so
+// no disk read happens per config frame.
+func (c *WUIConnector) sttAvailable() bool {
+	if c.sttDefault == "" {
+		return false
+	}
+	providers := make([]config.Provider, 0, len(c.providerConfigs))
+	for _, p := range c.providerConfigs {
+		providers = append(providers, *p)
+	}
+	cfg := &config.Config{Providers: providers, STT: config.STTConfig{Default: c.sttDefault}}
+	_, _, err := cfg.ResolveSTT()
+	return err == nil
 }
 
 // wsWriter is the single WS writer goroutine. All outbound frames — text and
@@ -2533,11 +2560,13 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Models   []configModelItem `json:"models"`
 		Current  configCurrent     `json:"current"`
 		Thinking string            `json:"thinking"`
+		Stt      bool              `json:"stt,omitempty"`
 	}{
 		Type:     "config",
 		Models:   []configModelItem{},
 		Current:  configCurrent{Provider: currentProvider, Model: currentModel},
 		Thinking: string(slot.engine.Thinking()),
+		Stt:      c.sttAvailable(),
 	}
 	for _, it := range items {
 		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
