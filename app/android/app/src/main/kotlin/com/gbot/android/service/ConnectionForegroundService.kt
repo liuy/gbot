@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import java.net.URI
 import java.net.URISyntaxException
 import kotlin.math.min
@@ -78,9 +79,6 @@ class ConnectionForegroundService : Service() {
             if (host.contains("://")) host else "$host:$port"
     }
 
-    // Written on the connect loop (IO), read by onDestroy (main) — same
-    // visibility contract as the active/target fields beside it.
-    @Volatile private var wsClient: GbotWebSocketClient? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var active = false
     private var loopJob: Job? = null
@@ -190,7 +188,6 @@ class ConnectionForegroundService : Service() {
                     onConnectionChange = { }
                 )
                 client.setContext(applicationContext)
-                wsClient = client
                 // connectBlocking() returns Boolean: true = handshake open,
                 // false = connect failed synchronously. The no-arg form is the
                 // documented 1.5.6 API; a hung connect is bounded by the OS
@@ -198,12 +195,16 @@ class ConnectionForegroundService : Service() {
                 val opened = client.connectBlocking()
                 if (!opened) {
                     GbotProcess.appendEvent("Connect failed at ${targetLabel(host, port)}; retry in ${backoff}s")
-                } else {
+                } else if (active) {
+                    // Zombie-dial guard: onDestroy may have run during the
+                    // handshake — nobody is left to close THIS client, so
+                    // never enter awaitClose; the loop tail's !active break
+                    // exits and the finally-block reclaims the socket.
                     backoff = 1
-                    // Block until the client disconnects. WebSocketClient has no
-                    // built-in "await peer close", so a latch counted down in
-                    // onClose drives it (GbotWebSocketClient.awaitClose).
-                    client.awaitClose()
+                    // runInterruptible: latch.await() is a plain blocking
+                    // call — without interruption, cancelling loopJob leaves
+                    // the await (and the connection) stuck after onDestroy.
+                    runInterruptible { client.awaitClose() }
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -223,9 +224,12 @@ class ConnectionForegroundService : Service() {
         // instance from rendering into a later test's or process's shadows.
         ArtifactDownloader.requestRender = null
         active = false
+        // No join, no direct shutdown here: connectBlocking() is an
+        // uninterruptible block, so join would pin the main thread until the
+        // TCP timeout (ANR). The loop side owns reclamation — runInterruptible
+        // + finally is the single point — and the cancel signal is what
+        // eventually unwinds the coroutine.
         loopJob?.cancel()
-        wsClient?.shutdown()
-        wsClient = null
         scope.cancel()
         super.onDestroy()
     }
