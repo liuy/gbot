@@ -369,9 +369,9 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws) // drain the single metadata frame
 
-	// Request next page (legacy numeric cursor must still resolve), with a
-	// nonce the response frame must echo back.
-	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "30", "limit": 30, "nonce": 7})
+	// Request next page (server-minted anchor cursor), with a nonce the
+	// response frame must echo back.
+	req, _ := json.Marshal(map[string]any{"type": "history_request", "cursor": "a:35:0:0", "limit": 30, "nonce": 7})
 	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
 		t.Fatalf("write history_request: %v", err)
 	}
@@ -399,8 +399,8 @@ func TestRegisterChatWS_HistoryRequest(t *testing.T) {
 	if !p2Env.HasMore {
 		t.Error("page 2 hasMore = false, want true")
 	}
-	// Legacy "30" on 65 messages = anchor window ending at committed 35 →
-	// next window ends at 5.
+	// Anchor a:35 on 65 messages = window ending at committed 35 → next
+	// window ends at 5.
 	if !regexp.MustCompile(`^a:5:0:\d+$`).MatchString(p2Env.NextCursor) {
 		t.Errorf("page 2 nextCursor = %q, want a:5:0:<gen>", p2Env.NextCursor)
 	}

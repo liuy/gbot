@@ -309,6 +309,16 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.serveHistoryPage(msg.Cursor, msg.Limit, msg.Nonce)
 			}
+		case "subtree_request":
+			var msg struct {
+				BlockID string `json:"blockID"`
+				Anchor  string `json:"anchor"`
+				Limit   int    `json:"limit,omitempty"`
+				Nonce   uint64 `json:"nonce,omitempty"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				c.serveSubtreePage(msg.BlockID, msg.Anchor, msg.Limit, msg.Nonce)
+			}
 		case "session_list_request":
 			if payload := c.buildSessionList(); payload != nil {
 				c.sendWS(payload)

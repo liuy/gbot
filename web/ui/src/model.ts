@@ -22,6 +22,11 @@ export type Block =
 			displayOutput: string
 			startedAt: number
 			children: Block[]
+			// Frozen-window truncation markers (server-side recursive freeze):
+			// truncated counts hidden older children; truncatedCursor anchors
+			// the subtree_page walk back into them while the block runs.
+			truncated?: number
+			truncatedCursor?: string
 	  }
 
 export type ChatMessage = {

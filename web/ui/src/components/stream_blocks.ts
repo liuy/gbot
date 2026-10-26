@@ -11,6 +11,7 @@ import { createElement } from '../dom'
 import { classifyReminderMessage, isCollapsibleBlock, type ReminderRow } from '../utils'
 import { formatArtifactSize } from '../artifact'
 import { userEchoBlock } from '../styles/recipes'
+import { t } from '../i18n'
 import type { Block } from '../model'
 import {
   type ToolDomHandles,
@@ -41,6 +42,10 @@ export interface ThinkingEntryData {
 export interface LiveStreamSink {
   onToolRunning(handles: ToolDomHandles, block: ToolBlockData, parentID: string | null): void
   onThinkingActive(entry: ThinkingEntryData, parentID: string | null): void
+  // Wires the "expand earlier" click of a truncated block's button. Absent
+  // (or a sink-less render) means no button: job-feed blocks carry the
+  // truncation markers but have no request channel to backfill them.
+  onExpandEarlier?(block: ToolBlockData, btn: HTMLButtonElement): void
 }
 
 // wireCopyButtons must be called after every innerHTML assignment that may
@@ -180,7 +185,7 @@ export function renderStreamBlock(
     if (block.summary) setToolSummary(handles, block.summary, block.name)
     if (block.state === 'running') {
       live?.onToolRunning(handles, block, parentID)
-      if (block.children && block.children.length > 0) {
+      if ((block.children && block.children.length > 0) || (block.truncated ?? 0) > 0) {
         expandToolChildrenForRunning(handles)
       }
     } else {
@@ -195,6 +200,22 @@ export function renderStreamBlock(
       for (const child of block.children) {
         renderStreamBlock(childContainer, child, null, block.id, live)
       }
+    }
+    // The expand button renders OUTSIDE the children guard: a kept=0 freeze
+    // (budget fully spent) leaves children empty, yet the always-mounted
+    // children container must still host the button or it is unreachable.
+    // truncated>0 implies a running block — tool_end clears children before
+    // any later freeze can stamp a marker — so no state check is added.
+    if ((block.truncated ?? 0) > 0 && live?.onExpandEarlier) {
+      const btn = createElement(
+        'button',
+        'w-full text-left text-[12px] text-t2 hover:text-t1 py-1 disabled:opacity-50',
+      )
+      btn.dataset.subtreeExpand = '1'
+      btn.textContent = t('expandEarlier')(block.truncated!)
+      const container = appendToolChildrenContainer(handles)
+      container.insertBefore(btn, container.firstChild)
+      live.onExpandEarlier(block, btn)
     }
   }
 }

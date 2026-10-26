@@ -347,6 +347,12 @@ type streamBlock struct {
 	Active        bool          `json:"active,omitempty"`        // kind == "thinking"
 	StartedAt     int64         `json:"startedAt,omitempty"`     // kind == "thinking" | "tool"
 	Children      []streamBlock `json:"children"`                // kind == "tool"
+	// Truncated/TruncatedCursor are set by the recursive window freeze when
+	// a block's children were head-truncated: Truncated counts the hidden
+	// older children and TruncatedCursor ("s:E:G") anchors subtree paging
+	// back into them while the region is still in flight.
+	Truncated       int    `json:"truncated,omitempty"`
+	TruncatedCursor string `json:"truncatedCursor,omitempty"`
 }
 
 // wuiMonotonic is the process-level counter seeding stream-region
@@ -2017,17 +2023,71 @@ type histUnit struct {
 	marker bool
 }
 
-// digitsOnly reports whether s is a non-empty run of ASCII digits — the
-// legacy numeric-cursor shape (an overflowing number still qualifies and
-// keeps tail semantics; anything else is malformed). Callers guarantee
-// s != "": the tail-page switch matches the empty cursor first.
-func digitsOnly(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
+// Frozen-window shape limits. freezeTailChildren (K) caps each node's kept
+// children so one expand click backfills a screen's worth; freezeNodeBudget
+// (N) caps the total marshaled child nodes per frozen window (headers
+// included) so the serialized page stays bounded no matter how many marathon
+// blocks sit in the window. subtreeDefaultLimit is the subtree-page fetch
+// size the client asks for.
+const (
+	freezeTailChildren  = 30
+	freezeNodeBudget    = 200
+	subtreeDefaultLimit = 30
+)
+
+// freezeChildren walks kids tail-first through two gates — the per-node tail
+// cap K and the shared node budget — stopping at the first kid that fails
+// either; that kid and everything older is dropped. Kept kids are value
+// copies whose own Children are recursively frozen, so the result never
+// aliases the live tree. kept is always a contiguous tail of kids: the
+// subtree anchor math (E = hidden head length) depends on it. Budget is
+// charged one per kept node (header included), depth ≥ 1 only.
+func freezeChildren(kids []streamBlock, budget *int, gen int) (kept []streamBlock, dropped int) {
+	kept = make([]streamBlock, 0, min(len(kids), freezeTailChildren))
+	for i := len(kids) - 1; i >= 0; i-- {
+		if len(kept) >= freezeTailChildren || *budget <= 0 {
+			dropped = i + 1
+			break
+		}
+		*budget--
+		kid := kids[i]
+		if len(kid.Children) > 0 {
+			sub, _ := freezeChildren(kid.Children, budget, gen)
+			kid.Children = sub
+			if hidden := len(kids[i].Children) - len(sub); hidden > 0 {
+				kid.Truncated = hidden
+				kid.TruncatedCursor = fmt.Sprintf("s:%d:%d", hidden, gen)
+			}
+		}
+		kept = append(kept, kid)
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	return kept, dropped
+}
+
+// freezeWindow produces the frozen copy of one history-page stream window:
+// every top-level block is value-copied (top headers are never dropped — the
+// phase-1 anchor window math counts them) and each block's children go
+// through freezeChildren against one fresh budget. The source tree is never
+// modified; blocks without children keep their existing wire shape
+// (nil stays null, empty stays []).
+func freezeWindow(blocks []streamBlock, gen int) []streamBlock {
+	budget := freezeNodeBudget
+	out := make([]streamBlock, len(blocks))
+	for i := len(blocks) - 1; i >= 0; i-- {
+		out[i] = blocks[i]
+		if len(blocks[i].Children) > 0 {
+			kept, _ := freezeChildren(blocks[i].Children, &budget, gen)
+			out[i].Children = kept
+			if hidden := len(blocks[i].Children) - len(kept); hidden > 0 {
+				out[i].Truncated = hidden
+				out[i].TruncatedCursor = fmt.Sprintf("s:%d:%d", hidden, gen)
+			}
 		}
 	}
-	return true
+	return out
 }
 
 // buildHistory serves one page of the merged committed+stream view. The
@@ -2037,9 +2097,9 @@ func digitsOnly(s string) bool {
 // user's query message itself is included in history.
 //
 // cursor namespaces: "" (tail page), "a:C:S:G" (anchor into the merged
-// committed+stream view), "N" (legacy numeric alias), and "precompact:D"
-// which hands off to buildPreCompactHistory reading SQLite rows strictly
-// before the last compact boundary.
+// committed+stream view), and "precompact:D" which hands off to
+// buildPreCompactHistory reading SQLite rows strictly before the last
+// compact boundary.
 func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, nonce ...uint64) []byte {
 	if slot == nil {
 		return nil
@@ -2093,10 +2153,8 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, 
 	}
 
 	// Cursor resolution. The anchor "a:C:S:G" names the exclusive end of the
-	// next window in the merged view; numeric cursors are the legacy alias
-	// (offset from the END of committed, pre-merged-view semantics). Anything
-	// unresolvable yields the terminal empty page — same shape the legacy
-	// out-of-range numeric cursor always produced.
+	// next window in the merged view. Anything unresolvable yields the
+	// terminal empty page.
 	cFront, sFront := cNow, sNow
 	terminal := false
 	switch cursor {
@@ -2130,22 +2188,10 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, 
 					cFront, sFront = c, s
 				}
 			}
-		} else if n, err := strconv.Atoi(cursor); err == nil {
-			if n > 0 {
-				// Legacy numeric cursor: offset N from the end of committed.
-				cFront = cNow - n
-				if cFront < 0 {
-					terminal = true
-				}
-			}
-			// n <= 0: tail semantics (offset 0), pinned by the legacy
-			// "0"/"-3" tests.
-		} else if digitsOnly(cursor) {
-			// Numeric-looking but unparseable (overflow): legacy tail
-			// semantics, pinned by the overflow test.
 		} else {
-			// Neither anchor nor numeric (and not the tail ""): no client
-			// legitimately produces this shape — stop paging loudly.
+			// Neither anchor nor tail "" (numeric shapes included — the
+			// legacy alias is gone): no client legitimately produces this
+			// shape, so stop paging loudly.
 			slog.Warn("wui: malformed cursor, returning empty page", "cursor", cursor)
 			terminal = true
 		}
@@ -2191,7 +2237,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, 
 			}
 		}
 		if streamTake > 0 {
-			streamWindow = append([]streamBlock{}, root.blocks[sFront-streamTake:sFront]...)
+			streamWindow = freezeWindow(root.blocks[sFront-streamTake:sFront], gen)
 		}
 		hasMore = cFront-committedTake > 0 || sFront-streamTake > 0
 		if hasMore {
@@ -2334,6 +2380,105 @@ func (c *WUIConnector) serveHistoryPage(cursor string, limit int, nonce uint64) 
 		c.sendWS(payload)
 	}
 	slot.ssMu.Unlock()
+}
+
+// serveSubtreePage answers one subtree_request: it freezes the requested
+// block's older children page inside the same single ssMu critical section
+// discipline as serveHistoryPage (freeze + seq stamp + push atomic), so the
+// page content is by construction older than every live increment numbered
+// above its seq.
+func (c *WUIConnector) serveSubtreePage(blockID, anchor string, limit int, nonce uint64) {
+	slot := c.activeSlot()
+	if slot == nil {
+		return
+	}
+	slot.ssMu.Lock()
+	if payload := c.buildSubtreePage(slot, blockID, anchor, limit, nonce); payload != nil {
+		c.sendWS(payload)
+	}
+	slot.ssMu.Unlock()
+}
+
+// buildSubtreePage serves the hidden-head page of one frozen-truncated tool
+// block, anchored by "s:E:G" (E = hidden head length at freeze time, G = the
+// region generation the cursor was minted in). Only the root region is
+// served — job regions serialize their blocks whole and have no subtree
+// paging. Any unresolvable input yields a stale frame (echoing blockID and
+// nonce so the client can drop its pending entry and button) instead of an
+// error: stale is a normal outcome of racing tool_end / query_end.
+func (c *WUIConnector) buildSubtreePage(slot *engineSlot, blockID, anchor string, limit int, nonce uint64) []byte {
+	if slot == nil {
+		return nil
+	}
+	subtreeFrame := func(kids []streamBlock, nextAnchor string, hasMore bool, remaining int, isStale bool) []byte {
+		payload, _ := json.Marshal(struct {
+			Type       string        `json:"type"`
+			BlockID    string        `json:"blockID"`
+			Children   []streamBlock `json:"children,omitempty"`
+			NextAnchor string        `json:"nextAnchor"`
+			HasMore    bool          `json:"hasMore"`
+			Remaining  int           `json:"remaining"`
+			Stale      bool          `json:"stale,omitempty"`
+			Seq        uint64        `json:"seq,omitempty"`
+			Nonce      uint64        `json:"nonce,omitempty"`
+		}{Type: "subtree_page", BlockID: blockID, Children: kids, NextAnchor: nextAnchor,
+			HasMore: hasMore, Remaining: remaining, Stale: isStale, Seq: wuiMonotonic.Add(1), Nonce: nonce})
+		return payload
+	}
+	stale := func() []byte { return subtreeFrame(nil, "", false, 0, true) }
+
+	root := slot.streams[""]
+	if root == nil {
+		return stale()
+	}
+
+	// Anchor "s:E:G": E = hidden head length, G = region generation.
+	e, g := -1, -1
+	if rest, ok := strings.CutPrefix(anchor, "s:"); ok {
+		parts := strings.Split(rest, ":")
+		if len(parts) == 2 {
+			var e1, e2 error
+			e, e1 = strconv.Atoi(parts[0])
+			g, e2 = strconv.Atoi(parts[1])
+			if e1 != nil || e2 != nil || e < 0 || g < 0 {
+				e, g = -1, -1
+			}
+		}
+	}
+	if e < 0 {
+		slog.Warn("wui: malformed subtree anchor, returning stale page", "anchor", anchor)
+		return stale()
+	}
+	if g != root.gen {
+		return stale()
+	}
+	b := findBlock(root.blocks, blockID)
+	if b == nil {
+		return stale()
+	}
+	if e > len(b.Children) {
+		return stale()
+	}
+
+	if limit <= 0 {
+		limit = subtreeDefaultLimit
+	}
+	take := min(limit, e)
+	start := e - take
+	budget := freezeNodeBudget
+	kids, dropped := freezeChildren(b.Children[start:e], &budget, root.gen)
+
+	// Budget-exhausted drops fold into the next page's cursor: nextStart is
+	// the new hidden-head length, strictly below E (every request gets a
+	// fresh budget, and with take ≥ 1 the youngest kid always survives, so
+	// repeated clicks converge to nextStart=0 in finitely many steps).
+	nextStart := start + dropped
+	hasMore := nextStart > 0
+	nextAnchor := ""
+	if hasMore {
+		nextAnchor = fmt.Sprintf("s:%d:%d", nextStart, root.gen)
+	}
+	return subtreeFrame(kids, nextAnchor, hasMore, nextStart, false)
 }
 
 // formatToolDisplayName mirrors TUI's logic for MCP tool names.

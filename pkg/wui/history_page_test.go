@@ -279,8 +279,7 @@ func TestBuildHistory_AnchorStaleGeneration(t *testing.T) {
 }
 
 // V5: an anchor whose committed front outruns the live count (rewind
-// truncation) resolves to the terminal empty page, like the legacy
-// out-of-range numeric cursor.
+// truncation) resolves to the terminal empty page.
 func TestBuildHistory_StaleAnchorRewindTerminalPage(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
@@ -295,47 +294,6 @@ func TestBuildHistory_StaleAnchorRewindTerminalPage(t *testing.T) {
 	}
 	if p.NextCursor != "" {
 		t.Errorf("nextCursor = %q, want \"\"", p.NextCursor)
-	}
-}
-
-// V6: legacy numeric cursors alias the anchor form — "N" addresses the same
-// window as "a:(C-N):0:G".
-func TestBuildHistory_LegacyNumericAlias(t *testing.T) {
-	c := mutA2BareConnector()
-	mock := &mockEngine{}
-	msgs := make([]types.Message, 65)
-	for i := range msgs {
-		msgs[i] = types.Message{
-			ID:        fmt.Sprintf("msg-%d", i),
-			Role:      types.RoleAssistant,
-			Timestamp: time.Unix(int64(1000+i), 0),
-			Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("content-%d", i))},
-		}
-	}
-	mock.SetMessagesFn(func() []types.Message { return msgs })
-
-	tail := parseHistPage(t, c.buildHistory(mutA2Slot(mock), "", 30))
-	if !tail.HasMore {
-		t.Fatal("tail page hasMore = false, cannot harvest generation")
-	}
-	g := anchorG(t, tail.NextCursor)
-
-	pn := parseHistPage(t, c.buildHistory(mutA2Slot(mock), "30", 30))
-	pa := parseHistPage(t, c.buildHistory(mutA2Slot(mock), "a:35:0:"+g, 30))
-	if len(pn.Messages) != 30 || len(pa.Messages) != 30 {
-		t.Fatalf("page sizes = %d / %d, want 30 / 30", len(pn.Messages), len(pa.Messages))
-	}
-	if pn.Messages[0].ID != "msg-5" {
-		t.Errorf("numeric page first ID = %q, want msg-5 (window [5,35))", pn.Messages[0].ID)
-	}
-	for i := range pn.Messages {
-		if pn.Messages[i].ID != pa.Messages[i].ID {
-			t.Fatalf("numeric vs anchor page diverge at %d: %q vs %q", i, pn.Messages[i].ID, pa.Messages[i].ID)
-		}
-	}
-	if !pn.HasMore || pn.NextCursor != "a:5:0:"+g || pa.NextCursor != pn.NextCursor {
-		t.Errorf("nextCursors = numeric %q anchor %q (hasMore=%v), want both a:5:0:%s",
-			pn.NextCursor, pa.NextCursor, pn.HasMore, g)
 	}
 }
 
@@ -597,24 +555,19 @@ func TestBuildHistory_AnchorParseMatrix(t *testing.T) {
 				cursor, len(p.Messages), p.HasMore, p.NextCursor)
 		}
 	}
-	fullPage := func(cursor string) {
-		t.Helper()
-		p := parseHistPage(t, c.buildHistory(slot, cursor, 30))
-		if len(p.Messages) != 5 || p.Messages[0].ID != "m00" {
-			t.Errorf("cursor %q: page = %d msgs starting %q, want the full 5-row tail",
-				cursor, len(p.Messages), p.Messages[0].ID)
-		}
-	}
 
-	// Malformed anchors and junk cursors: terminal + warn.
+	// Malformed anchors, junk cursors, and bare numeric cursors (the removed
+	// legacy alias): terminal + warn.
 	warns := swapMutA2WarnHandler(t)
-	for _, cursor := range []string{
-		"a:1:2", "a:1:2:3:4", "a:x:1:1", "a:1:y:1", "a:1:1:z", "junk", "a::0:0",
-	} {
+	malformedCursors := []string{
+		"a:1:2", "a:1:2:3:4", "a:x:1:1", "a:1:y:1", "a:1:1:z", "junk", "a::0:0", "5",
+	}
+	for _, cursor := range malformedCursors {
 		terminalPage(cursor)
 	}
-	if got := strings.Join(warns.records, "\n"); !strings.Contains(got, "malformed") {
-		t.Errorf("malformed cursors logged %q, want malformed-cursor warnings", got)
+	if got := strings.Count(strings.Join(warns.records, "\n"), "malformed"); got != len(malformedCursors) {
+		t.Errorf("malformed-cursor warns = %d, want one per cursor (%d): %q",
+			got, len(malformedCursors), strings.Join(warns.records, "\n"))
 	}
 
 	// Anchor bounds: C and S past the live edges (including negatives) end
@@ -623,18 +576,13 @@ func TestBuildHistory_AnchorParseMatrix(t *testing.T) {
 		terminalPage(cursor)
 	}
 
-	// A numeric cursor exactly equal to the unit count is a legal (empty)
-	// window, NOT terminal — so the pre-compact probe still extends paging.
-	p := parseHistPage(t, c.buildHistory(slot, "5", 30))
+	// An anchor at the head of both regions is a legal (empty) window, NOT
+	// terminal — so the pre-compact probe still extends paging.
+	p := parseHistPage(t, c.buildHistory(slot, "a:0:0:0", 30))
 	if len(p.Messages) != 0 || !p.HasMore || p.NextCursor != "precompact:0" {
-		t.Errorf("cursor \"5\": page = %d msgs hasMore=%v nextCursor=%q, want empty window with precompact probe",
+		t.Errorf("cursor \"a:0:0:0\": page = %d msgs hasMore=%v nextCursor=%q, want empty window with precompact probe",
 			len(p.Messages), p.HasMore, p.NextCursor)
 	}
-
-	// Zero / negative / overflowing numerics keep tail semantics.
-	fullPage("0")
-	fullPage("-3")
-	fullPage("92233720368547758080")
 }
 
 // The nonce is echoed on every page flavor and omitted when the request
@@ -769,18 +717,6 @@ func TestSessionRev_BoundaryIndexes(t *testing.T) {
 	}
 }
 
-// digitsOnly must reject every non-digit, including bytes below '0' — a
-// junk cursor with such a byte must stay terminal, not fall to tail.
-func TestBuildHistory_JunkCursorLowBytes(t *testing.T) {
-	c, slot, _ := anchorPageEnv()
-	for _, cursor := range []string{"junk!", "-junk", " 5", "1 2"} {
-		p := parseHistPage(t, c.buildHistory(slot, cursor, 30))
-		if len(p.Messages) != 0 || p.HasMore {
-			t.Errorf("cursor %q: page = %d msgs hasMore=%v, want terminal empty", cursor, len(p.Messages), p.HasMore)
-		}
-	}
-}
-
 // Round-trip a valid anchor against a region whose generation is nonzero
 // (registerEngine-seeded): the parsed G must address that region exactly —
 // a dropped third Atoi field degrades G to 0 and mis-zeroes the window.
@@ -844,24 +780,6 @@ func TestBuildHistory_StaleS1AndExactWarns(t *testing.T) {
 	}
 	if !wantJunk {
 		t.Errorf("plain junk did not log the cursor warning: %v", warns.records)
-	}
-}
-
-// Numeric out-of-range cursors share the terminal shape (and skip the
-// pre-compact probe), including the exact C+1 boundary where cFront == -1.
-func TestBuildHistory_NumericOutOfRangeTerminal(t *testing.T) {
-	c, slot, mock := anchorPageEnv()
-	// Boundary exists: a probe would flip hasMore on and expose a skipped
-	// terminal as a paginating page.
-	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
-		return nil, 0, true
-	}
-	for _, cursor := range []string{"9", "6", "a:1:-1:0"} {
-		p := parseHistPage(t, c.buildHistory(slot, cursor, 30))
-		if len(p.Messages) != 0 || p.HasMore || p.NextCursor != "" {
-			t.Errorf("cursor %q: page = %d msgs hasMore=%v nextCursor=%q, want terminal empty",
-				cursor, len(p.Messages), p.HasMore, p.NextCursor)
-		}
 	}
 }
 

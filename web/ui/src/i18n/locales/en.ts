@@ -235,6 +235,7 @@ export const dict = {
   shareImageFailed: 'Failed to create image',
   shareDlOk: 'Download',
   shareDlCancel: 'Cancel',
+  expandEarlier: (n: number) => `⋯ expand earlier (${n})`,
 } as const
 
 export const endonym = 'English'

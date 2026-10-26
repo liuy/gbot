@@ -210,6 +210,7 @@ export const dict: Dict = {
   shareImageFailed: '生成图片失败',
   shareDlOk: '下载',
   shareDlCancel: '取消',
+  expandEarlier: (n: number) => `⋯ 展开更早 (${n})`,
 }
 
 export const endonym = '简体中文'

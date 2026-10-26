@@ -608,6 +608,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (parentID) currentSubAgentThinking.set(parentID, entry)
       else currentThinking = entry
     },
+    onExpandEarlier: (block, btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return
+        btn.disabled = true
+        const nonce = nextHistoryNonce()
+        pendingSubtree.set(nonce, { blockID: block.id, btn })
+        conn.send({ type: 'subtree_request', blockID: block.id, anchor: block.truncatedCursor ?? '', limit: 30, nonce })
+      })
+    },
   }
   let queuedMsgs: QueuedMsg[] = []
   // Local metas for the attachment blocks of the last abort-rewound user
@@ -632,6 +641,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Not cleared in resetAllState: every send overwrites it, and no frame
   // can arrive between the reset and the next send.
   let expectedHistoryNonce = 0
+  // In-flight subtree_request reconciliation: nonce → requesting blockID +
+  // button. Entries deliberately hold no block reference — pendingToolByID
+  // owns the object, so the anchor-advance write and the click closure's
+  // next read can never drift between two copies. Nonce 0 never appears in
+  // a real request (nextHistoryNonce returns ≥1), so the server's
+  // `nonce uint64 omitempty` can never strip the echo key of a live entry
+  // and strand its button disabled.
+  const pendingSubtree = new Map<number, { blockID: string; btn: HTMLButtonElement }>()
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = createElement('div', 'relative flex flex-col h-dvh')
@@ -962,6 +979,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       scrollBtnHandle.setProgress(progress)
     }
     maybePrefetchHistory()
+    autoExpandSubtrees()
   }
 
   // Prefetch when fewer than REMAINING_THRESHOLD messages are above the viewport.
@@ -982,6 +1000,24 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       loadingMore = true
       expectedHistoryNonce = nextHistoryNonce()
       conn.send({ type: 'history_request', cursor: nextCursor, limit: 30, nonce: expectedHistoryNonce })
+    }
+  }
+
+  // Auto-expand: a truncation sentinel within SUBTREE_AUTO_EXPAND_PX of the
+  // viewport top (either side) pulls its page via btn.click() — the same
+  // listener the manual path wires, so the disabled dedup and the anchor
+  // advance are shared. The upper bound matters as much as the lower: with
+  // only "top > -PX" a sentinel far below the viewport would fire on every
+  // scroll. Buttons are queried from live DOM per event — no observers to
+  // register, nothing to clean on block teardown. Runs in the same callback
+  // as maybePrefetchHistory; truncated blocks are rare, so the selector hits
+  // a handful.
+  const SUBTREE_AUTO_EXPAND_PX = 300
+  function autoExpandSubtrees() {
+    for (const btn of (streamContainer ?? document).querySelectorAll<HTMLButtonElement>('[data-subtree-expand]')) {
+      if (btn.disabled) continue
+      const top = btn.getBoundingClientRect().top
+      if (top > -SUBTREE_AUTO_EXPAND_PX && top < SUBTREE_AUTO_EXPAND_PX) btn.click()
     }
   }
 
@@ -1015,6 +1051,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     streamContainer = null
     toolEntries.clear()
+    pendingSubtree.clear()
     currentTextDiv = null
     currentThinking = null
     tokenRate.reset()
@@ -1561,6 +1598,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const serverRewound = !!e.rewound
         console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound + ' rewound_text=' + (e.rewound_text ? 'yes' : 'no'))
         finalizeRunningBlocks(pendingBlocks, wasAborted)
+        // Normal tool_end folds already removed their cards' buttons; this
+        // sweep is the abort/leftover guard for any dead button still
+        // mounted (server stale frames back it up from the other end).
+        streamContainer?.querySelectorAll('[data-subtree-expand]').forEach((el) => el.remove())
 
         if (wasAborted) {
           const last = messages[messages.length - 1]
@@ -1976,7 +2017,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (
           entry &&
-          entry.pendingBlock.children && entry.pendingBlock.children.length > 0 &&
+          ((entry.pendingBlock.children && entry.pendingBlock.children.length > 0) ||
+            (entry.pendingBlock.truncated ?? 0) > 0) &&
           entry.pendingBlock.state !== 'running'
         ) {
           collapseToolChildrenOnDone(entry.handles)
@@ -2624,6 +2666,61 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         } else {
           loadHistory(msg)
           if (msg.stream && msg.stream.length > 0) prependStreamBlocks(msg.stream)
+        }
+        return
+      }
+      case 'subtree_page': {
+        // Not buffered through pendingEvents: pendingPageZero implies the
+        // DOM is being rebuilt and pendingSubtree was cleared with the
+        // streaming refs — a frame from the old view drops at this lookup.
+        if (typeof msg.nonce !== 'number') return
+        const entry = pendingSubtree.get(msg.nonce)
+        if (!entry) return
+        pendingSubtree.delete(msg.nonce)
+        if (msg.stale) {
+          entry.btn.remove()
+          return
+        }
+        const parent = pendingToolByID.get(msg.blockID)
+        const container = subAgentContainer(msg.blockID)
+        if (!parent || !container) {
+          // tool_end/query_end already folded the card: nowhere to prepend.
+          entry.btn.remove()
+          return
+        }
+        const seen = new Set<string>()
+        for (const c of parent.children) {
+          if (c.kind === 'tool') seen.add(c.id)
+        }
+        const kept = (msg.children ?? []).filter((b) => !(b.kind === 'tool' && seen.has(b.id)))
+        // Text seam fallback: correct anchor math never overlaps, so an
+        // identical text block at the seam is a double-apply bug — keep one.
+        if (kept.length > 0 && parent.children.length > 0) {
+          const lastKept = kept[kept.length - 1]
+          const firstExisting = parent.children[0]
+          if (lastKept.kind === 'text' && firstExisting.kind === 'text' && lastKept.text === firstExisting.text) {
+            kept.pop()
+          }
+        }
+        parent.children.unshift(...kept)
+        // Anchor advance writes the same object the click closure reads —
+        // the next click sends msg.nextAnchor, not the stale cursor.
+        parent.truncated = msg.remaining
+        parent.truncatedCursor = msg.nextAnchor
+        registerBlocksForStreamState(kept, msg.blockID)
+        const prevHeight = scroll.scrollHeight
+        const prevTop = scroll.scrollTop
+        const frag = createFragment()
+        for (const b of kept) renderStreamBlock(frag as unknown as HTMLElement, b, null, msg.blockID, liveSink)
+        container.insertBefore(frag, entry.btn.nextSibling)
+        if (!isNearBottom) {
+          scroll.scrollTop = prevTop + (scroll.scrollHeight - prevHeight)
+        }
+        if (msg.hasMore) {
+          entry.btn.disabled = false
+          entry.btn.textContent = t('expandEarlier')(msg.remaining)
+        } else {
+          entry.btn.remove()
         }
         return
       }

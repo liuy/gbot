@@ -1032,8 +1032,8 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 		t.Errorf("page 1 nextCursor = %q, want a:15:0:<gen>", p1.NextCursor)
 	}
 
-	// Page 2: next 10 (msg-14 … msg-5)
-	payload = c.buildHistory(c.activeSlot(), "10", 10)
+	// Page 2: next 10 (msg-14 … msg-5), addressed by page 1's minted cursor.
+	payload = c.buildHistory(c.activeSlot(), p1.NextCursor, 10)
 	if payload == nil {
 		t.Fatal("page 2 returned nil")
 	}
@@ -1061,8 +1061,8 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 		t.Errorf("page 2 nextCursor = %q, want a:5:0:<gen>", p2.NextCursor)
 	}
 
-	// Page 3: last 5 (msg-4 … msg-0)
-	payload = c.buildHistory(c.activeSlot(), "20", 10)
+	// Page 3: last 5 (msg-4 … msg-0), addressed by page 2's minted cursor.
+	payload = c.buildHistory(c.activeSlot(), p2.NextCursor, 10)
 	if payload == nil {
 		t.Fatal("page 3 returned nil")
 	}
@@ -1088,26 +1088,6 @@ func TestBuildHistoryMessage_Pagination(t *testing.T) {
 	}
 	if p3.NextCursor != "" {
 		t.Errorf("page 3 nextCursor = %q, want \"\"", p3.NextCursor)
-	}
-
-	// Cursor beyond total: empty page
-	payload = c.buildHistory(c.activeSlot(), "30", 10)
-	if payload == nil {
-		t.Fatal("page beyond total returned nil")
-	}
-	var p4 struct {
-		Messages   []historyChatMsg `json:"messages"`
-		NextCursor string           `json:"nextCursor"`
-		HasMore    bool             `json:"hasMore"`
-	}
-	if err := json.Unmarshal(payload, &p4); err != nil {
-		t.Fatalf("page 4 unmarshal: %v", err)
-	}
-	if len(p4.Messages) != 0 {
-		t.Fatalf("page 4 messages = %d, want 0 (empty)", len(p4.Messages))
-	}
-	if p4.HasMore {
-		t.Error("page 4 hasMore = true, want false")
 	}
 }
 
@@ -3811,7 +3791,7 @@ func TestMutA2BuildHistoryCursorPaging(t *testing.T) {
 	msgs := mutA2NMessages(35)
 	mock.SetMessagesFn(func() []types.Message { return msgs })
 
-	p := mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "5", 10))
+	p := mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "a:30:0:0", 10))
 	if len(p.Messages) != 10 {
 		t.Fatalf("page len = %d, want 10", len(p.Messages))
 	}
@@ -3822,22 +3802,11 @@ func TestMutA2BuildHistoryCursorPaging(t *testing.T) {
 		t.Errorf("nextCursor = %q, want a:20:0:<gen> (window ends 20 from head)", p.NextCursor)
 	}
 
-	// Cursor "1": offset must advance by exactly one.
-	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "1", 0))
+	// Anchor one before the live edge: the window ends at committed 34, so
+	// the next window (default limit 30) ends at 4.
+	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "a:34:0:0", 0))
 	if !regexp.MustCompile(`^a:4:0:\d+$`).MatchString(p.NextCursor) {
-		t.Errorf("nextCursor for cursor 1 = %q, want a:4:0:<gen>", p.NextCursor)
-	}
-
-	// Negative cursor: treated as offset 0, never a negative slice bound.
-	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "-3", 0))
-	if len(p.Messages) != 30 || p.Messages[0].Text != "t05" {
-		t.Errorf("negative cursor page = %d messages starting %q, want 30 starting t05", len(p.Messages), p.Messages[0].Text)
-	}
-
-	// Overflow cursor: Atoi errors, offset stays 0.
-	p = mutA2ParseHistory(t, c.buildHistory(mutA2Slot(mock), "92233720368547758080", 0))
-	if len(p.Messages) != 30 {
-		t.Errorf("overflow cursor page len = %d, want 30", len(p.Messages))
+		t.Errorf("nextCursor for a:34 = %q, want a:4:0:<gen>", p.NextCursor)
 	}
 }
 

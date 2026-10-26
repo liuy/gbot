@@ -40,6 +40,7 @@ export type ServerMessage =
     }
   | { type: 'error'; message: string }
   | { type: 'history'; messages: HistoryChatMsg[]; stream?: Block[]; nextCursor: string; hasMore: boolean; rev?: string; busy?: boolean; seq?: number; nonce?: number }
+  | { type: 'subtree_page'; blockID: string; nonce?: number; children?: Block[]; nextAnchor: string; hasMore: boolean; remaining: number; stale?: boolean; seq?: number }
   | { type: 'task_list'; tasks: TaskWireItem[] }
   | { type: 'job_list'; jobs: JobWireItem[] }
   | { type: 'job_output'; jobID: string; tail: string }
