@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	mathrand "math/rand"
@@ -489,17 +490,46 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
+	var server *http.Server
+	var callbackCleanupOnce sync.Once
+	// Source: auth.ts:1009-1026 + 1115/1130/1147 — cleanup() runs right after
+	// the first callback is answered (all three branches call it), closing the
+	// callback server so a repeat callback (reload, second tab) meets a closed
+	// listener instead of a handler whose result nobody will read. The three
+	// TS call sites collapse into one deferred call that covers every branch
+	// of the handler; Shutdown waits for the in-flight answer to flush.
+	cleanupCallbackServer := func() {
+		callbackCleanupOnce.Do(func() {
+			go func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = server.Shutdown(shutdownCtx)
+			}()
+		})
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		defer cleanupCallbackServer()
 		// Source: auth.ts:1100-1150 — handle callback
 		q := r.URL.Query()
 
 		if errorCode := q.Get("error"); errorCode != "" {
 			errorDesc := q.Get("error_description")
 			w.WriteHeader(http.StatusOK)
+			// Query-supplied strings go into the HTML error page — escape them
+			// (TS xss() at auth.ts:1123-1126) or a crafted callback URL
+			// reflects scripts into the browser.
 			_, _ = fmt.Fprintf(w, "<h1>Authentication Error</h1><p>%s: %s</p><p>You can close this window.</p>",
-				errorCode, errorDesc)
-			errChan <- fmt.Errorf("OAuth error: %s - %s", errorCode, errorDesc)
+				html.EscapeString(errorCode), html.EscapeString(errorDesc))
+			// The flow reads one callback and then leaves, so a repeat request
+			// (reload, second tab, favicon) has no receiver left: a blocking
+			// send would park the handler and hold its connection open until
+			// the deferred Shutdown gives up.
+			select {
+			case errChan <- fmt.Errorf("OAuth error: %s - %s", errorCode, errorDesc):
+			default:
+			}
 			return
 		}
 
@@ -510,18 +540,24 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 		if callbackState != state {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = fmt.Fprint(w, "<h1>Authentication Error</h1><p>Invalid state parameter.</p>")
-			errChan <- fmt.Errorf("OAuth state mismatch - possible CSRF attack")
+			select {
+			case errChan <- fmt.Errorf("OAuth state mismatch - possible CSRF attack"):
+			default:
+			}
 			return
 		}
 
 		if code != "" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, "<h1>Authentication Successful</h1><p>You can close this window.</p>")
-			codeChan <- code
+			select {
+			case codeChan <- code:
+			default:
+			}
 		}
 	})
 
-	server := &http.Server{
+	server = &http.Server{
 		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: mux,
 	}
@@ -561,21 +597,21 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 
 	select {
 	case code := <-codeChan:
-		// Source: auth.ts:1218-1258 — authorization code obtained
-		// Exchange authorization code for tokens if endpoint is configured
-		if config.TokenEndpoint != "" && config.ClientID != "" {
-			tokens, err := ExchangeAuthCode(ctx, config.TokenEndpoint, code, codeVerifier, redirectURI, config.ClientID)
-			if err != nil {
-				return nil, fmt.Errorf("mcp: %s: token exchange failed: %w", config.ServerName, err)
-			}
-			return &OAuthFlowResult{Tokens: tokens}, nil
+		// Source: auth.ts:1216-1258 — the authorization code is always handed
+		// to a real exchange, and a flow that does not end AUTHORIZED throws
+		// there (reason token_exchange_failed). auth.ts has no entry-time
+		// guard: without an endpoint and a client id there is nothing to
+		// exchange with, and callers persist OAuthFlowResult.Tokens as-is —
+		// an authorization code is not a bearer credential, so say so here,
+		// at the TS failure position, not before the browser dance.
+		if config.TokenEndpoint == "" || config.ClientID == "" {
+			return nil, fmt.Errorf("mcp: %s: OAuth flow needs a token endpoint and client id to exchange the authorization code", config.ServerName)
 		}
-		// Fallback: return code as placeholder for SDK-driven exchange
-		return &OAuthFlowResult{
-			Tokens: &OAuthTokens{
-				AccessToken: code, // placeholder; actual exchange is SDK-dependent
-			},
-		}, nil
+		tokens, err := ExchangeAuthCode(ctx, config.TokenEndpoint, code, codeVerifier, redirectURI, config.ClientID)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: %s: token exchange failed: %w", config.ServerName, err)
+		}
+		return &OAuthFlowResult{Tokens: tokens}, nil
 	case err := <-errChan:
 		return nil, err
 	case <-ctx.Done():
@@ -1041,8 +1077,15 @@ func revokeToken(ctx context.Context, endpoint, token, tokenTypeHint, clientID, 
 	}
 	defer resp.Body.Close()
 
-	// Source: auth.ts:433-460 — fallback to Bearer auth for non-compliant servers
+	// Source: auth.ts:430-458 — axios rejects any non-2xx status, so every
+	// stage's status is checked. Only a 401 with an access token to fall back
+	// on earns the Bearer retry; every other status is a failure.
 	if resp.StatusCode == http.StatusUnauthorized && accessToken != "" {
+		// Source: auth.ts:440-447 — RFC 6749 §2.3.1: must not send more than
+		// one auth method. The retry switches to Bearer — clear any client
+		// creds from the body.
+		form.Del("client_id")
+		form.Del("client_secret")
 		req2, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 		if err != nil {
 			return fmt.Errorf("mcp: failed to create revocation retry: %w", err)
@@ -1055,9 +1098,13 @@ func revokeToken(ctx context.Context, endpoint, token, tokenTypeHint, clientID, 
 			return fmt.Errorf("mcp: revocation retry failed: %w", err)
 		}
 		defer resp2.Body.Close()
-		if resp2.StatusCode >= 400 {
+		if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
 			return fmt.Errorf("mcp: revocation failed with status %d", resp2.StatusCode)
 		}
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("mcp: revocation failed with status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -1071,49 +1118,303 @@ func RevokeServerTokens(ctx context.Context, store *FileTokenStore, serverKey, s
 		return nil
 	}
 	if tokenData.AccessToken == "" && tokenData.RefreshToken == "" {
+		// Source: auth.ts:571-573 — 'No tokens to revoke'
+		slog.Debug("mcp: no tokens to revoke", "server", serverKey)
 		return nil
 	}
 
-	// Source: auth.ts:484-566 — fetch metadata and find revocation endpoint
-	var metadata *OAuthMetadata
-	if configuredMetadataURL != "" {
-		if !strings.HasPrefix(configuredMetadataURL, "https://") {
-			return fmt.Errorf("mcp: authServerMetadataUrl must use https://")
+	// Source: auth.ts:483-490 — for PRM-discovered auth the AS is at a
+	// different host than the MCP URL; the persisted discovery state wins.
+	// (An empty AuthorizationServerURL counts as absent — TS never persists
+	// one, its `??` would happily hand fetchAuthServerMetadata an empty URL.)
+	asURL := serverURL
+	if tokenData.DiscoveryState != nil && tokenData.DiscoveryState.AuthorizationServerURL != "" {
+		asURL = tokenData.DiscoveryState.AuthorizationServerURL
+	}
+
+	// The metadata fetch is inside auth.ts:481-570's try/catch: a failure is
+	// logged and falls through to the local cleanup, never returned.
+	metadata, err := fetchAuthServerMetadata(ctx, serverKey, asURL, configuredMetadataURL)
+	if err != nil {
+		slog.Debug("mcp: failed to revoke tokens", "server", serverKey, "error", err)
+		metadata = nil
+	}
+	if metadata == nil {
+		// Source: auth.ts:492-493 — 'No OAuth metadata found'
+		slog.Debug("mcp: no OAuth metadata found", "server", serverKey)
+	} else if metadata.RevocationEndpoint == "" {
+		// Source: auth.ts:499-500 — server does not support token revocation
+		slog.Debug("mcp: server does not support token revocation", "server", serverKey)
+	} else {
+		// Source: auth.ts:524-543 — revoke refresh token first (more
+		// important). Best-effort, but not silent: auth.ts logs "Failed to
+		// revoke refresh token: ..." because a server that refused is not the
+		// same fact as a server with no revocation endpoint.
+		if tokenData.RefreshToken != "" {
+			if err := revokeToken(ctx, metadata.RevocationEndpoint, tokenData.RefreshToken, "refresh_token",
+				tokenData.ClientID, tokenData.ClientSecret, tokenData.AccessToken); err != nil {
+				slog.Warn("mcp: token revocation failed", "server", serverKey, "token_type_hint", "refresh_token", "error", err)
+			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, configuredMetadataURL, nil)
-		if err == nil {
-			req.Header.Set("Accept", "application/json")
-			client := &http.Client{Timeout: time.Duration(AuthRequestTimeoutMs) * time.Millisecond}
-			resp, err := client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					var m OAuthMetadata
-					if json.NewDecoder(resp.Body).Decode(&m) == nil {
-						metadata = &m
-					}
-				}
+		// Source: auth.ts:546-564 — then revoke access token
+		if tokenData.AccessToken != "" {
+			if err := revokeToken(ctx, metadata.RevocationEndpoint, tokenData.AccessToken, "access_token",
+				tokenData.ClientID, tokenData.ClientSecret, tokenData.AccessToken); err != nil {
+				slog.Warn("mcp: token revocation failed", "server", serverKey, "token_type_hint", "access_token", "error", err)
 			}
 		}
 	}
-
-	if metadata == nil || metadata.RevocationEndpoint == "" {
-		// Source: auth.ts:499-500 — server does not support token revocation
-		return store.DeleteTokens(serverKey)
-	}
-
-	// Source: auth.ts:524-543 — revoke refresh token first (more important)
-	if tokenData.RefreshToken != "" {
-		_ = revokeToken(ctx, metadata.RevocationEndpoint, tokenData.RefreshToken, "refresh_token",
-			tokenData.ClientID, tokenData.ClientSecret, tokenData.AccessToken)
-	}
-	// Source: auth.ts:546-564 — then revoke access token
-	if tokenData.AccessToken != "" {
-		_ = revokeToken(ctx, metadata.RevocationEndpoint, tokenData.AccessToken, "access_token",
-			tokenData.ClientID, tokenData.ClientSecret, tokenData.AccessToken)
-	}
 	// Source: auth.ts:576 — always clear local tokens
 	return store.DeleteTokens(serverKey)
+}
+
+// ---------------------------------------------------------------------------
+// Authorization-server metadata discovery — Source: auth.ts:256-311
+// (fetchAuthServerMetadata) on top of the MCP SDK's discovery chain
+// (@modelcontextprotocol/sdk client/auth.js:426-440, 444-461, 465-508,
+// 550-641, 662-685).
+// ---------------------------------------------------------------------------
+
+// authDiscoveryProtocolVersion is sent as MCP-Protocol-Version on every
+// discovery request, like the SDK's LATEST_PROTOCOL_VERSION default
+// (SDK types.js; go-sdk shared.go latestProtocolVersion).
+const authDiscoveryProtocolVersion = "2025-11-25"
+
+// OAuthProtectedResourceMetadata is the RFC 9728 document that maps a
+// protected resource to its authorization servers. Only the field the chain
+// consumes is modeled; the SDK schema (shared/auth.js
+// OAuthProtectedResourceMetadataSchema) is loose about the rest.
+type OAuthProtectedResourceMetadata struct {
+	AuthorizationServers []string `json:"authorization_servers,omitempty"`
+}
+
+// stripOneTrailingSlash mirrors the SDK's single trailing-slash strip
+// (client/auth.js:467-470): "/a/" becomes "/a", "/a//" stays "/a/".
+func stripOneTrailingSlash(p string) string {
+	if strings.HasSuffix(p, "/") {
+		return p[:len(p)-1]
+	}
+	return p
+}
+
+// discoveryCandidate is one well-known URL the metadata chain probes.
+type discoveryCandidate struct {
+	target string
+	kind   string // "OAuth" or "OpenID provider", for error messages
+}
+
+// buildDiscoveryURLs lists the well-known candidates for an authorization
+// server URL, in the SDK's priority order (client/auth.js:550-590): root URLs
+// get the RFC 8414 and OIDC well-knowns at the origin; path-bearing URLs get
+// the path-inserted variants plus the OIDC Discovery 1.0 path-appended one.
+func buildDiscoveryURLs(u *url.URL) []discoveryCandidate {
+	origin := u.Scheme + "://" + u.Host
+	path := u.Path
+	if path == "" {
+		path = "/" // Go parses "https://host" with Path ""; TS sees "/"
+	}
+	if path == "/" {
+		return []discoveryCandidate{
+			{origin + "/.well-known/oauth-authorization-server", "OAuth"},
+			{origin + "/.well-known/openid-configuration", "OpenID provider"},
+		}
+	}
+	trimmed := stripOneTrailingSlash(path)
+	return []discoveryCandidate{
+		{origin + "/.well-known/oauth-authorization-server" + trimmed, "OAuth"},
+		{origin + "/.well-known/openid-configuration" + trimmed, "OpenID provider"},
+		{origin + trimmed + "/.well-known/openid-configuration", "OpenID provider"},
+	}
+}
+
+// authDiscoveryGet issues one discovery GET. A transport failure is reported
+// as a nil response rather than an error, mirroring fetchWithCorsRetry's
+// "return undefined and let the caller move on" outcome (client/auth.js:444-461).
+func authDiscoveryGet(ctx context.Context, target string, acceptJSON bool) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("MCP-Protocol-Version", authDiscoveryProtocolVersion)
+	if acceptJSON {
+		req.Header.Set("Accept", "application/json")
+	}
+	client := &http.Client{Timeout: time.Duration(AuthRequestTimeoutMs) * time.Millisecond}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil
+	}
+	return resp, nil
+}
+
+// discoverAuthorizationServerMetadata resolves authorization-server metadata
+// over the well-known candidates (SDK client/auth.js:607-641): a 4xx tries the
+// next candidate, a 5xx fails the whole lookup, and exhausting the list
+// without an answer yields nil metadata.
+func discoverAuthorizationServerMetadata(ctx context.Context, authorizationServerURL string) (*OAuthMetadata, error) {
+	u, err := url.Parse(authorizationServerURL)
+	if err != nil {
+		return nil, err
+	}
+	for _, cand := range buildDiscoveryURLs(u) {
+		resp, err := authDiscoveryGet(ctx, cand.target, true)
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil {
+			// Network failure — the chain moves on to the next candidate.
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			status := resp.StatusCode
+			_ = resp.Body.Close()
+			if status >= 400 && status < 500 {
+				continue
+			}
+			return nil, fmt.Errorf("mcp: HTTP %d trying to load %s metadata from %s", status, cand.kind, cand.target)
+		}
+		var m OAuthMetadata
+		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("mcp: invalid %s metadata from %s: %w", cand.kind, cand.target, err)
+		}
+		_ = resp.Body.Close()
+		return &m, nil
+	}
+	return nil, nil
+}
+
+// discoverOAuthProtectedResourceMetadata looks up RFC 9728 protected-resource
+// metadata on the MCP server (SDK client/auth.js:426-440 with
+// discoverMetadataWithFallback 490-508): path-aware well-known first, one root
+// retry when a 4xx came back for a path-bearing URL, and 404/no-answer means
+// the server does not implement RFC 9728.
+func discoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL string) (*OAuthProtectedResourceMetadata, error) {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	probe := func(path string, keepQuery bool) (*http.Response, error) {
+		target := u.Scheme + "://" + u.Host + path
+		if keepQuery && u.RawQuery != "" {
+			target += "?" + u.RawQuery
+		}
+		return authDiscoveryGet(ctx, target, false)
+	}
+	hasPath := u.Path != "" && u.Path != "/"
+	// Source: SDK client/auth.js:496-501 — the path-aware probe keeps the
+	// issuer's query string; the root retry resolves "/.well-known/..." against
+	// the issuer origin and the query is dropped.
+	resp, err := probe("/.well-known/oauth-protected-resource"+stripOneTrailingSlash(u.Path), true)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || (resp.StatusCode >= 400 && resp.StatusCode < 500) {
+		if resp == nil || hasPath {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			resp, err = probe("/.well-known/oauth-protected-resource", false)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// The timer goroutine behind the client Timeout only stops when the
+	// response body closes, so every return path below must close a live body.
+	if resp == nil || resp.StatusCode == http.StatusNotFound {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("mcp: resource server does not implement OAuth 2.0 Protected Resource Metadata")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("mcp: HTTP %d trying to load well-known OAuth protected resource metadata", status)
+	}
+	var rm OAuthProtectedResourceMetadata
+	if err := json.NewDecoder(resp.Body).Decode(&rm); err != nil {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("mcp: invalid protected resource metadata: %w", err)
+	}
+	_ = resp.Body.Close()
+	return &rm, nil
+}
+
+// discoverOAuthServerInfo probes RFC 9728 metadata on the MCP server and then
+// resolves authorization-server metadata, with the legacy fallback of treating
+// the server's root URL as the authorization server (SDK client/auth.js:662-685).
+func discoverOAuthServerInfo(ctx context.Context, serverURL string) (*OAuthMetadata, error) {
+	var authorizationServerURL string
+	if rm, err := discoverOAuthProtectedResourceMetadata(ctx, serverURL); err == nil && len(rm.AuthorizationServers) > 0 {
+		authorizationServerURL = rm.AuthorizationServers[0]
+	}
+	if authorizationServerURL == "" {
+		// RFC 9728 not supported — the MCP server base URL acts as the
+		// authorization server (SDK client/auth.js:671-678).
+		u, err := url.Parse(serverURL)
+		if err != nil {
+			return nil, err
+		}
+		u.Path = "/"
+		u.RawPath = ""
+		u.RawQuery = ""
+		u.Fragment = ""
+		authorizationServerURL = u.String()
+	}
+	return discoverAuthorizationServerMetadata(ctx, authorizationServerURL)
+}
+
+// fetchAuthServerMetadata resolves the authorization-server metadata for a
+// revocation. Source: auth.ts:256-311 — a configured URL is authoritative and
+// exclusive; otherwise RFC 9728 discovery runs against the given server URL,
+// and a path-bearing URL additionally earns one legacy path-aware retry.
+func fetchAuthServerMetadata(ctx context.Context, serverName, serverURL, configuredMetadataURL string) (*OAuthMetadata, error) {
+	if configuredMetadataURL != "" {
+		if !strings.HasPrefix(configuredMetadataURL, "https://") {
+			return nil, fmt.Errorf("mcp: authServerMetadataUrl must use https:// (got: %s)", configuredMetadataURL)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, configuredMetadataURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: failed to create metadata request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		client := &http.Client{Timeout: time.Duration(AuthRequestTimeoutMs) * time.Millisecond}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: metadata request failed: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("mcp: HTTP %d fetching configured auth server metadata from %s", resp.StatusCode, configuredMetadataURL)
+		}
+		var m OAuthMetadata
+		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+			return nil, fmt.Errorf("mcp: invalid auth server metadata from %s: %w", configuredMetadataURL, err)
+		}
+		return &m, nil
+	}
+
+	if metadata, err := discoverOAuthServerInfo(ctx, serverURL); err != nil {
+		// Any error from the RFC 9728 → RFC 8414 chain (5xx from the root or
+		// resolved-AS probe, decode failure, network error) — fall through to
+		// the legacy path-aware retry. Source: auth.ts:292-300.
+		slog.Debug("mcp: RFC 9728 discovery failed, falling back", "server", serverName, "error", err)
+	} else if metadata != nil {
+		return metadata, nil
+	}
+
+	// Fallback only when the URL has a path component; for root URLs the SDK's
+	// own fallback already probed the same endpoints. Source: auth.ts:302-310.
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	if u.Path == "" || u.Path == "/" {
+		return nil, nil
+	}
+	return discoverAuthorizationServerMetadata(ctx, serverURL)
 }
 
 // ---------------------------------------------------------------------------

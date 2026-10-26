@@ -583,8 +583,9 @@ func TestRevokeServerTokens(t *testing.T) {
 			t.Fatalf("WriteTokens: %v", err)
 		}
 
-		// No metadata URL → just cleans up local tokens
-		err = RevokeServerTokens(context.Background(), store, key, "http://example.com", "")
+		// No metadata URL → discovery finds nothing against a dead server and
+		// just cleans up local tokens
+		err = RevokeServerTokens(context.Background(), store, key, "https://127.0.0.1:1/mcp", "")
 		if err != nil {
 			t.Fatalf("RevokeServerTokens: %v", err)
 		}
@@ -621,12 +622,25 @@ func TestRevokeServerTokens(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("WriteTokens: %v", err)
 		}
-		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://insecure.com/metadata")
-		if err == nil {
-			t.Fatal("want error for non-https metadata URL")
+		// auth.ts:263-268 + 481-570 — the https check throws inside the
+		// best-effort revocation block, so it is logged and the local tokens
+		// still get cleared; the caller sees success.
+		logs := withCapturedLogs(t, func() {
+			err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://insecure.com/metadata")
+		})
+		if err != nil {
+			t.Fatalf("RevokeServerTokens = %v, want nil (the check throws inside the best-effort block)", err)
 		}
-		if !strings.Contains(err.Error(), "https://") {
-			t.Errorf("error should mention https://, got: %v", err)
+		found := logsFor(logs, "mcp: failed to revoke tokens")
+		if len(found) != 1 || !strings.Contains(found[0]["error"], "must use https://") {
+			t.Errorf("fetch-failure records = %v, want one naming the https requirement", found)
+		}
+		tok, readErr := store.ReadTokens("key")
+		if readErr != nil {
+			t.Fatalf("ReadTokens: %v", readErr)
+		}
+		if tok != nil {
+			t.Errorf("tokens should be cleared even for a non-https metadata URL, got %+v", tok)
 		}
 	})
 }
@@ -1728,9 +1742,11 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 	}
 
 	config := OAuthFlowConfig{
-		ServerName:   "test-server",
-		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
-		TokenStore:   store,
+		ServerName:    "test-server",
+		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
+		TokenStore:    store,
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
 	}
 
 	// Use OnAuthURL to detect when the callback server is ready
@@ -1765,177 +1781,154 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 // =========================================================================
 
 func TestRevokeServerTokens_SuccessfulRevocation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		// Use https:// server to satisfy the HTTPS check in RevokeServerTokens
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/metadata" {
-				// Return OAuth metadata with revocation endpoint
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-				return
-			}
-			if r.URL.Path == "/revoke" {
-				// Accept revocation
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer server.Close()
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
 
-		dir := t.TempDir()
-		store, err := NewFileTokenStore(dir)
-		if err != nil {
-			t.Fatalf("NewFileTokenStore: %v", err)
-		}
+	serverKey := "test-server"
+	tokenData := &OAuthTokenData{
+		ServerName:   "test-server",
+		ServerURL:    "http://example.com",
+		AccessToken:  "access-token-123",
+		RefreshToken: "refresh-token-456",
+		ExpiresAt:    farFutureMs,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	}
+	if err := store.WriteTokens(serverKey, tokenData); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
 
-		// Write tokens with metadata URL
-		serverKey := "test-server"
-		tokenData := &OAuthTokenData{
-			ServerName:     "test-server",
-			ServerURL:      "http://example.com",
-			AccessToken:    "access-token-123",
-			RefreshToken:   "refresh-token-456",
-			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-			ClientID:       "client-id",
-			ClientSecret:   "client-secret",
-			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-		}
-		if err := store.WriteTokens(serverKey, tokenData); err != nil {
-			t.Fatalf("WriteTokens: %v", err)
-		}
+	// https:// metadata URL and the transport probe that makes the fetch succeed:
+	// without it the self-signed certificate is rejected and the revocation
+	// branch below the fetch never runs.
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
 
-		ctx := context.Background()
-		metadataURL := server.URL + "/metadata"
-		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-		if err != nil {
+	logs := withCapturedLogs(t, func() {
+		if err := RevokeServerTokens(context.Background(), store, serverKey, "http://example.com", as.metadataURL()); err != nil {
 			t.Errorf("RevokeServerTokens() = %v, want nil", err)
 		}
-
-		// Verify tokens were deleted
-		readData, err := store.ReadTokens(serverKey)
-		if err != nil {
-			t.Errorf("ReadTokens after revocation = %v, want nil", err)
-		}
-		if readData != nil {
-			t.Errorf("ReadTokens after revocation = %+v, want nil", readData)
-		}
 	})
+
+	if want := "/metadata,/revoke,/revoke"; as.pathLog() != want {
+		t.Fatalf("server saw %q, want %q", as.pathLog(), want)
+	}
+	// The metadata GET must ask for JSON: an AS that content-negotiates answers
+	// something else, and the decode downstream fails without saying so.
+	if got := as.headerFor("/metadata", "Accept"); got != "application/json" {
+		t.Errorf("metadata request Accept = %q, want %q", got, "application/json")
+	}
+	wantBodies := "client_id=client-id&client_secret=client-secret&token=refresh-token-456&token_type_hint=refresh_token" +
+		"|client_id=client-id&client_secret=client-secret&token=access-token-123&token_type_hint=access_token"
+	if got := as.bodyLog(); got != wantBodies {
+		t.Errorf("revocation bodies = %q, want %q", got, wantBodies)
+	}
+	if warned := logsFor(logs, "mcp: token revocation failed"); len(warned) != 0 {
+		t.Errorf("captured %d revocation failures for a server that accepted both, want 0: %v", len(warned), warned)
+	}
+
+	readData, err := store.ReadTokens(serverKey)
+	if err != nil {
+		t.Errorf("ReadTokens after revocation = %v, want nil", err)
+	}
+	if readData != nil {
+		t.Errorf("ReadTokens after revocation = %+v, want nil", readData)
+	}
 }
 
 func TestRevokeServerTokens_RevocationFailsButTokensCleaned(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/metadata" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-				return
-			}
-			if r.URL.Path == "/revoke" {
-				// Revocation endpoint returns error
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer server.Close()
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
 
-		dir := t.TempDir()
-		store, err := NewFileTokenStore(dir)
-		if err != nil {
-			t.Fatalf("NewFileTokenStore: %v", err)
-		}
+	serverKey := "test-server"
+	tokenData := &OAuthTokenData{
+		ServerName:   "test-server",
+		ServerURL:    "http://example.com",
+		AccessToken:  "access-token-123",
+		RefreshToken: "refresh-token-456",
+		ExpiresAt:    farFutureMs,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	}
+	if err := store.WriteTokens(serverKey, tokenData); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
 
-		serverKey := "test-server"
-		tokenData := &OAuthTokenData{
-			ServerName:     "test-server",
-			ServerURL:      "http://example.com",
-			AccessToken:    "access-token-123",
-			RefreshToken:   "refresh-token-456",
-			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-			ClientID:       "client-id",
-			ClientSecret:   "client-secret",
-			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-		}
-		if err := store.WriteTokens(serverKey, tokenData); err != nil {
-			t.Fatalf("WriteTokens: %v", err)
-		}
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusInternalServerError)
+	withMetadataTransport(t, as.srv)
 
-		ctx := context.Background()
-		metadataURL := server.URL + "/metadata"
-		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-		// Should still succeed even if revocation fails
-		if err != nil {
+	logs := withCapturedLogs(t, func() {
+		if err := RevokeServerTokens(context.Background(), store, serverKey, "http://example.com", as.metadataURL()); err != nil {
 			t.Errorf("RevokeServerTokens() = %v, want nil (tokens should still be cleaned)", err)
 		}
-
-		// Verify tokens were deleted despite revocation failure
-		readData, err := store.ReadTokens(serverKey)
-		if err != nil {
-			t.Errorf("ReadTokens after failed revocation = %v, want nil", err)
-		}
-		if readData != nil {
-			t.Errorf("ReadTokens after failed revocation = %+v, want nil", readData)
-		}
 	})
+
+	if want := "/metadata,/revoke,/revoke"; as.pathLog() != want {
+		t.Fatalf("server saw %q, want %q", as.pathLog(), want)
+	}
+	// A flat 500 answer is a failure each revocation reports (auth.ts:431-458:
+	// axios rejects any non-2xx), even though the local cleanup still runs.
+	warned := logsFor(logs, "mcp: token revocation failed")
+	if len(warned) != 2 {
+		t.Fatalf("captured %d revocation failures for a 500 answer, want one per token: %v", len(warned), warned)
+	}
+	for i, rec := range warned {
+		if rec["error"] != "mcp: revocation failed with status 500" {
+			t.Errorf("record %d error = %q, want the 500 the server answered with", i, rec["error"])
+		}
+	}
+
+	readData, err := store.ReadTokens(serverKey)
+	if err != nil {
+		t.Errorf("ReadTokens after failed revocation = %v, want nil", err)
+	}
+	if readData != nil {
+		t.Errorf("ReadTokens after failed revocation = %+v, want nil", readData)
+	}
 }
 
 func TestRevokeServerTokens_WithClientCredentials(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/metadata" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-				return
-			}
-			if r.URL.Path == "/revoke" {
-				// Verify client credentials in request body
-				body, _ := io.ReadAll(r.Body)
-				bodyStr := string(body)
-				if !strings.Contains(bodyStr, "client_id=my-client-id") {
-					t.Errorf("revocation request missing client_id, got: %s", bodyStr)
-				}
-				if !strings.Contains(bodyStr, "client_secret=my-secret") {
-					t.Errorf("revocation request missing client_secret, got: %s", bodyStr)
-				}
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}))
-		defer server.Close()
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
 
-		dir := t.TempDir()
-		store, err := NewFileTokenStore(dir)
-		if err != nil {
-			t.Fatalf("NewFileTokenStore: %v", err)
-		}
+	serverKey := "test-server"
+	tokenData := &OAuthTokenData{
+		ServerName:   "test-server",
+		ServerURL:    "http://example.com",
+		AccessToken:  "access-token-123",
+		RefreshToken: "refresh-token-456",
+		ExpiresAt:    farFutureMs,
+		ClientID:     "my-client-id",
+		ClientSecret: "my-secret",
+	}
+	if err := store.WriteTokens(serverKey, tokenData); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
 
-		serverKey := "test-server"
-		tokenData := &OAuthTokenData{
-			ServerName:     "test-server",
-			ServerURL:      "http://example.com",
-			AccessToken:    "access-token-123",
-			RefreshToken:   "refresh-token-456",
-			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-			ClientID:       "my-client-id",
-			ClientSecret:   "my-secret",
-			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-		}
-		if err := store.WriteTokens(serverKey, tokenData); err != nil {
-			t.Fatalf("WriteTokens: %v", err)
-		}
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
 
-		ctx := context.Background()
-		metadataURL := server.URL + "/metadata"
-		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-		if err != nil {
-			t.Errorf("RevokeServerTokens() = %v, want nil", err)
-		}
-	})
+	err = RevokeServerTokens(context.Background(), store, serverKey, "http://example.com", as.metadataURL())
+	if err != nil {
+		t.Errorf("RevokeServerTokens() = %v, want nil", err)
+	}
+
+	// The client credentials are what an AS needs to accept a revocation at all;
+	// they have to be in the form of every call, in the order auth.ts uses.
+	wantBodies := "client_id=my-client-id&client_secret=my-secret&token=refresh-token-456&token_type_hint=refresh_token" +
+		"|client_id=my-client-id&client_secret=my-secret&token=access-token-123&token_type_hint=access_token"
+	if got := as.bodyLog(); got != wantBodies {
+		t.Errorf("revocation bodies = %q, want %q", got, wantBodies)
+	}
 }
 
 // =========================================================================
@@ -2734,10 +2727,11 @@ func TestRevokeToken(t *testing.T) {
 		}))
 		defer server.Close()
 
-		// accessToken="" means no retry, function returns nil
+		// accessToken="" means no Bearer retry is possible; TS rethrows the 401
+		// (auth.ts:433-458: only 401 with an access token retries).
 		err := revokeToken(context.Background(), server.URL, "token123", "refresh_token", "client1", "secret1", "")
-		if err != nil {
-			t.Errorf("revokeToken() = %v, want nil (401 with empty access token is ignored)", err)
+		if err == nil || err.Error() != "mcp: revocation failed with status 401" {
+			t.Errorf("revokeToken() = %v, want the 401 failure (401 without an access token cannot retry)", err)
 		}
 		if requests != 1 {
 			t.Errorf("request count = %d, want 1", requests)
@@ -3166,7 +3160,12 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
-		OnAuthURL:    func(_ string) { close(serverReady) },
+		// The flow refuses to start a callback dance it could not finish, so the
+		// exchange has to look configured even though these callbacks never get
+		// that far and the endpoint is never contacted.
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
+		OnAuthURL:     func(_ string) { close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3222,7 +3221,12 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
-		OnAuthURL:    func(_ string) { close(serverReady) },
+		// The flow refuses to start a callback dance it could not finish, so the
+		// exchange has to look configured even though these callbacks never get
+		// that far and the endpoint is never contacted.
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
+		OnAuthURL:     func(_ string) { close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3274,9 +3278,11 @@ func TestPerformMCPOAuthFlow_Timeout(t *testing.T) {
 	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
 
 	config := OAuthFlowConfig{
-		ServerName:   "test-server",
-		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
-		TokenStore:   store,
+		ServerName:    "test-server",
+		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
+		TokenStore:    store,
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
 	}
 
 	_, err = PerformMCPOAuthFlow(ctx, config)
@@ -3313,9 +3319,11 @@ func TestPerformMCPOAuthFlow_OnAuthURL(t *testing.T) {
 	var authURLCalled string
 	authURLReady := make(chan struct{})
 	config := OAuthFlowConfig{
-		ServerName:   "test-server",
-		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
-		TokenStore:   store,
+		ServerName:    "test-server",
+		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
+		TokenStore:    store,
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
 		OnAuthURL: func(u string) {
 			authURLCalled = u
 			close(authURLReady)
@@ -3367,6 +3375,9 @@ func TestRefreshAuthorization_ReadTokensError(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to read tokens for refresh") {
 		t.Errorf("error = %v, want 'failed to read tokens for refresh'", err)
 	}
+	if _, ok := errors.AsType[*os.PathError](err); !ok {
+		t.Errorf("error = %v, want it to wrap the *os.PathError from the failed read", err)
+	}
 }
 
 // --- RefreshAuthorization: transient error retry succeeds (line 643) ---
@@ -3391,22 +3402,36 @@ func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
 		}
 
 		callCount := 0
-		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-			callCount++
-			if callCount == 1 {
-				return nil, fmt.Errorf("server returned 503 Service Unavailable")
-			}
-			return &OAuthTokens{
-				AccessToken:  "new-token",
-				RefreshToken: "new-refresh",
-				ExpiresIn:    3600,
-			}, nil
+		var tokens *OAuthTokens
+		logs := withCapturedLogs(t, func() {
+			tokens, err = RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+				callCount++
+				if callCount == 1 {
+					return nil, fmt.Errorf("server returned 503 Service Unavailable")
+				}
+				return &OAuthTokens{
+					AccessToken:  "new-token",
+					RefreshToken: "new-refresh",
+					ExpiresIn:    3600,
+				}, nil
+			})
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if tokens == nil {
 			t.Fatal("expected tokens after transient retry")
+		}
+		retried := logsFor(logs, "mcp: transient refresh error, retrying")
+		if len(retried) != 1 {
+			t.Fatalf("captured %d %q records, want 1 (attempt 1 failed with 503, attempt 2 succeeded)",
+				len(retried), "mcp: transient refresh error, retrying")
+		}
+		if retried[0]["attempt"] != "1" {
+			t.Errorf("retry log attempt = %q, want %q", retried[0]["attempt"], "1")
+		}
+		if retried[0]["delay"] != "1s" {
+			t.Errorf("retry log delay = %q, want %q", retried[0]["delay"], "1s")
 		}
 		if tokens.AccessToken != "new-token" {
 			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
@@ -3517,6 +3542,9 @@ func TestRefreshAuthorization_SaveError(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "failed to save refreshed tokens") {
 			t.Errorf("error = %v, want 'failed to save refreshed tokens'", err)
+		}
+		if _, ok := errors.AsType[*os.PathError](err); !ok {
+			t.Errorf("error = %v, want it to wrap the *os.PathError from the failed write", err)
 		}
 	})
 }
@@ -3672,15 +3700,6 @@ func TestRevokeServerTokens_MetadataRequestError(t *testing.T) {
 // --- RevokeServerTokens: metadata returns non-200 (line 1007) ---
 
 func TestRevokeServerTokens_MetadataNon200(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3692,11 +3711,27 @@ func TestRevokeServerTokens_MetadataNon200(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", server.URL+"/metadata")
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusInternalServerError, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	logs := withCapturedLogs(t, func() {
+		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", as.metadataURL())
+	})
 	if err != nil {
 		t.Errorf("RevokeServerTokens with non-200 metadata: %v", err)
 	}
-	tok, _ := store.ReadTokens("key")
+	// The metadata answer is unusable, so the revocation endpoint it advertised
+	// must never be contacted.
+	if want := "/metadata"; as.pathLog() != want {
+		t.Errorf("server saw %q, want %q", as.pathLog(), want)
+	}
+	if warned := logsFor(logs, "mcp: token revocation failed"); len(warned) != 0 {
+		t.Errorf("captured %d revocation failures with no usable metadata, want 0: %v", len(warned), warned)
+	}
+	tok, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tok != nil {
 		t.Errorf("tokens should be deleted, got %+v", tok)
 	}
@@ -3705,13 +3740,6 @@ func TestRevokeServerTokens_MetadataNon200(t *testing.T) {
 // --- RevokeServerTokens: metadata returns invalid JSON (line 1009) ---
 
 func TestRevokeServerTokens_MetadataInvalidJSON(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "not valid json")
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3723,11 +3751,25 @@ func TestRevokeServerTokens_MetadataInvalidJSON(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", server.URL+"/metadata")
+	as := newRevokeServer(t, "not valid json", http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	logs := withCapturedLogs(t, func() {
+		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", as.metadataURL())
+	})
 	if err != nil {
 		t.Errorf("RevokeServerTokens with invalid JSON metadata: %v", err)
 	}
-	tok, _ := store.ReadTokens("key")
+	if want := "/metadata"; as.pathLog() != want {
+		t.Errorf("server saw %q, want %q", as.pathLog(), want)
+	}
+	if warned := logsFor(logs, "mcp: token revocation failed"); len(warned) != 0 {
+		t.Errorf("captured %d revocation failures with no decodable metadata, want 0: %v", len(warned), warned)
+	}
+	tok, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tok != nil {
 		t.Errorf("tokens should be deleted, got %+v", tok)
 	}
@@ -3736,13 +3778,6 @@ func TestRevokeServerTokens_MetadataInvalidJSON(t *testing.T) {
 // --- RevokeServerTokens: metadata has no RevocationEndpoint (line 1017) ---
 
 func TestRevokeServerTokens_NoRevocationEndpoint(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, `{"token_endpoint": "https://auth.example.com/token"}`)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3755,11 +3790,27 @@ func TestRevokeServerTokens_NoRevocationEndpoint(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", server.URL+"/metadata")
+	// Metadata that decodes but advertises no revocation endpoint: the local
+	// clear must still happen, and nothing may be posted to an endpoint.
+	as := newRevokeServer(t, `{"token_endpoint": "https://auth.example.com/token"}`, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	logs := withCapturedLogs(t, func() {
+		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", as.metadataURL())
+	})
 	if err != nil {
 		t.Errorf("RevokeServerTokens without revocation endpoint: %v", err)
 	}
-	tok, _ := store.ReadTokens("key")
+	if want := "/metadata"; as.pathLog() != want {
+		t.Errorf("server saw %q, want %q", as.pathLog(), want)
+	}
+	if warned := logsFor(logs, "mcp: token revocation failed"); len(warned) != 0 {
+		t.Errorf("captured %d revocation failures with no revocation endpoint, want 0: %v", len(warned), warned)
+	}
+	tok, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tok != nil {
 		t.Errorf("tokens should be deleted when no revocation endpoint, got %+v", tok)
 	}
@@ -3768,21 +3819,6 @@ func TestRevokeServerTokens_NoRevocationEndpoint(t *testing.T) {
 // --- RevokeServerTokens: only access token, no refresh token (line 1028-1030) ---
 
 func TestRevokeServerTokens_AccessTokenOnly(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "token_type_hint=access_token") {
-			t.Errorf("expected token_type_hint=access_token, got: %s", string(body))
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3794,11 +3830,23 @@ func TestRevokeServerTokens_AccessTokenOnly(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", server.URL+"/metadata")
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", as.metadataURL())
 	if err != nil {
 		t.Errorf("RevokeServerTokens access-only: %v", err)
 	}
-	tok, _ := store.ReadTokens("key")
+	if want := "/metadata,/revoke"; as.pathLog() != want {
+		t.Fatalf("server saw %q, want %q", as.pathLog(), want)
+	}
+	if got, want := as.bodyLog(), "token=access-only&token_type_hint=access_token"; got != want {
+		t.Errorf("revocation body = %q, want %q", got, want)
+	}
+	tok, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tok != nil {
 		t.Errorf("tokens should be deleted, got %+v", tok)
 	}
@@ -3807,21 +3855,6 @@ func TestRevokeServerTokens_AccessTokenOnly(t *testing.T) {
 // --- RevokeServerTokens: only refresh token, no access token (line 1023-1026) ---
 
 func TestRevokeServerTokens_RefreshTokenOnly(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "token_type_hint=refresh_token") {
-			t.Errorf("expected token_type_hint=refresh_token, got: %s", string(body))
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3833,11 +3866,23 @@ func TestRevokeServerTokens_RefreshTokenOnly(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", server.URL+"/metadata")
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", as.metadataURL())
 	if err != nil {
 		t.Errorf("RevokeServerTokens refresh-only: %v", err)
 	}
-	tok, _ := store.ReadTokens("key")
+	if want := "/metadata,/revoke"; as.pathLog() != want {
+		t.Fatalf("server saw %q, want %q", as.pathLog(), want)
+	}
+	if got, want := as.bodyLog(), "token=refresh-only&token_type_hint=refresh_token"; got != want {
+		t.Errorf("revocation body = %q, want %q", got, want)
+	}
+	tok, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tok != nil {
 		t.Errorf("tokens should be deleted, got %+v", tok)
 	}
@@ -4158,6 +4203,8 @@ func TestMCPAuthHandler_SaveTokens_ReadError(t *testing.T) {
 	err = h.SaveTokens(&OAuthTokens{AccessToken: "new", ExpiresIn: 3600})
 	if err == nil {
 		t.Error("want error when ReadTokens fails in SaveTokens")
+	} else if !strings.HasPrefix(err.Error(), "mcp: failed to read token data: ") {
+		t.Errorf("error = %v, want the read failure to be returned untouched", err)
 	}
 }
 
@@ -4219,6 +4266,8 @@ func TestMCPAuthHandler_SaveClientInformation_ReadError(t *testing.T) {
 	err = h.SaveClientInformation("client-123", "secret-456")
 	if err == nil {
 		t.Error("want error when ReadTokens fails in SaveClientInformation")
+	} else if !strings.HasPrefix(err.Error(), "mcp: failed to read token data: ") {
+		t.Errorf("error = %v, want the read failure to be returned untouched", err)
 	}
 }
 
@@ -4242,6 +4291,8 @@ func TestMCPAuthHandler_SaveDiscoveryState_ReadError(t *testing.T) {
 	err = h.SaveDiscoveryState(&OAuthDiscoveryState{AuthorizationServerURL: "https://auth.example.com"})
 	if err == nil {
 		t.Error("want error when ReadTokens fails in SaveDiscoveryState")
+	} else if !strings.HasPrefix(err.Error(), "mcp: failed to read token data: ") {
+		t.Errorf("error = %v, want the read failure to be returned untouched", err)
 	}
 }
 
@@ -4363,6 +4414,8 @@ func TestMCPAuthHandler_RefreshWithLock_ReadError(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("want error when ReadTokens fails in RefreshWithLock")
+	} else if !strings.HasPrefix(err.Error(), "mcp: failed to read token data: ") {
+		t.Errorf("error = %v, want RefreshWithLock to return its own read failure, not RefreshAuthorization's", err)
 	}
 }
 
@@ -4451,9 +4504,11 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 	var capturedAuthURL string
 	serverReady := make(chan struct{})
 	config := OAuthFlowConfig{
-		ServerName:   "test-server",
-		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
-		TokenStore:   store,
+		ServerName:    "test-server",
+		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
+		TokenStore:    store,
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
 		OnAuthURL: func(u string) {
 			capturedAuthURL = u
 			close(serverReady)
@@ -4515,7 +4570,9 @@ func TestRevokeServerTokens_EmptyMetadataURL(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "")
+	// Tokens exist but no metadata URL: the discovery chain probes the server
+	// URL, finds nothing against a dead server, and clears local tokens.
+	err = RevokeServerTokens(context.Background(), store, "key", "https://127.0.0.1:1/mcp", "")
 	if err != nil {
 		t.Errorf("RevokeServerTokens with empty metadata URL: %v", err)
 	}
@@ -4655,15 +4712,28 @@ func TestRefreshAuthorization_InvalidGrant_WriteTokensError(t *testing.T) {
 		}
 		defer func() { _ = os.Chmod(tokenPath, 0600) }()
 
-		// Should still return nil (best effort, just logs a warning)
-		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-			return nil, fmt.Errorf("invalid_grant: token expired")
+		// Should still return nil (best effort, just logs a warning) — and the
+		// log is the only thing that can show the store write failed.
+		logs := withCapturedLogs(t, func() {
+			tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+				return nil, fmt.Errorf("invalid_grant: token expired")
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tokens != nil {
+				t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
+			}
 		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		warned := logsFor(logs, "failed to clear tokens after invalid_grant")
+		if len(warned) != 1 {
+			t.Fatalf("captured %d %q records, want exactly 1: %v", len(warned), "failed to clear tokens after invalid_grant", logs)
 		}
-		if tokens != nil {
-			t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
+		if warned[0]["server"] != "key" {
+			t.Errorf("record server = %q, want %q", warned[0]["server"], "key")
+		}
+		if got, want := warned[0]["error"], "mcp: failed to write token data: open "+tokenPath+": permission denied"; got != want {
+			t.Errorf("record error = %q, want %q", got, want)
 		}
 	})
 }
@@ -4683,12 +4753,25 @@ func TestRevokeServerTokens_NonHTTPSMetadataURL(t *testing.T) {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://not-https.example.com/metadata")
-	if err == nil {
-		t.Fatal("want error for non-HTTPS metadata URL")
+	// auth.ts:263-268 — the https check throws inside the best-effort block
+	// (auth.ts:481-570): the failure is logged, the local tokens cleared, and
+	// the caller never sees the error.
+	logs := withCapturedLogs(t, func() {
+		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://not-https.example.com/metadata")
+	})
+	if err != nil {
+		t.Fatalf("RevokeServerTokens = %v, want nil: the check throws inside the best-effort block", err)
 	}
-	if !strings.Contains(err.Error(), "must use https://") {
-		t.Errorf("error = %v, want 'must use https://'", err)
+	found := logsFor(logs, "mcp: failed to revoke tokens")
+	if len(found) != 1 || !strings.Contains(found[0]["error"], "must use https://") {
+		t.Fatalf("fetch-failure records = %v, want one naming the https requirement", found)
+	}
+	tok, readErr := store.ReadTokens("key")
+	if readErr != nil {
+		t.Fatalf("ReadTokens: %v", readErr)
+	}
+	if tok != nil {
+		t.Errorf("stored tokens = %+v, want the record deleted", tok)
 	}
 }
 
@@ -4720,7 +4803,7 @@ func TestRevokeToken_BearerRetrySuccess(t *testing.T) {
 	}
 }
 
-// --- revokeToken: 401 but no accessToken, no retry (line 962) ---
+// --- revokeToken: 401 but no accessToken, no retry (TS rethrows the 401) ---
 
 func TestRevokeToken_401NoAccessToken_NoRetry(t *testing.T) {
 	callCount := 0
@@ -4730,9 +4813,11 @@ func TestRevokeToken_401NoAccessToken_NoRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// auth.ts:433-458 — the Bearer retry needs an access token; without one the
+	// 401 is rethrown, not swallowed.
 	err := revokeToken(context.Background(), server.URL, "token123", "refresh_token", "", "", "")
-	if err != nil {
-		t.Fatalf("revokeToken() = %v, want nil (no retry, 401 accepted)", err)
+	if err == nil || err.Error() != "mcp: revocation failed with status 401" {
+		t.Fatalf("revokeToken() = %v, want the 401 failure (no retry without access token)", err)
 	}
 	if callCount != 1 {
 		t.Errorf("callCount = %d, want 1 (no retry without access token)", callCount)
@@ -4900,12 +4985,24 @@ func TestRevokeServerTokens_MetadataNotHTTPS(t *testing.T) {
 	if err := store.WriteTokens("key", &OAuthTokenData{AccessToken: "at"}); err != nil {
 		t.Fatal(err)
 	}
-	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://not-https.example.com/metadata")
-	if err == nil {
-		t.Fatal("want error for non-https metadata URL")
+	// Same TS contract as TestRevokeServerTokens_NonHTTPSMetadataURL: the
+	// throw stays inside the best-effort block and local tokens are cleared.
+	logs := withCapturedLogs(t, func() {
+		err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", "http://not-https.example.com/metadata")
+	})
+	if err != nil {
+		t.Fatalf("RevokeServerTokens = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "https://") {
-		t.Errorf("error should mention https://, got: %v", err)
+	found := logsFor(logs, "mcp: failed to revoke tokens")
+	if len(found) != 1 || !strings.Contains(found[0]["error"], "must use https://") {
+		t.Errorf("fetch-failure records = %v, want one naming the https requirement", found)
+	}
+	tok, readErr := store.ReadTokens("key")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if tok != nil {
+		t.Error("tokens should have been deleted")
 	}
 }
 
@@ -4914,20 +5011,6 @@ func TestRevokeServerTokens_MetadataNotHTTPS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRevokeServerTokens_ConfiguredMetadataSuccess(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"revocation_endpoint":"https://`+r.Host+`/revoke"}`)
-			return
-		}
-		if r.URL.Path == "/revoke" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4942,10 +5025,21 @@ func TestRevokeServerTokens_ConfiguredMetadataSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metadataURL := "https://" + server.Listener.Addr().String() + "/metadata"
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	metadataURL := as.metadataURL()
 	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", metadataURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "/metadata,/revoke,/revoke"; as.pathLog() != want {
+		t.Fatalf("server saw %q, want %q", as.pathLog(), want)
+	}
+	wantBodies := "client_id=cid&client_secret=cs&token=rt&token_type_hint=refresh_token" +
+		"|client_id=cid&client_secret=cs&token=at&token_type_hint=access_token"
+	if got := as.bodyLog(); got != wantBodies {
+		t.Errorf("revocation bodies = %q, want %q", got, wantBodies)
 	}
 	tokens, err := store.ReadTokens("key")
 	if err != nil {
@@ -4961,11 +5055,6 @@ func TestRevokeServerTokens_ConfiguredMetadataSuccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRevokeServerTokens_ConfiguredMetadataNon200(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4975,12 +5064,21 @@ func TestRevokeServerTokens_ConfiguredMetadataNon200(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metadataURL := "https://" + server.Listener.Addr().String() + "/metadata"
+	as := newRevokeServer(t, revokeEndpointMetadata, http.StatusInternalServerError, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	metadataURL := as.metadataURL()
 	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", metadataURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tokens, _ := store.ReadTokens("key")
+	if want := "/metadata"; as.pathLog() != want {
+		t.Errorf("server saw %q, want %q", as.pathLog(), want)
+	}
+	tokens, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tokens != nil {
 		t.Error("tokens should have been deleted")
 	}
@@ -4991,12 +5089,6 @@ func TestRevokeServerTokens_ConfiguredMetadataNon200(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRevokeServerTokens_ConfiguredMetadataInvalidJSON(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{invalid json}`)
-	}))
-	defer server.Close()
-
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -5006,12 +5098,21 @@ func TestRevokeServerTokens_ConfiguredMetadataInvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	metadataURL := "https://" + server.Listener.Addr().String() + "/metadata"
+	as := newRevokeServer(t, `{invalid json}`, http.StatusOK, http.StatusOK)
+	withMetadataTransport(t, as.srv)
+
+	metadataURL := as.metadataURL()
 	err = RevokeServerTokens(context.Background(), store, "key", "http://example.com", metadataURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tokens, _ := store.ReadTokens("key")
+	if want := "/metadata"; as.pathLog() != want {
+		t.Errorf("server saw %q, want %q", as.pathLog(), want)
+	}
+	tokens, err := store.ReadTokens("key")
+	if err != nil {
+		t.Fatalf("ReadTokens: %v", err)
+	}
 	if tokens != nil {
 		t.Error("tokens should have been deleted")
 	}
@@ -5368,4 +5469,54 @@ func TestExchangeAuthCode_CancelledContext(t *testing.T) {
 	if !strings.Contains(err.Error(), "context") {
 		t.Errorf("error should mention context, got: %v", err)
 	}
+}
+
+func TestPerformMCPOAuthFlow_ErrorCallbackEscapesHTML(t *testing.T) {
+	// The callback error page reflects query-supplied strings; unescaped they
+	// become reflected XSS (TS escapes via xss(), auth.ts:1123-1126).
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
+	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	serverReady := make(chan struct{})
+	config := OAuthFlowConfig{
+		ServerName:    "test-server",
+		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
+		TokenStore:    store,
+		TokenEndpoint: "https://auth.example.com/oauth/token",
+		ClientID:      "client-123",
+		OnAuthURL:     func(_ string) { close(serverReady) },
+	}
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := PerformMCPOAuthFlow(ctx, config)
+		errChan <- err
+	}()
+	<-serverReady
+	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?error=%%3Cscript%%3Eevil%%3C%%2Fscript%%3E", port), 2*time.Second) // REAL-TIME
+	if err != nil {
+		t.Fatalf("callback GET failed: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read callback body: %v", err)
+	}
+	if strings.Contains(string(body), "<script>") {
+		t.Fatalf("error page reflected raw <script>: %s", body)
+	}
+	if !strings.Contains(string(body), "&lt;script&gt;") {
+		t.Fatalf("error page must escape the error code, got: %s", body)
+	}
+	<-errChan
 }
