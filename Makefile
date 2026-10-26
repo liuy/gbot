@@ -67,7 +67,6 @@ else
 	go test $(PKG) ./cmd/... -race -count=1 -timeout 180s -coverprofile=coverage.out
 endif
 	go test ./test/ -count=1 -timeout 180s
-	$(MAKE) -s web-test
 	@echo ""
 	@echo "Coverage:"
 	@go tool cover -func=coverage.out
@@ -80,9 +79,9 @@ lint:
 	golangci-lint run $(ALL)
 
 ifeq ($(shell go env GOOS),android)
-CHECK_TARGETS := build test lint fix web-lint web-weak
+CHECK_PARALLEL := test web-test lint web-lint web-weak
 else
-CHECK_TARGETS := build build-windows build-windows-gui test lint fix web-lint web-weak
+CHECK_PARALLEL := build-windows build-windows-gui test web-test lint web-lint web-weak
 endif
 
 # mutate rewrites one expression at a time on the lines changed since MUTATE_BASE
@@ -192,7 +191,13 @@ flaky:
 	echo "amplifying x$(FLAKY_COUNT): $$tests"; \
 	go test ./pkg/... -race -count=$(FLAKY_COUNT) -run "^($$tests)$$" -timeout 600s
 
-check: $(CHECK_TARGETS)
+# build and fix run first, sequentially: fix rewrites sources (gofmt -w, go
+# fix) and must not race the compilers inside test/lint. The rest run in
+# parallel under per-target output sync; go test -race dominates wall time,
+# so js/lint/cross-compile hide underneath it.
+check: build fix
+	$(MAKE) --output-sync=target -j4 check-parallel
+check-parallel: $(CHECK_PARALLEL)
 	@echo "✓ ALL CHECKS PASSED"
 
 fix:
