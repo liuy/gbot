@@ -19,7 +19,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -93,15 +92,24 @@ func logsFor(records []map[string]string, msg string) []map[string]string {
 	return out
 }
 
-func freePort(t *testing.T) int {
+// autoCallbackPort extracts the port the flow's callback server bound from the
+// redirect URI OnAuthURL reported. Tests pair it with an empty
+// MCP_OAUTH_CALLBACK_PORT so the flow picks its own port via FindAvailablePort
+// instead of the test probing one first: a probe listener has to be closed
+// before the flow can bind, and in that transfer gap a parallel process can
+// claim the port and answer the test's callbacks. The flow choosing and then
+// reporting its port removes the test→flow transfer gap; a small
+// probe-close→bind gap inside the flow remains (TS-aligned oauthPort.ts
+// behavior) but a squatter there surfaces as a clean callback-server error.
+func autoCallbackPort(t *testing.T, authURL string) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	u, err := url.Parse(authURL)
 	if err != nil {
-		t.Fatalf("Listen: %v", err)
+		t.Fatalf("parse the reported auth URL %q: %v", authURL, err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
-		t.Errorf("closing the port probe listener: %v", err)
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("auth URL %q carries no port: %v", authURL, err)
 	}
 	return port
 }
@@ -402,8 +410,7 @@ func TestRevokeServerTokensMetadataFetchHonorsClientTimeout(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPerformMCPOAuthFlow_DuplicateCallbacksDoNotStallShutdown(t *testing.T) {
-	port := freePort(t)
-	t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
@@ -413,8 +420,9 @@ func TestPerformMCPOAuthFlow_DuplicateCallbacksDoNotStallShutdown(t *testing.T) 
 
 	// OnAuthURL is called before the flow reaches its select; holding it open
 	// keeps the flow busy while the callback server lives on its own.
-	entered := make(chan struct{})
+	entered := make(chan string, 1)
 	release := make(chan struct{})
+	var flowState string
 	config := OAuthFlowConfig{
 		ServerName:   "dup-callback-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
@@ -423,10 +431,8 @@ func TestPerformMCPOAuthFlow_DuplicateCallbacksDoNotStallShutdown(t *testing.T) 
 		// all carry an error, and the endpoint is never contacted.
 		TokenEndpoint: "https://auth.example.com/oauth/token",
 		ClientID:      "client-123",
-		OnAuthURL: func(string) {
-			close(entered)
-			<-release
-		},
+		OnAuthURL:     func(u string) { entered <- u; <-release },
+		OnOAuthParams: func(state, _ string) { flowState = state },
 	}
 
 	type outcome struct {
@@ -439,7 +445,7 @@ func TestPerformMCPOAuthFlow_DuplicateCallbacksDoNotStallShutdown(t *testing.T) 
 		done <- outcome{result: res, err: err}
 	}()
 
-	<-entered
+	port := autoCallbackPort(t, <-entered)
 
 	// The first error callback is answered with the error page; every repeat
 	// must meet a closed listener instead of parking a handler.
@@ -463,7 +469,7 @@ func TestPerformMCPOAuthFlow_DuplicateCallbacksDoNotStallShutdown(t *testing.T) 
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(page), "access_denied: duplicate callback") {
 		t.Fatalf("first callback answer = %d %q, want the error page", resp.StatusCode, string(page))
 	}
-	waitCallbackRefused(t, port)
+	waitCallbackRefused(t, port, flowState)
 	close(release)
 
 	select {
@@ -582,14 +588,12 @@ func TestPerformMCPOAuthFlow_MissingExchangeConfigIsAFailure(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFileTokenStore: %v", err)
 			}
-			// A scripted rand makes the state known, so the authorized
-			// callback the flow must accept (TS timing: the browser dance runs
-			// to completion) can be delivered.
-			stateWant := base64.RawURLEncoding.EncodeToString(sequentialBytes(0, 32))
-			withRandReader(t, &sequentialRand{})
-			port := freePort(t)
-			t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+			// The flow reports the state it generated via OnOAuthParams, so
+			// the authorized callback the flow must accept (TS timing: the
+			// browser dance runs to completion) can be delivered.
+			t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+			var flowState string
 			entered := make(chan string, 1)
 			config := OAuthFlowConfig{
 				ServerName:    "unconfigured-server",
@@ -598,6 +602,7 @@ func TestPerformMCPOAuthFlow_MissingExchangeConfigIsAFailure(t *testing.T) {
 				TokenEndpoint: tc.tokenEndpoint,
 				ClientID:      tc.clientID,
 				OnAuthURL:     func(url string) { entered <- url },
+				OnOAuthParams: func(state, _ string) { flowState = state },
 			}
 			type outcome struct {
 				result *OAuthFlowResult
@@ -611,16 +616,18 @@ func TestPerformMCPOAuthFlow_MissingExchangeConfigIsAFailure(t *testing.T) {
 
 			// The flow must reach the browser dance: it binds a port and hands
 			// out the redirect URL before any exchange can happen.
+			var authURL string
 			select {
-			case <-entered:
+			case authURL = <-entered:
 			case <-time.After(5 * time.Second): // REAL-TIME
 				t.Fatal("PerformMCPOAuthFlow never started the browser dance: the missing-exchange guard fires before the callback server, unlike auth.ts")
 			}
+			port := autoCallbackPort(t, authURL)
 
 			// The authorized callback is answered like any successful flow.
 			conn := dialCallback(t, port)
 			defer conn.Close()
-			if _, err := fmt.Fprintf(conn, "GET /callback?code=code-1&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", stateWant); err != nil {
+			if _, err := fmt.Fprintf(conn, "GET /callback?code=code-1&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", flowState); err != nil {
 				t.Fatalf("write callback request: %v", err)
 			}
 			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -659,14 +666,12 @@ func TestPerformMCPOAuthFlow_MissingExchangeConfigIsAFailure(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Reaching the OAuth state
+// Scripted crypto/rand
 //
-// The flow draws both the CSRF state and the PKCE verifier from crypto/rand, so
-// until now the callback those values validate had no observable input: every
-// flow test could deliver an error or a mismatched state, and nothing could
-// reach the authorized branch. crypto/rand.Reader is an exported variable and
-// the documented seam for tests, so a scripted reader makes both values known
-// and the whole flow, token exchange included, becomes testable.
+// The values a flow draws (CSRF state, PKCE verifier) reach tests through the
+// OnOAuthParams hook, not through prediction; the scripted reader that remains
+// here pins draw counts (the authorized-exchange test wants exactly two draws)
+// and drives the gated/failing reads the generator tests need.
 //
 // A *failing* reader is not a usable seam for rand.Read: crypto/rand aborts the
 // process instead of returning the error. That is also why the "rand failed"
@@ -704,14 +709,6 @@ func (r *sequentialRand) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.reads
-}
-
-func sequentialBytes(start byte, n int) []byte {
-	out := make([]byte, n)
-	for i := range out {
-		out[i] = byte(int(start) + i)
-	}
-	return out
 }
 
 func withRandReader(t *testing.T, r *sequentialRand) *sequentialRand {
@@ -779,8 +776,6 @@ func flowConfigForExchange(store *FileTokenStore, serverName string, onAuthURL f
 
 func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 	const codeValue = "flow-auth-code"
-	stateWant := base64.RawURLEncoding.EncodeToString(sequentialBytes(0, 32))
-	verifierWant := base64.RawURLEncoding.EncodeToString(sequentialBytes(32, 32))
 
 	t.Run("Authorized", func(t *testing.T) {
 		dir := t.TempDir()
@@ -788,14 +783,20 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFileTokenStore: %v", err)
 		}
+		// The scripted reader pins that the flow draws crypto/rand exactly
+		// twice (state, then verifier); the values themselves are asserted
+		// from OnOAuthParams, so nothing below depends on the draw order.
 		reader := withRandReader(t, &sequentialRand{})
 		endpoint := &exchangeRecorder{status: http.StatusOK, body: `{"access_token":"flow-access-token","refresh_token":"flow-refresh","expires_in":3600,"token_type":"Bearer"}`}
 		withRoutedDefaultTransport(t, map[string]http.RoundTripper{"auth.example.com": endpoint})
-		port := freePort(t)
-		t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+		t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+		var flowState, flowVerifier string
 		entered := make(chan string, 1)
 		config := flowConfigForExchange(store, "flow-server", func(url string) { entered <- url })
+		config.OnOAuthParams = func(state, codeVerifier string) {
+			flowState, flowVerifier = state, codeVerifier
+		}
 		type outcome struct {
 			result *OAuthFlowResult
 			err    error
@@ -807,9 +808,10 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 		}()
 
 		authURL := <-entered
+		port := autoCallbackPort(t, authURL)
 		conn := dialCallback(t, port)
 		defer conn.Close()
-		if _, err := fmt.Fprintf(conn, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, stateWant); err != nil {
+		if _, err := fmt.Fprintf(conn, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, flowState); err != nil {
 			t.Fatalf("write callback request: %v", err)
 		}
 		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -836,7 +838,7 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 		select {
 		case got = <-done:
 		case <-watchdog.C:
-			t.Fatalf("PerformMCPOAuthFlow did not finish 5s after a callback carrying state %q", stateWant)
+			t.Fatalf("PerformMCPOAuthFlow did not finish 5s after a callback carrying state %q", flowState)
 		}
 		if got.err != nil {
 			t.Fatalf("PerformMCPOAuthFlow error = %v, want the exchanged tokens", got.err)
@@ -877,7 +879,7 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 		want := url.Values{
 			"grant_type":    {"authorization_code"},
 			"code":          {codeValue},
-			"code_verifier": {verifierWant},
+			"code_verifier": {flowVerifier},
 			"redirect_uri":  {BuildRedirectURI(port)},
 			"client_id":     {"client-123"},
 		}
@@ -895,14 +897,14 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		withRandReader(t, &sequentialRand{})
 		endpoint := &exchangeRecorder{status: http.StatusInternalServerError, body: "upstream refused"}
 		withRoutedDefaultTransport(t, map[string]http.RoundTripper{"auth.example.com": endpoint})
-		port := freePort(t)
-		t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+		t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+		var flowState string
 		entered := make(chan string, 1)
 		config := flowConfigForExchange(store, "flow-server", func(url string) { entered <- url })
+		config.OnOAuthParams = func(state, _ string) { flowState = state }
 		type outcome struct {
 			result *OAuthFlowResult
 			err    error
@@ -913,10 +915,10 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 			done <- outcome{result: result, err: err}
 		}()
 
-		<-entered
+		port := autoCallbackPort(t, <-entered)
 		conn := dialCallback(t, port)
 		defer conn.Close()
-		if _, err := fmt.Fprintf(conn, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, stateWant); err != nil {
+		if _, err := fmt.Fprintf(conn, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, flowState); err != nil {
 			t.Fatalf("write callback request: %v", err)
 		}
 
@@ -953,24 +955,23 @@ func TestPerformMCPOAuthFlowExchangesTheCodeForTokens(t *testing.T) {
 
 func TestPerformMCPOAuthFlowDuplicateAuthorizedCallbacksDoNotStallShutdown(t *testing.T) {
 	const codeValue = "duplicate-code"
-	stateWant := base64.RawURLEncoding.EncodeToString(sequentialBytes(0, 32))
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
-	withRandReader(t, &sequentialRand{})
 	endpoint := &exchangeRecorder{status: http.StatusOK, body: `{"access_token":"duplicate-access","token_type":"Bearer"}`}
 	withRoutedDefaultTransport(t, map[string]http.RoundTripper{"auth.example.com": endpoint})
-	port := freePort(t)
-	t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+	var flowState string
 	release := make(chan struct{})
-	entered := make(chan struct{}, 1)
-	config := flowConfigForExchange(store, "duplicate-server", func(_ string) {
-		entered <- struct{}{}
+	entered := make(chan string, 1)
+	config := flowConfigForExchange(store, "duplicate-server", func(u string) {
+		entered <- u
 		<-release
 	})
+	config.OnOAuthParams = func(state, _ string) { flowState = state }
 	type outcome struct {
 		result *OAuthFlowResult
 		err    error
@@ -980,13 +981,13 @@ func TestPerformMCPOAuthFlowDuplicateAuthorizedCallbacksDoNotStallShutdown(t *te
 		result, err := PerformMCPOAuthFlow(context.Background(), config)
 		done <- outcome{result: result, err: err}
 	}()
-	<-entered
+	port := autoCallbackPort(t, <-entered)
 
 	// The first authorized callback is answered with the success page and
 	// closes the listener; every repeat must be refused (auth.ts:1147).
 	first := dialCallback(t, port)
 	defer first.Close()
-	if _, err := fmt.Fprintf(first, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, stateWant); err != nil {
+	if _, err := fmt.Fprintf(first, "GET /callback?code=%s&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", codeValue, flowState); err != nil {
 		t.Fatalf("write the authorized callback: %v", err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(first), nil)
@@ -1003,7 +1004,7 @@ func TestPerformMCPOAuthFlowDuplicateAuthorizedCallbacksDoNotStallShutdown(t *te
 	if resp.StatusCode != http.StatusOK || string(page) != "<h1>Authentication Successful</h1><p>You can close this window.</p>" {
 		t.Fatalf("authorized callback answer = %d %q, want the success page", resp.StatusCode, string(page))
 	}
-	waitCallbackRefused(t, port)
+	waitCallbackRefused(t, port, flowState)
 	close(release)
 
 	watchdog := time.NewTimer(3 * time.Second) // REAL-TIME
@@ -1034,15 +1035,19 @@ func TestPerformMCPOAuthFlowDuplicateStateMismatchCallbacksDoNotStallShutdown(t 
 	if err != nil {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
-	port := freePort(t)
-	t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+	// The first callback below carries a mismatched state on purpose; the
+	// flow's real state feeds only the refusal probe, which must stay
+	// side-effect-free inside the shutdown race window.
+	var flowState string
 	release := make(chan struct{})
-	entered := make(chan struct{}, 1)
-	config := flowConfigForExchange(store, "csrf-server", func(_ string) {
-		entered <- struct{}{}
+	entered := make(chan string, 1)
+	config := flowConfigForExchange(store, "csrf-server", func(u string) {
+		entered <- u
 		<-release
 	})
+	config.OnOAuthParams = func(state, _ string) { flowState = state }
 	type outcome struct {
 		result *OAuthFlowResult
 		err    error
@@ -1052,7 +1057,7 @@ func TestPerformMCPOAuthFlowDuplicateStateMismatchCallbacksDoNotStallShutdown(t 
 		result, err := PerformMCPOAuthFlow(context.Background(), config)
 		done <- outcome{result: result, err: err}
 	}()
-	<-entered
+	port := autoCallbackPort(t, <-entered)
 
 	// The first state-mismatch callback is answered with the 400 page and
 	// closes the listener; every repeat must be refused (auth.ts:1111-1116).
@@ -1075,7 +1080,7 @@ func TestPerformMCPOAuthFlowDuplicateStateMismatchCallbacksDoNotStallShutdown(t 
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(page), "Invalid state parameter") {
 		t.Fatalf("state mismatch answer = %d %q, want the 400 error page", resp.StatusCode, string(page))
 	}
-	waitCallbackRefused(t, port)
+	waitCallbackRefused(t, port, flowState)
 	close(release)
 
 	watchdog := time.NewTimer(3 * time.Second) // REAL-TIME

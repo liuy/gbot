@@ -5,18 +5,17 @@ package mcp
 // the pre-alignment behavior.
 //
 // Probes reused from auth_fix4_test.go: withCapturedLogs, withMetadataTransport,
-// withRandReader, withRoutedDefaultTransport, freePort, dialCallback.
+// withRandReader, withRoutedDefaultTransport, autoCallbackPort, dialCallback.
 
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -414,18 +413,17 @@ func TestPerformMCPOAuthFlowClosesCallbackServerOnFirstCallback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		stateWant := base64.RawURLEncoding.EncodeToString(sequentialBytes(0, 32))
-		withRandReader(t, &sequentialRand{})
 		// A parked exchange keeps the flow inside ExchangeAuthCode, so a
 		// refusal observed during that window can only come from the callback
 		// server closing on the first callback, not from the flow's own
 		// Shutdown.
 		withRoutedDefaultTransport(t, map[string]http.RoundTripper{"auth.example.com": &parkedTransport{}})
-		port := freePort(t)
-		t.Setenv("MCP_OAUTH_CALLBACK_PORT", strconv.Itoa(port))
+		t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
+		var flowState string
 		entered := make(chan string, 1)
 		config := flowConfigForExchange(store, "f4-server", func(url string) { entered <- url })
+		config.OnOAuthParams = func(state, _ string) { flowState = state }
 		type outcome struct {
 			result *OAuthFlowResult
 			err    error
@@ -438,10 +436,10 @@ func TestPerformMCPOAuthFlowClosesCallbackServerOnFirstCallback(t *testing.T) {
 			done <- outcome{result: result, err: err}
 		}()
 
-		<-entered
+		port := autoCallbackPort(t, <-entered)
 		conn := dialCallback(t, port)
 		defer conn.Close()
-		if _, err := fmt.Fprintf(conn, "GET /callback?code=f4-code&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", stateWant); err != nil {
+		if _, err := fmt.Fprintf(conn, "GET /callback?code=f4-code&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", flowState); err != nil {
 			t.Fatalf("write callback request: %v", err)
 		}
 		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -460,7 +458,10 @@ func TestPerformMCPOAuthFlowClosesCallbackServerOnFirstCallback(t *testing.T) {
 		}
 
 		// The exchange is parked, the flow is still alive: a repeat callback
-		// must meet a closed listener, never a second answered page.
+		// must meet a closed listener, never a second answered page. The probe
+		// carries only the matching state (no code): even when it slips into
+		// the shutdown race window and gets answered, it leaves nothing in the
+		// flow's channels.
 		deadline := time.Now().Add(3 * time.Second) // REAL-TIME
 		for i := 0; ; i++ {
 			second, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -468,7 +469,7 @@ func TestPerformMCPOAuthFlowClosesCallbackServerOnFirstCallback(t *testing.T) {
 				break // listener closed — the TS contract
 			}
 			connected := second
-			if _, err := fmt.Fprintf(connected, "GET /callback?code=f4-code&state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", stateWant); err != nil {
+			if _, err := fmt.Fprintf(connected, "GET /callback?state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", url.QueryEscape(flowState)); err != nil {
 				_ = connected.Close()
 				break // accepted then slammed shut — no answer was served
 			}
@@ -505,13 +506,20 @@ func TestPerformMCPOAuthFlowClosesCallbackServerOnFirstCallback(t *testing.T) {
 // callbackRefused reports whether one callback attempt gets no full HTTP
 // answer: the listener is closed, or the connection is accepted and then
 // slammed shut. Used to pin the close-on-first-callback contract.
-func callbackRefused(port int) bool {
+//
+// The probe carries the flow's real state and no code, so it lands in the
+// handler's empty-code branch, which writes nothing to the flow's channels. A
+// probe raced into the window between the first callback's answer and the
+// shutdown closing the listener would otherwise park a state mismatch (or a
+// code) into a channel nobody has drained yet, and the flow's select can then
+// answer the probe instead of the first callback.
+func callbackRefused(port int, state string) bool {
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return true
 	}
 	defer conn.Close()
-	if _, err := conn.Write([]byte("GET /callback?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")); err != nil {
+	if _, err := fmt.Fprintf(conn, "GET /callback?state=%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", url.QueryEscape(state)); err != nil {
 		return true
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // REAL-TIME
@@ -525,10 +533,10 @@ func callbackRefused(port int) bool {
 
 // waitCallbackRefused polls until the callback server stops answering, and
 // fails the test if it is still serving full pages at the deadline.
-func waitCallbackRefused(t *testing.T, port int) {
+func waitCallbackRefused(t *testing.T, port int, state string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second) // REAL-TIME
-	for !callbackRefused(port) {
+	for !callbackRefused(port, state) {
 		if time.Now().After(deadline) { // REAL-TIME
 			t.Fatalf("the callback server on port %d is still answering repeat callbacks: it must close on the first callback (auth.ts:1147)", port)
 		}

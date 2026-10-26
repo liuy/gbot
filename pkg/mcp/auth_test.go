@@ -3145,17 +3145,10 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	serverReady := make(chan struct{})
+	var reportedURL string
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
@@ -3165,7 +3158,7 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 		// that far and the endpoint is never contacted.
 		TokenEndpoint: "https://auth.example.com/oauth/token",
 		ClientID:      "client-123",
-		OnAuthURL:     func(_ string) { close(serverReady) },
+		OnAuthURL:     func(u string) { reportedURL = u; close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3175,6 +3168,7 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 	}()
 
 	<-serverReady
+	port := autoCallbackPort(t, reportedURL)
 
 	// OnAuthURL can fire before the callback server's listener is accepting —
 	// retry briefly instead of failing on connection-refused.
@@ -3206,17 +3200,10 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	serverReady := make(chan struct{})
+	var reportedURL string
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
@@ -3226,7 +3213,7 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 		// that far and the endpoint is never contacted.
 		TokenEndpoint: "https://auth.example.com/oauth/token",
 		ClientID:      "client-123",
-		OnAuthURL:     func(_ string) { close(serverReady) },
+		OnAuthURL:     func(u string) { reportedURL = u; close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3236,6 +3223,7 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 	}()
 
 	<-serverReady
+	port := autoCallbackPort(t, reportedURL)
 
 	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?code=some-code&state=wrong-state", port), 2*time.Second) // REAL-TIME
 	if err != nil {
@@ -3267,15 +3255,7 @@ func TestPerformMCPOAuthFlow_Timeout(t *testing.T) {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	config := OAuthFlowConfig{
 		ServerName:    "test-server",
@@ -3306,15 +3286,7 @@ func TestPerformMCPOAuthFlow_OnAuthURL(t *testing.T) {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	var authURLCalled string
 	authURLReady := make(chan struct{})
@@ -3345,8 +3317,16 @@ func TestPerformMCPOAuthFlow_OnAuthURL(t *testing.T) {
 	if authURLCalled == "" {
 		t.Error("OnAuthURL should have been called")
 	}
-	if !strings.Contains(authURLCalled, fmt.Sprintf("localhost:%d", port)) {
-		t.Errorf("authURL should contain port %d, got %q", port, authURLCalled)
+	// No port is forced on the flow, so the strongest available claim: the
+	// reported URI is the loopback redirect with a port FindAvailablePort drew
+	// from its range.
+	port := autoCallbackPort(t, authURLCalled)
+	min, max := redirectPortRange()
+	if !strings.HasPrefix(authURLCalled, "http://localhost:") || !strings.HasSuffix(authURLCalled, "/callback") {
+		t.Errorf("authURL = %q, want the loopback redirect URI", authURLCalled)
+	}
+	if port < min || port > max {
+		t.Errorf("auth URL port = %d, want one drawn from [%d,%d], got %q", port, min, max, authURLCalled)
 	}
 }
 
@@ -4491,15 +4471,7 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 
 	var capturedAuthURL string
 	serverReady := make(chan struct{})
@@ -4527,6 +4499,7 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 	}()
 
 	<-serverReady
+	port := autoCallbackPort(t, capturedAuthURL)
 
 	// We don't know the generated state, so we can't send a valid code.
 	// Instead, test by sending a callback that triggers the code path.
@@ -5480,22 +5453,16 @@ func TestPerformMCPOAuthFlow_ErrorCallbackEscapesHTML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
-	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
+	t.Setenv("MCP_OAUTH_CALLBACK_PORT", "") // flow picks its own port (autoCallbackPort)
 	serverReady := make(chan struct{})
+	var reportedURL string
 	config := OAuthFlowConfig{
 		ServerName:    "test-server",
 		ServerConfig:  &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:    store,
 		TokenEndpoint: "https://auth.example.com/oauth/token",
 		ClientID:      "client-123",
-		OnAuthURL:     func(_ string) { close(serverReady) },
+		OnAuthURL:     func(u string) { reportedURL = u; close(serverReady) },
 	}
 	errChan := make(chan error, 1)
 	go func() {
@@ -5503,6 +5470,7 @@ func TestPerformMCPOAuthFlow_ErrorCallbackEscapesHTML(t *testing.T) {
 		errChan <- err
 	}()
 	<-serverReady
+	port := autoCallbackPort(t, reportedURL)
 	resp, err := tryGetUntil(fmt.Sprintf("http://127.0.0.1:%d/callback?error=%%3Cscript%%3Eevil%%3C%%2Fscript%%3E", port), 2*time.Second) // REAL-TIME
 	if err != nil {
 		t.Fatalf("callback GET failed: %v", err)

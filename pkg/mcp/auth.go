@@ -452,6 +452,13 @@ type OAuthFlowConfig struct {
 	SkipBrowser   bool
 	TokenEndpoint string // OAuth token endpoint URL
 	ClientID      string // OAuth client ID
+	// OnOAuthParams receives the generated CSRF state and PKCE code verifier
+	// once they are drawn. TS callers learn these from the authorization URL
+	// the flow hands them (auth.ts:1924); the Go port leaves URL construction
+	// to the caller and reports only the redirect URI, so this hook is the one
+	// place a caller (or test) can learn the values a callback must carry
+	// without predicting crypto/rand output. nil = not called.
+	OnOAuthParams func(state, codeVerifier string)
 }
 
 // OAuthFlowResult holds the result of a completed OAuth flow.
@@ -485,6 +492,10 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 		return nil, err
 	}
 	codeChallenge := DeriveCodeChallenge(codeVerifier)
+
+	if config.OnOAuthParams != nil {
+		config.OnOAuthParams(state, codeVerifier)
+	}
 
 	// Source: auth.ts:1029-1214 — start callback server
 	codeChan := make(chan string, 1)
