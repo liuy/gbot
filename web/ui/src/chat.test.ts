@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createChat, mapHistoryToChatMessages } from './chat'
+import { refreshAvatar, resetAvatarStateForTest } from './avatar'
 import { TokenRate } from './token_rate'
 import { stopStatusSweep } from './components/status_sweep'
 
@@ -48,6 +49,13 @@ function mount() {
   document.body.appendChild(chat.root)
   return chat
 }
+
+// Every mount() boots initAvatars, and fetch spies in earlier tests (e.g.
+// the artifact integration Response mocks) can satisfy the probe — leaked
+// avatar state would flip later shells to <img> with no test opting in.
+afterEach(() => {
+  resetAvatarStateForTest()
+})
 
 function setTextarea(value: string) {
   const ta = document.querySelector('textarea') as HTMLTextAreaElement
@@ -4234,5 +4242,82 @@ describe('STT mic availability', () => {
     })
     expect(mic().classList.contains('stt-mic-off')).toBe(true)
     expect(mic().disabled).toBe(true)
+  })
+})
+
+describe('avatar consumption', () => {
+  // Manual save/restore: this file stubs IntersectionObserver at module
+  // scope, so vi.unstubAllGlobals() would strip it for every later test.
+  const realFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
+
+  // The chat shell embeds a full settings page (the sidebar gear), whose
+  // avatar row/panel add their own data-avatar holders — scope to the
+  // message stream by excluding both settings containers.
+  const chatHolders = (who: 'agent' | 'user', selector = ''): HTMLElement[] =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-avatar="${who}"]${selector ? ' ' + selector : ''}`),
+    ).filter((el) => !el.closest('[data-general-row]') && !el.closest('[data-avatar-panel]'))
+
+  function sendUserAndStartAssistant(): void {
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('avatar probe')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+  }
+
+  it('renders default avatars (G letter / user icon) inside real shells', () => {
+    mount()
+    sendUserAndStartAssistant()
+    const agents = chatHolders('agent')
+    const users = chatHolders('user')
+    // One user echo + one assistant shell were dispatched.
+    expect(agents.length).toBe(1)
+    expect(users.length).toBe(1)
+    for (const el of agents) expect(el.textContent).toBe('G')
+    for (const el of users) expect(el.querySelector('svg')).toBeTruthy()
+  })
+
+  it('rewrites already-rendered agent holders to img and serves new shells with img directly', async () => {
+    mount()
+    sendUserAndStartAssistant()
+    expect(chatHolders('agent', 'img').length).toBe(0)
+
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ ETag: '"t-1"' }),
+    })) as unknown as typeof fetch
+    await refreshAvatar('agent')
+
+    const imgs = chatHolders('agent', 'img') as HTMLImageElement[]
+    expect(imgs.length).toBe(1)
+    expect(imgs[0].getAttribute('src')).toMatch(/^\/api\/avatar\/agent\?v=/)
+    expect(chatHolders('user', 'svg').length).toBe(1)
+
+    dispatchEvents([{ type: 'query_start' }])
+    const after = chatHolders('agent', 'img') as HTMLImageElement[]
+    expect(after.length).toBe(2)
+    expect(after[1].getAttribute('src')).toContain('t-1')
+  })
+
+  it('falls back to the default rendering when the img errors', async () => {
+    mount()
+    sendUserAndStartAssistant()
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ ETag: '"t-1"' }),
+    })) as unknown as typeof fetch
+    await refreshAvatar('agent')
+    const img = chatHolders('agent', 'img')[0] as HTMLImageElement
+    expect(img).toBeTruthy()
+
+    img.dispatchEvent(new Event('error'))
+
+    for (const el of chatHolders('agent')) expect(el.textContent).toBe('G')
+    expect(chatHolders('agent', 'img').length).toBe(0)
   })
 })

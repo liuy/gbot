@@ -47,6 +47,7 @@ import {
   markToolCollapsible,
 } from './components/stream_dom'
 import { writeSweepChars, stopStatusSweep } from './components/status_sweep'
+import { avatarGStyle, initAvatars, renderAvatarInto } from './avatar'
 import { createHeader } from './header'
 import { createTakeoverBar } from './takeover_bar'
 import { createSidebar } from './sidebar'
@@ -86,7 +87,6 @@ import {
   disconnectText,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
-import { renderIcon } from './icons'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -227,17 +227,13 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
   return result
 }
 
-const avatarGStyle = 'background: linear-gradient(to bottom right, #00B4FF, #9D5CFF);color:#FFFFFF'
-// User avatar uses literal #FFFFFF instead of text-white: index.css overrides
-// --color-white to #333333 in light theme, so Tailwind's text-white would
-// render the avatar nearly invisible on light backgrounds.
-const renderUserAvatar = (): SVGElement =>
-  renderIcon('user', { size: 13, className: 'text-[#FFFFFF]' })
-
 // Shared layout for user and assistant messages. The grid (avatar | content |
 // avatar) is identical for both roles — only the avatar position and content
 // alignment differ. This ensures both sides stay vertically aligned without
 // having to synchronise margin/line-height changes across two code paths.
+// Avatar holders only carry size/rounded/gradient styling here; the content
+// (default G/user icon vs custom <img>) comes from renderAvatarInto, so a
+// custom avatar swap rewrites shells without rebuilding them.
 function buildShell(
   role: 'user' | 'assistant',
 ): { outer: HTMLElement; content: HTMLDivElement } {
@@ -246,19 +242,17 @@ function buildShell(
 
   const leftCol = role === 'assistant'
     ? createNode('div', {
-        className: `${avatarBase()} ${avatarG()}`,
+        className: `${avatarBase()} ${avatarG()} overflow-hidden`,
         attrs: { style: avatarGStyle },
-        text: 'G',
       })
     : createElement('div')
   const centerCol = createElement('div', shellCenter())
   const rightCol = role === 'user'
-    ? createElement('div', `${avatarBase()} ${avatarU()}`)
+    ? createElement('div', `${avatarBase()} ${avatarU()} overflow-hidden`)
     : createElement('div')
 
-  if (role === 'user') {
-    rightCol.replaceChildren(renderUserAvatar())
-  }
+  if (role === 'assistant') renderAvatarInto(leftCol, 'agent')
+  if (role === 'user') renderAvatarInto(rightCol, 'user')
 
   const content = createElement('div', contentArea({ role }))
 
@@ -667,6 +661,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // __gbotApplySystemTheme hook the Android host calls immediately) must
   // be live before anything renders.
   initTheme()
+  // Avatar probes race page render: results rewrite whatever holders exist
+  // by then (see rewriteAvatarHolders), so ordering here is not load-bearing.
+  initAvatars()
   const sidebar = createSidebar({ mainContent })
 
   // Takeover/session-switch loading bar: 2px fill pinned to the header's

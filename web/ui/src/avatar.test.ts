@@ -1,0 +1,302 @@
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import {
+  AVATAR_TOO_LARGE,
+  customAvatarURL,
+  deleteAvatar,
+  encodeAvatar,
+  refreshAvatar,
+  renderAvatarInto,
+  resetAvatarStateForTest,
+  rewriteAvatarHolders,
+  uploadAvatar,
+} from './avatar'
+import { createElement } from './dom'
+
+function agentHolder(): HTMLElement {
+  const el = createElement('div', 'h-5 w-5 rounded-md')
+  document.body.appendChild(el)
+  return el
+}
+
+function userHolder(): HTMLElement {
+  const el = createElement('div', 'h-5 w-5 rounded-md')
+  document.body.appendChild(el)
+  return el
+}
+
+// A HEAD stub whose 200 carries a real ETag header — probeAvatar reads
+// resp.headers, so bare-object stubs silently fall back to Date.now().
+function stubHead(status: number, etag?: string) {
+  const handler = vi.fn(async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: etag !== undefined ? new Headers({ ETag: etag }) : new Headers(),
+  }))
+  vi.stubGlobal('fetch', handler)
+  return handler
+}
+
+afterEach(() => {
+  resetAvatarStateForTest()
+  vi.unstubAllGlobals()
+  document.body.innerHTML = ''
+})
+
+describe('default avatar rendering', () => {
+  it('renders the G letter for agent and stamps dataset markers', () => {
+    const el = agentHolder()
+    renderAvatarInto(el, 'agent')
+    expect(el.dataset.avatar).toBe('agent')
+    expect(el.textContent).toBe('G')
+  })
+
+  it('renders the user icon at the requested size', () => {
+    const el = userHolder()
+    renderAvatarInto(el, 'user', 12)
+    expect(el.dataset.avatar).toBe('user')
+    expect(el.dataset.avatarIcon).toBe('12')
+    expect(el.querySelector('svg')).toBeTruthy()
+  })
+})
+
+describe('custom avatar rendering', () => {
+  it('probes 200 and swaps every agent holder to an img with a versioned URL', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    const user = userHolder()
+    renderAvatarInto(user, 'user')
+    stubHead(200, '"t-1"')
+
+    await refreshAvatar('agent')
+
+    const img = agent.querySelector('img')
+    expect(img).toBeTruthy()
+    expect(img?.getAttribute('src')).toMatch(/^\/api\/avatar\/agent\?v=/)
+    expect(img?.getAttribute('src')).toContain('t-1')
+    expect(customAvatarURL('agent')).toContain('t-1')
+    expect(user.querySelector('svg')).toBeTruthy()
+    expect(user.querySelector('img')).toBeNull()
+  })
+
+  it('falls back to the default on img error, once and without a loop', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    stubHead(200, '"t-1"')
+    await refreshAvatar('agent')
+    const img = agent.querySelector('img') as HTMLImageElement
+    expect(img).toBeTruthy()
+
+    img.dispatchEvent(new Event('error'))
+
+    expect(agent.textContent).toBe('G')
+    expect(customAvatarURL('agent')).toBeNull()
+    expect(agent.querySelector('img')).toBeNull()
+  })
+
+  it('clears state on probe 404', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    stubHead(200, '"t-1"')
+    await refreshAvatar('agent')
+    expect(customAvatarURL('agent')).not.toBeNull()
+
+    stubHead(404)
+    await refreshAvatar('agent')
+    expect(customAvatarURL('agent')).toBeNull()
+    expect(agent.textContent).toBe('G')
+  })
+
+  it('keeps the known state on probe 500 (transient failures must not reset)', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    stubHead(200, '"t-1"')
+    await refreshAvatar('agent')
+
+    stubHead(500)
+    await refreshAvatar('agent')
+
+    expect(customAvatarURL('agent')).toContain('t-1')
+    expect(agent.querySelector('img')).toBeTruthy()
+  })
+
+  it('keeps the known state when fetch rejects', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    stubHead(200, '"t-1"')
+    await refreshAvatar('agent')
+
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to parse URL')
+    }))
+    await refreshAvatar('agent')
+
+    expect(customAvatarURL('agent')).toContain('t-1')
+  })
+
+  it('falls back to Date.now() when the stub carries no headers object', async () => {
+    const agent = agentHolder()
+    renderAvatarInto(agent, 'agent')
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200 })))
+    await refreshAvatar('agent')
+    const src = (agent.querySelector('img') as HTMLImageElement).getAttribute('src') ?? ''
+    expect(src).toMatch(/^\/api\/avatar\/agent\?v=\d+-1$/)
+  })
+})
+
+describe('rewriteAvatarHolders', () => {
+  it('rewrites only holders marked with data-avatar', async () => {
+    const a1 = agentHolder()
+    const a2 = agentHolder()
+    const plain = userHolder()
+    renderAvatarInto(a1, 'agent')
+    renderAvatarInto(a2, 'agent')
+    renderAvatarInto(plain, 'user', 12)
+    stubHead(200, '"t-9"')
+    await refreshAvatar('agent')
+
+    rewriteAvatarHolders('agent')
+
+    expect(a1.querySelector('img')).toBeTruthy()
+    expect(a2.querySelector('img')).toBeTruthy()
+    expect(plain.querySelector('svg')).toBeTruthy()
+    expect(plain.querySelector('img')).toBeNull()
+  })
+
+  it('restores the recorded icon size when rewriting back to the default', async () => {
+    const el = createElement('div', 'h-5 w-5 rounded-md')
+    document.body.appendChild(el)
+    renderAvatarInto(el, 'user', 32)
+    stubHead(200, '"t-2"')
+    await refreshAvatar('user')
+    expect(el.querySelector('img')).toBeTruthy()
+
+    stubHead(404)
+    await refreshAvatar('user')
+
+    const svg = el.querySelector('svg')
+    expect(svg).toBeTruthy()
+    expect(svg?.getAttribute('width')).toBe('32')
+  })
+})
+
+describe('uploadAvatar', () => {
+  it('PUTs the blob with its type as Content-Type and the blob as body', async () => {
+    const handler = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+    vi.stubGlobal('fetch', handler)
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+
+    await uploadAvatar('agent', blob)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    const [url, init] = handler.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/avatar/agent')
+    expect(init.method).toBe('PUT')
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('image/png')
+    expect(init.body).toBe(blob)
+  })
+
+  it('rejects with the envelope error message on failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 413,
+      json: async () => ({ error: 'x' }),
+    })))
+    await expect(uploadAvatar('user', new Blob([]))).rejects.toThrow('x')
+  })
+})
+
+describe('deleteAvatar', () => {
+  it('DELETEs and resolves on 204', async () => {
+    const handler = vi.fn(async () => ({ ok: true, status: 204 }))
+    vi.stubGlobal('fetch', handler)
+
+    await deleteAvatar('agent')
+
+    const [url, init] = handler.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/avatar/agent')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('rejects on non-2xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500 })))
+    await expect(deleteAvatar('user')).rejects.toThrow()
+  })
+})
+
+// jsdom has no 2d context: encodeAvatar takes the canvas as a parameter and
+// the tests inject a structurally compatible fake.
+function fakeCanvas(blobSizes: number[]) {
+  const drawImageCalls: unknown[][] = []
+  const toBlobCalls: Array<[string | undefined, number | undefined]> = []
+  let next = 0
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      drawImage: (...args: unknown[]) => {
+        drawImageCalls.push(args)
+      },
+    }),
+    toBlob: (cb: (b: Blob | null) => void, type?: string, quality?: number) => {
+      toBlobCalls.push([type, quality])
+      const size = blobSizes[next]
+      next++
+      cb(size === undefined ? null : new Blob([new ArrayBuffer(size)], { type: type ?? '' }))
+    },
+  } as unknown as HTMLCanvasElement
+  return { canvas, drawImageCalls, toBlobCalls }
+}
+
+describe('encodeAvatar', () => {
+  // Plain {width,height} fakes: jsdom has no ImageBitmap, and the crop math
+  // only reads the two dimensions.
+  const bmp = (w: number, h: number) => ({ width: w, height: h }) as unknown as ImageBitmap
+
+  it('center-crops a landscape bitmap', async () => {
+    const { canvas, drawImageCalls } = fakeCanvas([1024])
+    const bitmap = bmp(800, 600)
+    await encodeAvatar(bitmap, canvas)
+    expect(drawImageCalls.length).toBe(1)
+    const [src, sx, sy, sw, sh, dx, dy, dw, dh] = drawImageCalls[0] as number[]
+    expect(src).toBe(bitmap)
+    expect([sx, sy, sw, sh]).toEqual([100, 0, 600, 600])
+    expect([dx, dy, dw, dh]).toEqual([0, 0, 256, 256])
+    expect(canvas.width).toBe(256)
+    expect(canvas.height).toBe(256)
+  })
+
+  it('center-crops a portrait bitmap', async () => {
+    const { canvas, drawImageCalls } = fakeCanvas([1024])
+    await encodeAvatar(bmp(600, 800), canvas)
+    const [, sx, sy, sw, sh] = drawImageCalls[0] as number[]
+    expect([sx, sy, sw, sh]).toEqual([0, 100, 600, 600])
+  })
+
+  it('passes a square bitmap through unchanged', async () => {
+    const { canvas, drawImageCalls } = fakeCanvas([1024])
+    await encodeAvatar(bmp(600, 600), canvas)
+    const [, sx, sy, sw, sh] = drawImageCalls[0] as number[]
+    expect([sx, sy, sw, sh]).toEqual([0, 0, 600, 600])
+  })
+
+  it('returns the PNG when it is under the size cap', async () => {
+    const { canvas, toBlobCalls } = fakeCanvas([50 * 1024])
+    const blob = await encodeAvatar(bmp(600, 600), canvas)
+    expect(blob.type).toBe('image/png')
+    expect(toBlobCalls.length).toBe(1)
+    expect(toBlobCalls[0][0]).toBe('image/png')
+  })
+
+  it('falls back to JPEG q0.9 when the PNG is too large', async () => {
+    const { canvas, toBlobCalls } = fakeCanvas([400 * 1024, 10 * 1024])
+    const blob = await encodeAvatar(bmp(600, 600), canvas)
+    expect(blob.type).toBe('image/jpeg')
+    expect(toBlobCalls.length).toBe(2)
+    expect(toBlobCalls[1]).toEqual(['image/jpeg', 0.9])
+  })
+
+  it('rejects with the sentinel when both encodings exceed the cap', async () => {
+    const { canvas } = fakeCanvas([400 * 1024, 400 * 1024])
+    await expect(encodeAvatar(bmp(600, 600), canvas)).rejects.toThrow(AVATAR_TOO_LARGE)
+  })
+})

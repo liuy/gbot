@@ -5,6 +5,14 @@ import { HLJS_THEMES, getSavedHljsTheme, saveHljsTheme, applyHljsTheme } from '.
 import { getDebugLogs } from './log'
 import { t, persistedLocale, saveLocale, saveLocaleAuto, retranslate, localeOptions, type Locale, type StaticKey } from './i18n'
 import { fetchRemoteDevices, saveRemoteDevices, testRemoteDevice, type RemoteDevice } from './vnc'
+import {
+  AVATAR_TOO_LARGE,
+  avatarGStyle,
+  deleteAvatar,
+  refreshAvatar,
+  renderAvatarInto,
+  setAvatarFromFile,
+} from './avatar'
 import { refuseUpgrade } from './upgrade_mode'
 import { markUpgrading } from './ws'
 
@@ -483,6 +491,86 @@ export function createSettingsPage(): SettingsPageHandles {
     return { row, chev }
   }
 
+  // ── Avatar row: the General card's FIRST row (accepted prototype truth).
+  // The row value is two 22px thumbnails; the panel is two 64px round
+  // pickers with a remove button each. Content (default vs custom) comes
+  // from renderAvatarInto — the data-avatar markers let refreshAvatar
+  // rewrite row minis, panel bigs and chat shells in one pass.
+  const miniWrap = createElement('span', 'flex')
+  const miniAgent = createNode('span', {
+    className:
+      'w-[22px] h-[22px] rounded-[6px] flex items-center justify-center overflow-hidden border-[1.5px] border-ink2 text-[11px] font-bold avatar-g-bg',
+    attrs: { style: avatarGStyle },
+  })
+  renderAvatarInto(miniAgent, 'agent', 12)
+  const miniUser = createNode('span', {
+    className:
+      '-ml-[5px] w-[22px] h-[22px] rounded-[6px] flex items-center justify-center overflow-hidden border-[1.5px] border-ink2 bg-gradient-to-br from-t2 to-t3 text-[#FFFFFF]',
+  })
+  renderAvatarInto(miniUser, 'user', 12)
+  miniWrap.append(miniAgent, miniUser)
+  const avatarRow = generalRow('avatarRow', miniWrap)
+
+  const avatarPanel = createElement('div', 'hidden px-3.5 pb-3')
+  avatarPanel.setAttribute('data-avatar-panel', '')
+  const avatarCols = createElement('div', 'flex gap-3 justify-center py-2')
+  // Hidden file input (input_bar makeFileInput pattern): value resets right
+  // after change so picking the same file twice still fires.
+  const avatarInput = createNode('input', {
+    props: { type: 'file', accept: 'image/png,image/jpeg,image/webp' },
+    style: { display: 'none' },
+  })
+  for (const who of ['agent', 'user'] as const) {
+    const col = createElement('div', 'flex flex-col items-center gap-2')
+    const big = createNode('div', {
+      className:
+        'w-16 h-16 rounded-full flex items-center justify-center overflow-hidden border border-hairline cursor-pointer transition-transform active:scale-[.93] ' +
+        (who === 'agent'
+          ? 'text-[26px] font-bold avatar-g-bg'
+          : 'bg-gradient-to-br from-t2 to-t3 text-[#FFFFFF]'),
+      attrs: who === 'agent' ? { style: avatarGStyle } : {},
+    })
+    renderAvatarInto(big, who, 32)
+    big.addEventListener('click', (e) => {
+      e.stopPropagation()
+      avatarInput.dataset.target = who
+      avatarInput.click()
+    })
+    const removeBtn = createNode('button', {
+      className:
+        'text-[11.5px] px-2.5 py-1 rounded-full border border-hairline bg-ink3 text-red cursor-pointer',
+      ...L('avatarRemove', { type: 'button', 'data-avatar-remove': who }),
+    })
+    // Success is silent — the rewrite IS the feedback (every holder with a
+    // data-avatar marker flips in place). Only failures toast.
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void deleteAvatar(who)
+        .then(() => refreshAvatar(who))
+        .catch((err: unknown) => {
+          toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
+        })
+    })
+    col.append(big, removeBtn)
+    avatarCols.append(col)
+  }
+  avatarInput.addEventListener('change', () => {
+    const file = avatarInput.files?.[0]
+    const target = avatarInput.dataset.target as 'agent' | 'user' | undefined
+    avatarInput.value = ''
+    if (!file || !target) return
+    setAvatarFromFile(target, file).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : 'error'
+      toast(msg === AVATAR_TOO_LARGE ? t('avatarTooLarge') : t('saveFailed')(msg))
+    })
+  })
+  avatarPanel.append(avatarCols, avatarInput)
+  avatarRow.row.addEventListener('click', () => {
+    const open = avatarPanel.classList.toggle('hidden')
+    avatarRow.chev.classList.toggle('rotate-90', !open)
+    if (!open) avatarPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  })
+
   // Locale endonyms are self-named in their own language by convention —
   // never translated through the dictionary. "Auto" (follow the system)
   // likewise stays literal. Recomputed per call: a language switch must
@@ -622,6 +710,9 @@ export function createSettingsPage(): SettingsPageHandles {
   })
 
   generalCard.append(
+    avatarRow.row,
+    avatarPanel,
+    divider(),
     languageRow.row,
     languagePanel,
     divider(),

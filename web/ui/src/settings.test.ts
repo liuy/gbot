@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { setLocale, initLocale, localeOptions, t } from './i18n'
 import { pushDebugLog } from './log'
+import { refreshAvatar, resetAvatarStateForTest } from './avatar'
 import type { RemoteDevice } from './vnc'
 import {
   fetchSettings,
@@ -65,6 +66,12 @@ interface MockOptions {
   restartPost?: { status: number; body: unknown }
   reloadReport?: ReloadReport
   reloadError?: string
+  // Avatar endpoint surface. HEAD defaults to 404 (no custom avatar); a
+  // 200 override must go through the ETag header below, never a bare
+  // object — probeAvatar reads resp.headers.
+  avatarHead?: number
+  avatarPutError?: string
+  avatarDeleteStatus?: number
 }
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
@@ -141,6 +148,27 @@ function makeFetchHandler(
       opts.onPutStt?.(JSON.parse(String(init?.body)) as { provider: string; model: string })
       return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
+    if (url.startsWith('/api/avatar/')) {
+      if (method === 'HEAD') {
+        const status = opts.avatarHead ?? 404
+        return {
+          ok: status < 400,
+          status,
+          headers: status === 200 ? new Headers({ ETag: '"t-1"' }) : new Headers(),
+        }
+      }
+      if (method === 'PUT') {
+        if (opts.avatarPutError) {
+          return { ok: false, status: 400, json: async () => ({ error: opts.avatarPutError }) }
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      if (method === 'DELETE') {
+        const status = opts.avatarDeleteStatus ?? 204
+        if (status >= 400) return { ok: false, status, json: async () => ({}) }
+        return { ok: true, status }
+      }
+    }
     throw new Error('unexpected fetch ' + method + ' ' + url)
   })
 }
@@ -163,6 +191,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
   localStorage.removeItem('gbot-language')
+  // Avatar module state survives across pages; without the reset one test's
+  // probe result flips every later page's holders to <img>.
+  resetAvatarStateForTest()
   document.body.innerHTML = ''
 })
 
@@ -993,7 +1024,7 @@ describe('createSettingsPage', () => {
     localStorage.setItem('gbot-theme', 'dark')
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const rows = page.root.querySelectorAll('[data-general-row]')
-    const themeRow = rows[1] as HTMLElement // Language, Theme, Highlights
+    const themeRow = rows[2] as HTMLElement // Avatars, Language, Theme, Highlights
     themeRow.click()
     const lightBtn = page.root.querySelector('[data-theme-opt="light"]') as HTMLElement
     expect(lightBtn).not.toBeNull()
@@ -1006,7 +1037,7 @@ describe('createSettingsPage', () => {
   it('Highlights fold: grid of themes, selecting one applies and updates the row value', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const rows = page.root.querySelectorAll('[data-general-row]')
-    const hljsRow = rows[2] as HTMLElement
+    const hljsRow = rows[3] as HTMLElement
     hljsRow.click()
     const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
     expect(panel.classList.contains('hidden')).toBe(false)
@@ -1054,7 +1085,7 @@ describe('createSettingsPage', () => {
 
   it('Language row expands an Auto|English|简体中文 panel; no stored value preselects Auto', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    const langRow = page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement
     const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
     const chev = langRow.querySelector('span.text-t3') as HTMLElement
     expect(panel.classList.contains('hidden')).toBe(true)
@@ -1076,7 +1107,7 @@ describe('createSettingsPage', () => {
 
   it('the language segment offers System plus every registered locale in registry order', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     const opts = [...page.root.querySelectorAll('[data-lang-opt]')] as HTMLElement[]
     // Derived from localeOptions(), so a new locales/<x>.ts grows the
     // segment without touching settings.ts.
@@ -1089,7 +1120,7 @@ describe('createSettingsPage', () => {
   it('persisted zh preselects 简体中文 in the panel and the row value', async () => {
     localStorage.setItem('gbot-language', 'zh')
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    const langRow = page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement
     langRow.click()
     const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
     const sel = (opt: string) =>
@@ -1108,7 +1139,7 @@ describe('createSettingsPage', () => {
     const addBtn = page.root.querySelector('[data-add-provider]') as HTMLElement
     expect(title.textContent).toBe('設定')
     expect(addBtn.textContent).toBe('新增提供者')
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     const twBtn = page.root.querySelector('[data-lang-opt="zh-TW"]') as HTMLElement
     expect(twBtn.textContent).toBe('繁體中文')
     expect(twBtn.className).toContain('text-blue')
@@ -1118,7 +1149,7 @@ describe('createSettingsPage', () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const count = page.root.querySelector('[data-provider-card] span[data-i18n-arg]') as HTMLElement
     expect(count.textContent).toBe('1 model')
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
     expect(count.textContent).toBe('1个模型')
     // Same DOM node — interpolated copy swaps via its anchor, no rebuild.
@@ -1131,7 +1162,7 @@ describe('createSettingsPage', () => {
     const title = page.root.querySelector('[data-title]') as HTMLElement
     const addBtn = page.root.querySelector('[data-add-provider]') as HTMLElement
     expect(title.textContent).toBe('Settings')
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
     expect(title.textContent).toBe('设置')
     expect(addBtn.textContent).toBe('添加提供方')
@@ -1148,7 +1179,7 @@ describe('createSettingsPage', () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const title = page.root.querySelector('[data-title]') as HTMLElement
     expect(title.textContent).toBe('设置')
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="en"]') as HTMLElement).click()
     expect(title.textContent).toBe('Settings')
     expect(page.root.querySelector('[data-title]')).toBe(title)
@@ -1158,7 +1189,7 @@ describe('createSettingsPage', () => {
 
   it('after a switch the Language panel stays open and its names refresh', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    const langRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    const langRow = page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement
     langRow.click()
     const panel = page.root.querySelector('[data-language-panel]') as HTMLElement
     const chev = langRow.querySelector('span.text-t3') as HTMLElement
@@ -1180,12 +1211,12 @@ describe('createSettingsPage', () => {
     Element.prototype.scrollIntoView = spy
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
     const rows = page.root.querySelectorAll('[data-general-row]')
-    rows[2].click() // highlights row — the card's tail, the reported case
+    rows[3].click() // highlights row — the card's tail, the reported case
     expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
     const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
     expect(panel.classList.contains('hidden')).toBe(false)
     spy.mockClear()
-    rows[2].click() // collapsing must not scroll
+    rows[3].click() // collapsing must not scroll
     expect(spy).not.toHaveBeenCalled()
   })
 
@@ -1195,7 +1226,7 @@ describe('createSettingsPage', () => {
     const reloadSpy = vi.fn()
     vi.stubGlobal('location', { reload: reloadSpy })
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="auto"]') as HTMLElement).click()
     expect(localStorage.getItem('gbot-language')).toBeNull()
     // jsdom's navigator is en — auto resolves the copy back to English.
@@ -1215,7 +1246,7 @@ describe('createSettingsPage', () => {
     const reloadSpy = vi.fn()
     vi.stubGlobal('location', { reload: reloadSpy })
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
     await vi.waitFor(() => {
       expect((page.root.querySelector('[data-toast]') as HTMLElement).textContent).toBe('Save failed: quota exceeded')
@@ -1233,7 +1264,7 @@ describe('createSettingsPage', () => {
     vi.stubGlobal('location', { reload: reloadSpy })
     const mock = makeFetchHandler({ payload: PAYLOAD })
     const page = await openPage(mock)
-    ;(page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement).click()
+    ;(page.root.querySelectorAll('[data-general-row]')[1] as HTMLElement).click()
     ;(page.root.querySelector('[data-lang-opt="en"]') as HTMLElement).click()
     await flushMicrotasks()
     expect(reloadSpy).not.toHaveBeenCalled()
@@ -2527,5 +2558,137 @@ describe('STT settings surface', () => {
       expect(page.root.textContent).toContain('Voice models take no session params')
       expect(page.root.textContent).not.toContain('Context')
     })
+  })
+})
+
+describe('avatar row', () => {
+  it('renders as the first General row with two 22px thumbnails', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const rows = page.root.querySelectorAll('[data-general-row]')
+    const avatarRow = rows[0] as HTMLElement
+    expect((avatarRow.querySelector('span.text-\\[13px\\]') as HTMLElement).textContent).toBe('Avatars')
+    const miniAgent = avatarRow.querySelector('[data-avatar="agent"]') as HTMLElement
+    const miniUser = avatarRow.querySelector('[data-avatar="user"]') as HTMLElement
+    expect(miniAgent).toBeTruthy()
+    expect(miniUser).toBeTruthy()
+    expect(miniAgent.className).toContain('w-[22px]')
+    expect(miniUser.className).toContain('w-[22px]')
+    // Prototype truth: the user mini overlaps by -5px.
+    expect(miniUser.className).toContain('-ml-[5px]')
+    expect(miniAgent.textContent).toBe('G')
+    expect(miniUser.querySelector('svg')).toBeTruthy()
+  })
+
+  it('folds: panel starts hidden, row click opens it and rotates the chevron', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const avatarRow = page.root.querySelectorAll('[data-general-row]')[0] as HTMLElement
+    const panel = page.root.querySelector('[data-avatar-panel]') as HTMLElement
+    const chev = avatarRow.querySelector('span.text-t3') as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(true)
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    avatarRow.click()
+    expect(panel.classList.contains('hidden')).toBe(false)
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    avatarRow.click()
+    expect(panel.classList.contains('hidden')).toBe(true)
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('remove flow: DELETE hits the wire, then the 404 probe resets every holder', async () => {
+    const opts: Parameters<typeof makeFetchHandler>[0] = { payload: PAYLOAD, avatarHead: 200 }
+    const mock = makeFetchHandler(opts)
+    const page = await openPage(mock)
+    await refreshAvatar('user')
+    const minis = page.root.querySelectorAll('[data-avatar="user"]')
+    const bigs = page.root.querySelectorAll('[data-avatar-panel] [data-avatar="user"]')
+    expect(minis.length).toBe(2) // row mini + panel big
+    expect(bigs.length).toBe(1)
+    for (const el of Array.from(minis)) expect(el.querySelector('img')).toBeTruthy()
+
+    // The remove click re-probes; flipping the mock to 404 makes the refresh
+    // fall back to defaults.
+    opts.avatarHead = 404
+    ;(page.root.querySelector('[data-avatar-remove="user"]') as HTMLElement).click()
+
+    await vi.waitFor(() => {
+      const after = Array.from(page.root.querySelectorAll('[data-avatar="user"]'))
+      for (const el of after) expect(el.querySelector('img')).toBeNull()
+    })
+    expect(mock.mock.calls.some(([url, init]) =>
+      url === '/api/avatar/user' && init?.method === 'DELETE')).toBe(true)
+    const svg = page.root.querySelector('[data-avatar-panel] [data-avatar="user"] svg')
+    expect(svg?.getAttribute('width')).toBe('32')
+  })
+
+  it('upload flow: change event drives PUT then probe and swaps holders to img', async () => {
+    const opts: Parameters<typeof makeFetchHandler>[0] = { payload: PAYLOAD, avatarHead: 200 }
+    const mock = makeFetchHandler(opts)
+    const page = await openPage(mock)
+    // jsdom has neither bitmap decoding nor canvas encoding — stub both so
+    // encodeAvatar runs its real path with fake pixels.
+    const fakeBitmap = { width: 8, height: 8, close: vi.fn() }
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap))
+    const toBlob = vi.fn((cb: (b: Blob | null) => void) =>
+      cb(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })))
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(toBlob as never)
+    // jsdom's getContext returns null (no canvas backend) which the encoder
+    // guards on — feed it a fake 2d context so drawImage runs.
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
+      { drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
+    try {
+      const input = page.root.querySelector(
+        '[data-avatar-panel] input[type="file"]') as HTMLInputElement
+      input.dataset.target = 'user'
+      const file = new File([new Uint8Array([9, 9])], 'me.png', { type: 'image/png' })
+      Object.defineProperty(input, 'files', { value: [file], configurable: true })
+      input.dispatchEvent(new Event('change'))
+      await vi.waitFor(() => {
+        const put = mock.mock.calls.find(([u, init]) =>
+          u === '/api/avatar/user' && init?.method === 'PUT')
+        expect(put).toBeTruthy()
+        expect((put![1]?.body as Blob).type).toBe('image/png')
+      })
+      // PUT succeeded → the follow-up probe (HEAD 200) repainted the holders.
+      await vi.waitFor(() => {
+        const minis = Array.from(page.root.querySelectorAll('[data-avatar="user"]'))
+        for (const el of minis) expect(el.querySelector('img')).toBeTruthy()
+      })
+      // value reset so picking the same file twice re-fires change.
+      expect(input.value).toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+  it('big avatar click routes the hidden file input at that who', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const input = page.root.querySelector('[data-avatar-panel] input[type="file"]') as HTMLInputElement
+    expect(input).toBeTruthy()
+    expect(input.accept.split(',').sort()).toEqual(['image/jpeg', 'image/png', 'image/webp'])
+    const spy = vi.spyOn(input, 'click')
+    const bigAgent = page.root.querySelector('[data-avatar-panel] [data-avatar="agent"]') as HTMLElement
+    bigAgent.click()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(input.dataset.target).toBe('agent')
+  })
+
+  it('remove failure toasts saveFailed instead of resetting holders', async () => {
+    const opts: Parameters<typeof makeFetchHandler>[0] = {
+      payload: PAYLOAD,
+      avatarHead: 200,
+      avatarDeleteStatus: 500,
+    }
+    const page = await openPage(makeFetchHandler(opts))
+    await refreshAvatar('user')
+    ;(page.root.querySelector('[data-avatar-remove="user"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      const toastEl = page.root.querySelector('[data-toast]') as HTMLElement
+      expect(toastEl.classList.contains('toast-show')).toBe(true)
+      expect(toastEl.textContent).toContain('Save failed: HTTP 500')
+    })
+    // Failed DELETE keeps the custom rendering — no silent fallback.
+    for (const el of Array.from(page.root.querySelectorAll('[data-avatar="user"]'))) {
+      expect(el.querySelector('img')).toBeTruthy()
+    }
   })
 })

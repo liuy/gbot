@@ -674,6 +674,7 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterPluginRoutes(wsMux, transportHub)
 		wui.RegisterArtifactRoutes(wsMux, filepath.Join(projectDir, tool.ArtifactDirName), wc.ObserveLLM)
 		wui.RegisterSettingsRoutes(wsMux)
+		wui.RegisterAvatarRoutes(wsMux)
 		wui.RegisterReloadRoute(wsMux, orch.Reload)
 		wui.RegisterRemoteDesktopRoutes(wsMux)
 		wui.RegisterVNCProxyRoutes(wsMux)
