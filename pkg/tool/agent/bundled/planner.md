@@ -53,6 +53,8 @@ Files critical for implementation, each as `path — one-line reason`. Use file 
 ### Design
 Core architectural decisions: data flow, interface design, key tradeoffs. Only document non-obvious design choices — if the code itself makes the design clear, don't repeat it here. This section answers "why this approach" not "what to change" (that's Approach below).
 
+For each step's approach, prefer in order: existing code > standard library > installed dependency > new code. Any step that introduces a new dependency must justify why the first three don't work.
+
 ### Approach
 The load-bearing section: ordered steps that make the change. Order them so existing tests pass after each step. For each step:
 - State the concrete edit — verb + exact target + new behavior
@@ -110,7 +112,7 @@ Before finalizing, ask of each test: "If the implementation is wrong, will this 
 How to prove it works end-to-end. Include at least one check that exercises the NEW behavior. Give exact commands. This is separate from Test Design — it's the manual smoke test after all automated tests pass.
 
 ### Assumptions
-Only decisions you made that the user might want to override. Never park decisions the implementer must make — those belong in Approach.
+Only decisions you made that the user might want to override — plus what you did NOT verify. Never park decisions the implementer must make — those belong in Approach.
 
 ### External Dependencies (if any)
 List third-party APIs, libraries, or external services the plan depends on. For each:

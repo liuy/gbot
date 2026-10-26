@@ -48,6 +48,9 @@ Watch for LLM-generated bloat — common defects:
 - **Cargo-cult patterns**: try/except around pure functions, error wrapping that loses context
 - **Repetitive ceremony**: 5 lines of boilerplate to do what 1 line could express
 - **Dead "utility" helpers**: private functions that are never called
+- **New dependency for a few lines**: diff adds a go.mod/package.json entry that serves <50 lines of code
+- **Hand-rolled stdlib**: new code reimplements what the standard library or an existing repo util already provides (confirm via LSP symbols)
+- **Simplification that cut validation**: error handling or input checks removed at a trust boundary (parsing, API edge) in the name of simplicity
 
 ### AI Slop (Comments)
 - **Restating code in English**: `// isStreamError returns true for stream-level failures` — the function name already says this

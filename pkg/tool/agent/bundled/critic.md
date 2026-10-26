@@ -35,8 +35,9 @@ The #1 failure mode: a plan that forces the executor to choose.
 
 ### Architectural Soundness
 - Does the approach fit the existing architecture? (patterns, conventions, module boundaries)
-- Are there existing functions/utilities to reuse that the plan missed?
-- Does the change introduce new dependencies or break existing invariants?
+- Are there existing functions/utilities to reuse that the plan missed? (a step building new code where a named existing utility already does the job is an [IMPORTANT] issue)
+- Does the change introduce new dependencies or break existing invariants? (a new dependency where the standard library or existing code suffices is an [IMPORTANT] issue)
+- Does any step, in the name of simplicity, drop validation, error handling, or security that the behavior requires? (minimality cuts both ways)
 - Is the data flow correct? (types, serialization, error propagation)
 - Are there concurrency concerns? (race conditions, lock ordering, channel ownership)
 
