@@ -438,7 +438,9 @@ export function createInputBar(initial: {
   micBtn.disabled = true
   // The disable slash overlays the glyph (icon spans the whole button).
   const micSlash = createNode('span', {
-    className: 'stt-mic-slash absolute inset-0',
+    // 21px = the glyph's own box (iconSize above); inset-0 would stretch
+    // the line across the whole button and read oversized next to the mic.
+    className: 'stt-mic-slash absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[21px] w-[21px]',
     attrs: { 'aria-hidden': 'true' },
   })
   micSlash.innerHTML =
