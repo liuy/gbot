@@ -57,6 +57,24 @@ describe('default avatar rendering', () => {
     expect(el.dataset.avatarIcon).toBe('12')
     expect(el.querySelector('svg')).toBeTruthy()
   })
+  it('custom image mode strips the default backdrop so transparent PNGs do not bleed the gradient', async () => {
+    const el = agentHolder()
+    // Hostile fixture: the holder carries the default backdrop exactly the
+    // way chat.ts buildShell and settings.ts mount it.
+    el.className += ' avatar-g-bg'
+    el.style.background = 'linear-gradient(to bottom right, #00B4FF, #9D5CFF)'
+    renderAvatarInto(el, 'agent')
+    stubHead(200, '"t-1"')
+    await refreshAvatar('agent')
+    expect(el.querySelector('img')).toBeTruthy()
+    expect(el.classList.contains('avatar-g-bg')).toBe(false)
+    expect(el.style.background).toBe('')
+    // Back to default (probe 404): the backdrop returns with the letter.
+    stubHead(404)
+    await refreshAvatar('agent')
+    expect(el.classList.contains('avatar-g-bg')).toBe(true)
+    expect(el.textContent).toBe('G')
+  })
 })
 
 describe('custom avatar rendering', () => {

@@ -43,6 +43,11 @@ export function renderAvatarInto(holder: HTMLElement, who: AvatarWho, iconSize =
   holder.dataset.avatarIcon = String(iconSize)
   const url = customAvatarURL(who)
   if (url) {
+    // A custom image is opaque-in-its-own-terms (transparent PNGs are
+    // expected): the default gradient backdrop (G letter / user icon) must
+    // go, or it bleeds through every transparent pixel as a blue wash.
+    holder.classList.remove('avatar-g-bg', 'bg-gradient-to-br', 'from-t2', 'to-t3')
+    holder.style.background = ''
     const img = createElement('img', 'h-full w-full object-cover')
     img.alt = ''
     img.src = url
@@ -56,6 +61,7 @@ export function renderAvatarInto(holder: HTMLElement, who: AvatarWho, iconSize =
     holder.replaceChildren(img)
     return
   }
+  restoreDefaultBackdrop(holder, who)
   if (who === 'agent') {
     holder.replaceChildren(createNode('span', { text: 'G' }))
     return
@@ -63,6 +69,13 @@ export function renderAvatarInto(holder: HTMLElement, who: AvatarWho, iconSize =
   // Literal #FFFFFF, not text-white: index.css remaps --color-white to #333
   // in light theme, which would make the icon invisible on the gray gradient.
   holder.replaceChildren(renderIcon('user', { size: iconSize, className: 'text-[#FFFFFF]' }))
+}
+function restoreDefaultBackdrop(holder: HTMLElement, who: AvatarWho): void {
+  if (who === 'agent') {
+    holder.classList.add('avatar-g-bg')
+  } else {
+    holder.classList.add('bg-gradient-to-br', 'from-t2', 'to-t3')
+  }
 }
 
 export function rewriteAvatarHolders(who: AvatarWho): void {
