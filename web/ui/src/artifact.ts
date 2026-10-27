@@ -450,6 +450,10 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     modelHost.replaceChildren()
     resetWalkUi()
     syncWalkToggle(false)
+    // Disarm locally instead of relying on the sheet's overflow clip to
+    // hide the button — the invariant lives with its state, not its style.
+    downloadName = ''
+    downloadBtn.classList.add('hidden')
   }
 
   let dragStartY = 0
@@ -519,19 +523,23 @@ export function createArtifactSheet(): ArtifactSheetHandles {
 
 // Installers, archives and office/document types cannot render in the preview
 // iframe (blank sheet at best, a WebView download at worst), so they open a
+// Shared so the two memberships can never drift: an extension added to one
+// list but not the other silently flips images to the confirm gate or drops
+// their thumbnails.
+const IMAGE_RE = /\.(png|jpe?g|webp|gif|svg)$/i
 // centered confirm instead and go through a top-level anchor hit. glb/gltf
 // stay out — the model-viewer path renders those. Images are in the list for
 // the sheet download button but preview natively, so they keep the frame path
 // (thumbnail and sheet) and the confirm gate excludes them.
 export function isDownloadableArtifact(name: string): boolean {
-  return /\.(apk|zip|gz|tgz|xz|7z|rar|tar|deb|rpm|dmg|exe|iso|jar|csv|xlsx|xls|docx|doc|pptx|ppt|bin|png|jpe?g|webp|gif|svg)$/i.test(name)
+  return /\.(apk|zip|gz|tgz|xz|7z|rar|tar|deb|rpm|dmg|exe|iso|jar|csv|xlsx|xls|docx|doc|pptx|ppt|bin)$/i.test(name) || IMAGE_RE.test(name)
 }
 
 // isImageArtifact reports whether an artifact renders as an image in a frame
 // (card thumbnail and sheet preview) — true even though the name also counts
 // as downloadable for the sheet button.
 export function isImageArtifact(name: string): boolean {
-  return /\.(png|jpe?g|webp|gif|svg)$/i.test(name)
+  return IMAGE_RE.test(name)
 }
 
 export function downloadArtifact(name: string): void {
