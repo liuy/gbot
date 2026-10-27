@@ -11,8 +11,9 @@ import {
   deleteAvatar,
   refreshAvatar,
   renderAvatarInto,
-  setAvatarFromFile,
+  setAvatarFromBlob,
 } from './avatar'
+import { openAvatarCropper } from './avatar_crop'
 import { refuseUpgrade } from './upgrade_mode'
 import { markUpgrading } from './ws'
 
@@ -559,10 +560,12 @@ export function createSettingsPage(): SettingsPageHandles {
     const target = avatarInput.dataset.target as 'agent' | 'user' | undefined
     avatarInput.value = ''
     if (!file || !target) return
-    setAvatarFromFile(target, file).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : 'error'
-      toast(msg === AVATAR_TOO_LARGE ? t('avatarTooLarge') : t('saveFailed')(msg))
-    })
+    void openAvatarCropper(file)
+      .then((blob) => (blob ? setAvatarFromBlob(target, blob) : undefined))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : 'error'
+        toast(msg === AVATAR_TOO_LARGE ? t('avatarTooLarge') : t('saveFailed')(msg))
+      })
   })
   avatarPanel.append(avatarCols, avatarInput)
   avatarRow.row.addEventListener('click', () => {

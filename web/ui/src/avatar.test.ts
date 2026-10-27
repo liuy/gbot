@@ -3,7 +3,7 @@ import {
   AVATAR_TOO_LARGE,
   customAvatarURL,
   deleteAvatar,
-  encodeAvatar,
+  encodeCanvas,
   refreshAvatar,
   renderAvatarInto,
   resetAvatarStateForTest,
@@ -223,80 +223,55 @@ describe('deleteAvatar', () => {
   })
 })
 
-// jsdom has no 2d context: encodeAvatar takes the canvas as a parameter and
-// the tests inject a structurally compatible fake.
-function fakeCanvas(blobSizes: number[]) {
-  const drawImageCalls: unknown[][] = []
+// jsdom has no canvas encoding either — the tests inject a structural fake
+// (width/height/toBlob). encodeCanvas must never touch a 2d context: the
+// cropper's $toCanvas product is already the final 256×256 frame, which is
+// exactly what the no-getContext case pins.
+function fakeEncodeCanvas(blobSizes: Array<number | null>) {
   const toBlobCalls: Array<[string | undefined, number | undefined]> = []
   let next = 0
   const canvas = {
-    width: 0,
-    height: 0,
-    getContext: () => ({
-      drawImage: (...args: unknown[]) => {
-        drawImageCalls.push(args)
-      },
-    }),
+    width: 256,
+    height: 256,
     toBlob: (cb: (b: Blob | null) => void, type?: string, quality?: number) => {
       toBlobCalls.push([type, quality])
       const size = blobSizes[next]
       next++
-      cb(size === undefined ? null : new Blob([new ArrayBuffer(size)], { type: type ?? '' }))
+      cb(size === null ? null : new Blob([new ArrayBuffer(size)], { type: type ?? '' }))
     },
   } as unknown as HTMLCanvasElement
-  return { canvas, drawImageCalls, toBlobCalls }
+  return { canvas, toBlobCalls }
 }
 
-describe('encodeAvatar', () => {
-  // Plain {width,height} fakes: jsdom has no ImageBitmap, and the crop math
-  // only reads the two dimensions.
-  const bmp = (w: number, h: number) => ({ width: w, height: h }) as unknown as ImageBitmap
-
-  it('center-crops a landscape bitmap', async () => {
-    const { canvas, drawImageCalls } = fakeCanvas([1024])
-    const bitmap = bmp(800, 600)
-    await encodeAvatar(bitmap, canvas)
-    expect(drawImageCalls.length).toBe(1)
-    const [src, sx, sy, sw, sh, dx, dy, dw, dh] = drawImageCalls[0] as number[]
-    expect(src).toBe(bitmap)
-    expect([sx, sy, sw, sh]).toEqual([100, 0, 600, 600])
-    expect([dx, dy, dw, dh]).toEqual([0, 0, 256, 256])
-    expect(canvas.width).toBe(256)
-    expect(canvas.height).toBe(256)
-  })
-
-  it('center-crops a portrait bitmap', async () => {
-    const { canvas, drawImageCalls } = fakeCanvas([1024])
-    await encodeAvatar(bmp(600, 800), canvas)
-    const [, sx, sy, sw, sh] = drawImageCalls[0] as number[]
-    expect([sx, sy, sw, sh]).toEqual([0, 100, 600, 600])
-  })
-
-  it('passes a square bitmap through unchanged', async () => {
-    const { canvas, drawImageCalls } = fakeCanvas([1024])
-    await encodeAvatar(bmp(600, 600), canvas)
-    const [, sx, sy, sw, sh] = drawImageCalls[0] as number[]
-    expect([sx, sy, sw, sh]).toEqual([0, 0, 600, 600])
-  })
-
-  it('returns the PNG when it is under the size cap', async () => {
-    const { canvas, toBlobCalls } = fakeCanvas([50 * 1024])
-    const blob = await encodeAvatar(bmp(600, 600), canvas)
+describe('encodeCanvas', () => {
+  it('returns the PNG when it is under the cap, encoding exactly once', async () => {
+    const { canvas, toBlobCalls } = fakeEncodeCanvas([50 * 1024])
+    const blob = await encodeCanvas(canvas)
     expect(blob.type).toBe('image/png')
-    expect(toBlobCalls.length).toBe(1)
-    expect(toBlobCalls[0][0]).toBe('image/png')
+    expect(toBlobCalls).toEqual([['image/png', undefined]])
   })
 
-  it('falls back to JPEG q0.9 when the PNG is too large', async () => {
-    const { canvas, toBlobCalls } = fakeCanvas([400 * 1024, 10 * 1024])
-    const blob = await encodeAvatar(bmp(600, 600), canvas)
+  it('falls back to JPEG q0.9 when the PNG exceeds the cap', async () => {
+    const { canvas, toBlobCalls } = fakeEncodeCanvas([400 * 1024, 10 * 1024])
+    const blob = await encodeCanvas(canvas)
     expect(blob.type).toBe('image/jpeg')
     expect(toBlobCalls.length).toBe(2)
     expect(toBlobCalls[1]).toEqual(['image/jpeg', 0.9])
   })
 
   it('rejects with the sentinel when both encodings exceed the cap', async () => {
-    const { canvas } = fakeCanvas([400 * 1024, 400 * 1024])
-    await expect(encodeAvatar(bmp(600, 600), canvas)).rejects.toThrow(AVATAR_TOO_LARGE)
+    const { canvas } = fakeEncodeCanvas([400 * 1024, 400 * 1024])
+    await expect(encodeCanvas(canvas)).rejects.toThrow(AVATAR_TOO_LARGE)
+  })
+
+  it('rejects with the sentinel when toBlob yields null twice', async () => {
+    const { canvas } = fakeEncodeCanvas([null, null])
+    await expect(encodeCanvas(canvas)).rejects.toThrow(AVATAR_TOO_LARGE)
+  })
+
+  it('resolves on a fake with no getContext at all', async () => {
+    const { canvas } = fakeEncodeCanvas([8 * 1024])
+    expect('getContext' in canvas).toBe(false)
+    await expect(encodeCanvas(canvas)).resolves.toMatchObject({ type: 'image/png' })
   })
 })

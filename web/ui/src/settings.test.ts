@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { setLocale, initLocale, localeOptions, t } from './i18n'
 import { pushDebugLog } from './log'
-import { refreshAvatar, resetAvatarStateForTest } from './avatar'
+import { AVATAR_TOO_LARGE, refreshAvatar, resetAvatarStateForTest } from './avatar'
+import { openAvatarCropper } from './avatar_crop'
 import type { RemoteDevice } from './vnc'
 import {
   fetchSettings,
@@ -23,6 +24,11 @@ vi.mock('./upgrade_mode', () => ({
 }))
 vi.mock('./ws', () => ({
   markUpgrading: vi.fn(),
+}))
+// The cropper overlay is jsdom-hostile (real cropperjs elements, pointer
+// gestures) — the wiring tests only need to control its Blob|null outcome.
+vi.mock('./avatar_crop', () => ({
+  openAvatarCropper: vi.fn(),
 }))
 
 // Two providers with the default on the SECOND one — discriminates name-match
@@ -2620,45 +2626,84 @@ describe('avatar row', () => {
     expect(svg?.getAttribute('width')).toBe('32')
   })
 
-  it('upload flow: change event drives PUT then probe and swaps holders to img', async () => {
+  it('upload flow: change opens the cropper, confirm PUTs the blob then probe swaps holders', async () => {
     const opts: Parameters<typeof makeFetchHandler>[0] = { payload: PAYLOAD, avatarHead: 200 }
     const mock = makeFetchHandler(opts)
     const page = await openPage(mock)
-    // jsdom has neither bitmap decoding nor canvas encoding — stub both so
-    // encodeAvatar runs its real path with fake pixels.
-    const fakeBitmap = { width: 8, height: 8, close: vi.fn() }
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap))
-    const toBlob = vi.fn((cb: (b: Blob | null) => void) =>
-      cb(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })))
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(toBlob as never)
-    // jsdom's getContext returns null (no canvas backend) which the encoder
-    // guards on — feed it a fake 2d context so drawImage runs.
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(
-      { drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
-    try {
-      const input = page.root.querySelector(
-        '[data-avatar-panel] input[type="file"]') as HTMLInputElement
-      input.dataset.target = 'user'
-      const file = new File([new Uint8Array([9, 9])], 'me.png', { type: 'image/png' })
-      Object.defineProperty(input, 'files', { value: [file], configurable: true })
-      input.dispatchEvent(new Event('change'))
-      await vi.waitFor(() => {
-        const put = mock.mock.calls.find(([u, init]) =>
-          u === '/api/avatar/user' && init?.method === 'PUT')
-        expect(put).toBeTruthy()
-        expect((put![1]?.body as Blob).type).toBe('image/png')
-      })
-      // PUT succeeded → the follow-up probe (HEAD 200) repainted the holders.
-      await vi.waitFor(() => {
-        const minis = Array.from(page.root.querySelectorAll('[data-avatar="user"]'))
-        for (const el of minis) expect(el.querySelector('img')).toBeTruthy()
-      })
-      // value reset so picking the same file twice re-fires change.
-      expect(input.value).toBe('')
-    } finally {
-      vi.unstubAllGlobals()
-      vi.restoreAllMocks()
-    }
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+    // Module mock call history leaks across tests in this file — reset it.
+    vi.mocked(openAvatarCropper).mockReset().mockResolvedValue(blob)
+    // The old direct-decode chain must be gone: no bitmap decode anywhere.
+    const createImageBitmap = vi.fn()
+    vi.stubGlobal('createImageBitmap', createImageBitmap)
+
+    const input = page.root.querySelector(
+      '[data-avatar-panel] input[type="file"]') as HTMLInputElement
+    input.dataset.target = 'user'
+    const file = new File([new Uint8Array([9, 9])], 'me.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => {
+      const put = mock.mock.calls.find(([u, init]) =>
+        u === '/api/avatar/user' && init?.method === 'PUT')
+      expect(put).toBeTruthy()
+      expect(put![1]?.body).toBe(blob)
+      expect((put![1]?.headers as Record<string, string>)['Content-Type']).toBe('image/png')
+    })
+    // PUT succeeded → the follow-up probe (HEAD 200) repainted the holders.
+    await vi.waitFor(() => {
+      const minis = Array.from(page.root.querySelectorAll('[data-avatar="user"]'))
+      for (const el of minis) expect(el.querySelector('img')).toBeTruthy()
+    })
+    expect(openAvatarCropper).toHaveBeenCalledTimes(1)
+    expect(openAvatarCropper).toHaveBeenCalledWith(file)
+    expect(input.value).toBe('')
+    expect(createImageBitmap).not.toHaveBeenCalled()
+  })
+
+  it('upload canceled in the cropper: no PUT ever leaves the page', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, avatarHead: 200 })
+    const page = await openPage(mock)
+    vi.mocked(openAvatarCropper).mockReset().mockResolvedValue(null)
+
+    const input = page.root.querySelector(
+      '[data-avatar-panel] input[type="file"]') as HTMLInputElement
+    input.dataset.target = 'user'
+    Object.defineProperty(input, 'files', {
+      value: [new File([new Uint8Array([9, 9])], 'me.png', { type: 'image/png' })],
+      configurable: true,
+    })
+    input.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(openAvatarCropper).toHaveBeenCalledTimes(1))
+    await flushMicrotasks()
+    expect(mock.mock.calls.some(([u, init]) =>
+      u.startsWith('/api/avatar/') && init?.method === 'PUT')).toBe(false)
+  })
+
+  it('upload whose encoding exceeds the cap toasts avatarTooLarge and keeps holders', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, avatarHead: 200 })
+    const page = await openPage(mock)
+    await refreshAvatar('user')
+    vi.mocked(openAvatarCropper).mockReset().mockRejectedValue(new Error(AVATAR_TOO_LARGE))
+
+    const input = page.root.querySelector(
+      '[data-avatar-panel] input[type="file"]') as HTMLInputElement
+    input.dataset.target = 'user'
+    Object.defineProperty(input, 'files', {
+      value: [new File([new Uint8Array([9, 9])], 'me.png', { type: 'image/png' })],
+      configurable: true,
+    })
+    input.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => {
+      const toastEl = page.root.querySelector('[data-toast]') as HTMLElement
+      expect(toastEl.classList.contains('toast-show')).toBe(true)
+      expect(toastEl.textContent).toContain('Image too large after cropping')
+    })
+    expect(mock.mock.calls.some(([u, init]) =>
+      u.startsWith('/api/avatar/') && init?.method === 'PUT')).toBe(false)
+    // Failed upload keeps the custom rendering — no silent fallback.
+    const minis = Array.from(page.root.querySelectorAll('[data-avatar="user"]'))
+    for (const el of minis) expect(el.querySelector('img')).toBeTruthy()
   })
   it('big avatar click routes the hidden file input at that who', async () => {
     const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))

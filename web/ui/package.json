@@ -19,6 +19,7 @@
     "@monogrid/gainmap-js": "3.4.0",
     "@novnc/novnc": "1.7.0",
     "@vscode/markdown-it-katex": "^1.1.2",
+    "cropperjs": "2.3.1",
     "dompurify": "^3.4.11",
     "fuzzysearch": "^1.0.3",
     "highlight.js": "^11.10.0",

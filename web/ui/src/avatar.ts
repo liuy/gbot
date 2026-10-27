@@ -128,7 +128,7 @@ export async function deleteAvatar(who: AvatarWho): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
-const AVATAR_SIDE = 256
+export const AVATAR_SIDE = 256
 // 256×256 PNG is typically tens of KB; photographic PNGs can exceed 300KB,
 // which the JPEG q0.9 fallback handles — only both failing is an error.
 const AVATAR_MAX_BYTES = 300 * 1024
@@ -137,21 +137,10 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality))
 }
 
-// Center-crops the bitmap to a square and encodes 256×256, PNG first with a
-// JPEG fallback. The canvas is a parameter, not created here: jsdom has no 2d
-// context, so tests inject a structurally compatible fake.
-export async function encodeAvatar(
-  bitmap: ImageBitmap,
-  canvas: HTMLCanvasElement,
-): Promise<Blob> {
-  canvas.width = AVATAR_SIDE
-  canvas.height = AVATAR_SIDE
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('canvas 2d context unavailable')
-  const side = Math.min(bitmap.width, bitmap.height)
-  const sx = (bitmap.width - side) / 2
-  const sy = (bitmap.height - side) / 2
-  ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, AVATAR_SIDE, AVATAR_SIDE)
+// jsdom safety: no getContext/drawImage here — the cropper's $toCanvas
+// product is already the 256×256 final frame, so this only owns the
+// encoding fallback chain.
+export async function encodeCanvas(canvas: HTMLCanvasElement): Promise<Blob> {
   const png = await canvasToBlob(canvas, 'image/png')
   if (png && png.size <= AVATAR_MAX_BYTES) return png
   const jpg = await canvasToBlob(canvas, 'image/jpeg', 0.9)
@@ -159,14 +148,8 @@ export async function encodeAvatar(
   throw new Error(AVATAR_TOO_LARGE)
 }
 
-export async function setAvatarFromFile(who: AvatarWho, file: File): Promise<void> {
-  const bitmap = await createImageBitmap(file)
-  try {
-    const blob = await encodeAvatar(bitmap, document.createElement('canvas'))
-    await uploadAvatar(who, blob)
-  } finally {
-    bitmap.close()
-  }
+export async function setAvatarFromBlob(who: AvatarWho, blob: Blob): Promise<void> {
+  await uploadAvatar(who, blob)
   // Serialize behind the upload so the probe never races a stale 404.
   await refreshAvatar(who)
 }

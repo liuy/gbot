@@ -32,6 +32,7 @@ export type IconName =
   | 'settings'
   | 'door-exit'
   | 'trash'
+  | 'rotate-cw'
   | 'mic'
 
 export type IconVariant = 'outline' | 'solid' | 'mixed'
@@ -205,6 +206,11 @@ const ICONS: Record<IconName, IconDef> = {
   },
   trash: {
     path: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  'rotate-cw': {
+    path: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
