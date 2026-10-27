@@ -57,7 +57,7 @@ import { createTaskPanel } from './task_panel'
 import type { JobsStoreHandle } from './jobs_store'
 import { createAsk } from './ask'
 import { createFloatButton } from './buttons'
-import { collectArtifactWrites, confirmArtifactDownload, createArtifactCard, createArtifactSheet, downloadArtifact, fetchArtifactList, isDownloadableArtifact } from './artifact'
+import { collectArtifactWrites, confirmArtifactDownload, createArtifactCard, createArtifactSheet, downloadArtifact, fetchArtifactList, isDownloadableArtifact, isImageArtifact } from './artifact'
 import { fetchRemoteDevices } from './vnc'
 import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
@@ -830,9 +830,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   // One gate for both entry points (message cards and sidebar rows): a
   // download-type name needs an explicit yes before the anchor click,
-  // everything else previews in the sheet.
+  // everything else previews in the sheet. Images are downloadable but
+  // preview natively — the sheet's download button is their affordance, so
+  // they bypass the confirm.
   const openArtifact = async (name: string) => {
-    if (isDownloadableArtifact(name)) {
+    if (isDownloadableArtifact(name) && !isImageArtifact(name)) {
       if (await confirmArtifactDownload(name)) downloadArtifact(name)
       return
     }

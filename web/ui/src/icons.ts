@@ -31,6 +31,7 @@ export type IconName =
   | 'search'
   | 'settings'
   | 'door-exit'
+  | 'download'
   | 'trash'
   | 'rotate-cw'
   | 'mic'
@@ -122,6 +123,11 @@ const ICONS: Record<IconName, IconDef> = {
     // Walk-mode exit: a door frame with an arrow leaving it — "back out of
     // the space you are in", chosen over an X (reads as "close the viewer").
     path: '<path d="M15 4h3.5a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 18.5 20H15"/><path d="M10 8.5 6.5 12l3.5 3.5M6.5 12h9"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  download: {
+    path: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
   },

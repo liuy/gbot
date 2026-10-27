@@ -271,6 +271,14 @@ describe('createArtifactCard', () => {
     clickable.click()
     expect(opened).toEqual(['app.apk'])
   })
+
+  it('image card keeps the iframe thumbnail (browsers render images natively)', () => {
+    stubFetchWithLength('20480')
+    const card = createArtifactCard({ name: 'pic.png', updated: false }, () => {})
+    const iframe = card.querySelector('.card-preview iframe') as HTMLIFrameElement | null
+    expect(iframe).not.toBeNull()
+    expect(iframe!.getAttribute('src')).toBe('/artifacts/pic.png')
+  })
 })
 
 // jsdom's default innerHeight is not pinned by any in-repo test — stub it so
@@ -367,6 +375,50 @@ describe('createArtifactSheet', () => {
     expect(frame.style.display).toBe('')
     expect((sheet.root.querySelector('.gltf-host') as HTMLElement).style.display).toBe('none')
     expect(__record.loads).toEqual([])
+  })
+
+  it('download button starts hidden and is labeled', () => {
+    stubViewportHeight(768)
+    const { sheet } = makeSheet()
+    const btn = sheet.root.querySelector('.sheet-download') as HTMLElement
+    expect(btn).not.toBeNull()
+    expect(btn.classList.contains('hidden')).toBe(true)
+    expect(btn.getAttribute('aria-label')).toBe(t('artifactDownload'))
+  })
+
+  it('image open shows the download button; html and glTF opens hide it', () => {
+    stubViewportHeight(768)
+    const { sheet } = makeSheet()
+    const btn = () => sheet.root.querySelector('.sheet-download') as HTMLElement
+    sheet.open('pic.png')
+    expect(btn().classList.contains('hidden')).toBe(false)
+    sheet.open('game.html')
+    expect(btn().classList.contains('hidden')).toBe(true)
+    sheet.open('model.glb')
+    expect(btn().classList.contains('hidden')).toBe(true)
+  })
+
+  it('download button click downloads the open image, not a stale one', () => {
+    stubViewportHeight(768)
+    const clicked: HTMLAnchorElement[] = []
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this)
+      })
+    try {
+      const { sheet } = makeSheet()
+      sheet.open('sub/pic.png')
+      ;(sheet.root.querySelector('.sheet-download') as HTMLElement).click()
+      // A later html open retires the button — clicking again downloads nothing.
+      sheet.open('game.html')
+      ;(sheet.root.querySelector('.sheet-download') as HTMLElement).click()
+    } finally {
+      clickSpy.mockRestore()
+    }
+    expect(clicked).toHaveLength(1)
+    expect(clicked[0].getAttribute('href')).toBe('/artifacts/sub/pic.png')
+    expect(clicked[0].getAttribute('download')).toBe('sub/pic.png')
   })
 
   it('glTF → HTML switch tears the model-viewer down and restores the iframe', async () => {
@@ -903,6 +955,13 @@ describe('isDownloadableArtifact', () => {
     ['pack.rar', true],
     ['lib.jar', true],
     ['disk.iso', true],
+    ['pic.png', true],
+    ['photo.jpg', true],
+    ['photo.jpeg', true],
+    ['shot.webp', true],
+    ['anim.gif', true],
+    ['icon.svg', true],
+    ['PIC.PNG', true],
     ['model.glb', false],
     ['model.gltf', false],
     ['notes.txt', false],

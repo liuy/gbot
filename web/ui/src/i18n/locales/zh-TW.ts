@@ -216,6 +216,7 @@ export const dict: Dict = {
   shareImageFailed: '產生圖片失敗',
   shareDlOk: '下載',
   shareDlCancel: '取消',
+  artifactDownload: '下載',
   expandEarlier: (n: number) => `⋯ 展開更早 (${n})`,
 }
 

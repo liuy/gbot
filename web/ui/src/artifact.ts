@@ -101,8 +101,9 @@ export function createArtifactCard(
   // No thumbnail for download-type artifacts: the iframe would navigate to the
   // file itself, and the App's WebView DownloadListener turns that navigation
   // into a real download the moment the card scrolls into view — bypassing the
-  // confirm card entirely.
-  if (!isDownloadableArtifact(write.name)) {
+  // confirm card entirely. Images are the exception: browsers render them in
+  // the frame, so the navigation never becomes a download.
+  if (!isDownloadableArtifact(write.name) || isImageArtifact(write.name)) {
     const frame = createElement('iframe')
     frame.src = artifactURL(write.name)
     frame.setAttribute('loading', 'lazy')
@@ -188,7 +189,22 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   walkToggle.type = 'button'
   const walkSpinner = createElement('div', 'walk-loading')
   const walkHint = createElement('div', 'walk-hint')
-  sheetUi.append(walkToggle, walkSpinner, walkHint)
+  // Downloadable-but-previewable artifacts (images): the sheet's only
+  // download affordance. glTF never shows it — the model viewer owns that
+  // surface — so the name rides a dedicated variable set at open() instead
+  // of currentName, keeping a collapsed-then-reopened sheet from firing on
+  // a stale frame target.
+  const downloadBtn = createElement('button', 'sheet-download')
+  downloadBtn.type = 'button'
+  downloadBtn.classList.add('hidden')
+  downloadBtn.setAttribute('aria-label', t('artifactDownload'))
+  downloadBtn.replaceChildren(renderIcon('download', { size: 16 }))
+  let downloadName = ''
+  downloadBtn.addEventListener('click', () => {
+    if (downloadName === '') return
+    downloadArtifact(downloadName)
+  })
+  sheetUi.append(walkToggle, walkSpinner, walkHint, downloadBtn)
   root.append(frame, modelHost, sheetUi, handle)
 
   // Entry: text CTA naming the mode. Inside: exit icon only (label kept for
@@ -399,6 +415,8 @@ export function createArtifactSheet(): ArtifactSheetHandles {
       // reset is explicit — the sheetUi overlay survives the remount.
       resetWalkUi()
       syncWalkToggle(true)
+      downloadName = ''
+      downloadBtn.classList.add('hidden')
       loadModelViewer()
         .then(() => {
           // Close clears currentName; a collapse (close) during the
@@ -413,6 +431,8 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     } else {
       resetWalkUi()
       syncWalkToggle(false)
+      downloadName = isDownloadableArtifact(name) ? name : ''
+      downloadBtn.classList.toggle('hidden', downloadName === '')
       // A non-glTF open retires any mounted model-viewer element.
       modelHost.replaceChildren()
       showFrame(true)
@@ -500,9 +520,18 @@ export function createArtifactSheet(): ArtifactSheetHandles {
 // Installers, archives and office/document types cannot render in the preview
 // iframe (blank sheet at best, a WebView download at worst), so they open a
 // centered confirm instead and go through a top-level anchor hit. glb/gltf
-// stay out — the model-viewer path renders those.
+// stay out — the model-viewer path renders those. Images are in the list for
+// the sheet download button but preview natively, so they keep the frame path
+// (thumbnail and sheet) and the confirm gate excludes them.
 export function isDownloadableArtifact(name: string): boolean {
-  return /\.(apk|zip|gz|tgz|xz|7z|rar|tar|deb|rpm|dmg|exe|iso|jar|csv|xlsx|xls|docx|doc|pptx|ppt|bin)$/i.test(name)
+  return /\.(apk|zip|gz|tgz|xz|7z|rar|tar|deb|rpm|dmg|exe|iso|jar|csv|xlsx|xls|docx|doc|pptx|ppt|bin|png|jpe?g|webp|gif|svg)$/i.test(name)
+}
+
+// isImageArtifact reports whether an artifact renders as an image in a frame
+// (card thumbnail and sheet preview) — true even though the name also counts
+// as downloadable for the sheet button.
+export function isImageArtifact(name: string): boolean {
+  return /\.(png|jpe?g|webp|gif|svg)$/i.test(name)
 }
 
 export function downloadArtifact(name: string): void {

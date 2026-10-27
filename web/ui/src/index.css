@@ -497,6 +497,24 @@ body {
 model-viewer { --progress-bar-color: var(--color-blue); }
 
 .sheet-ui > * { pointer-events: auto; }
+/* Image-sheet download: 36px round glass button in the top-right stack.
+   The .hidden guard must outrank the base display:flex — unlayered CSS
+   beats Tailwind's layered utilities, so the class pair alone is not enough. */
+.sheet-download {
+  width: 36px; height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255,255,255,.10);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.sheet-download.hidden { display: none; }
+.sheet-download svg { display: block; }
 /* Modern glass look; stays in the top-right stack — the stack position was
    never the problem, the near-black fill was. */
 .walk-toggle {

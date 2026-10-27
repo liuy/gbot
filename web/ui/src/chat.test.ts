@@ -3649,6 +3649,22 @@ describe('artifact integration', () => {
       '/artifacts/game.html',
     )
   })
+  it('an image card opens the sheet with its download button, not the confirm', () => {
+    stubFetchLength('20480')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('draw a cat')
+    pressEnter()
+    runWriteQuery('Write', 'w-png', { path: '/home/u/.gbot/projects/abc/artifacts/pic.png' })
+    expect(artifactCards()).toHaveLength(1)
+    // The thumbnail stays — images render in the frame.
+    expect(artifactCards()[0].querySelector('.card-preview iframe')).not.toBeNull()
+    artifactCards()[0].click()
+    expect(document.querySelectorAll('.share-dl')).toHaveLength(0)
+    expect((document.querySelector('.artifact-sheet') as HTMLElement).style.height).toBe('70%')
+    const btn = document.querySelector('.sheet-download') as HTMLElement
+    expect(btn.classList.contains('hidden')).toBe(false)
+  })
   it('query_end does not reload the open sheet', () => {
     stubFetchLength('14541')
     mount()

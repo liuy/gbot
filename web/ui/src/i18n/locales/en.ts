@@ -241,6 +241,7 @@ export const dict = {
   shareImageFailed: 'Failed to create image',
   shareDlOk: 'Download',
   shareDlCancel: 'Cancel',
+  artifactDownload: 'Download',
   expandEarlier: (n: number) => `⋯ expand earlier (${n})`,
 } as const
 
