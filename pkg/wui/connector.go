@@ -264,7 +264,10 @@ func (a *engineAdapter) JobSummaries() []*job.JobInfo {
 // queryStats accumulates per-query stats (usage + start time + tool count +
 // thinking duration) for connect_status. All fields are atomic because they
 // are written by onEngineEvent (hub goroutine) and read by switchEngine/
-// sendMetadata (readLoop goroutine) without a lock. Reset on EventQueryEnd.
+// sendMetadata (readLoop goroutine) without a lock. Reset on any
+// runTurns-exit EventQueryEnd (mainline query or attachment drain); startMs
+// is anchored by EventQueryStart or the first top-level EventTurnStart of
+// the run (drains emit no query_start).
 type queryStats struct {
 	inputTokens              atomic.Int64
 	outputTokens             atomic.Int64
@@ -1063,6 +1066,15 @@ func accumulateStats(qs *queryStats, event hub.Event) {
 		qs.cacheCreationInputTokens.Add(int64(event.Usage.CacheCreationInputTokens))
 	}
 	if event.Type == types.EventQueryStart && event.Agent == nil {
+		qs.startMs.Store(time.Now().UnixMilli())
+	}
+	// Drain-entered runs (processAttachments→runTurns) emit no EventQueryStart;
+	// the first top-level turn_start is their only start marker. Anchor once
+	// per stats epoch: query_start wins when both fire (mainline queries),
+	// later turn_starts never re-anchor, and the next runTurns-exit query_end
+	// resets — so the epoch spans exactly one run, matching how toolCount and
+	// usage reset on the same event.
+	if event.Type == types.EventTurnStart && event.Agent == nil && qs.startMs.Load() == 0 {
 		qs.startMs.Store(time.Now().UnixMilli())
 	}
 	if event.Type == types.EventToolStart && event.ToolUse != nil &&
@@ -2946,10 +2958,8 @@ func formatQuota(info *quota.Info) string {
 // subsequent history frame. engineID and engineName are included so the
 // frontend can track which engine is active during a switch.
 // Stats (usage/toolCount/thinkingMs/queryStartMs) are NOT included here —
-// they are sent as a separate "stats" frame AFTER replay to avoid
-// double-counting (connect_status arrives before replay, so including stats
-// here would cause the client to restore them and then re-accumulate the
-// same deltas from replayed events).
+// since v2 they ride in the metadata frame's stats field; the separate
+// "stats" frame AFTER replay described in v1 no longer exists.
 func (c *WUIConnector) buildConnectStatus(slot *engineSlot) []byte {
 	eng := slot.engine
 	engineName := c.engineNameForSlot(slot)

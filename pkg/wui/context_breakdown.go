@@ -264,6 +264,14 @@ func (c *WUIConnector) handleCompactRequest() {
 	if eng == nil {
 		return
 	}
+	// ManualCompact emits top-level query_start/query_end (engine.go). Fired
+	// while a query is in flight it resets the live stats epoch and rebuilds
+	// the "" stream region under the running query — same guard as session
+	// ops, which already reject on busy.
+	if eng.IsBusy() {
+		c.sendWS(buildError(errBusySessionOp))
+		return
+	}
 	userMsg := types.NewUserMessage([]types.ContentBlock{types.NewTextBlock("/compact")})
 	if _, err := eng.ManualCompact(context.Background(), userMsg, ""); err != nil {
 		slog.Warn("wui: manual compact failed", "error", err)

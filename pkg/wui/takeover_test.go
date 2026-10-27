@@ -921,6 +921,52 @@ func TestTakeover_AutoTurnDrainEchoedInSnapshot(t *testing.T) {
 	}
 }
 
+// TestTakeover_DrainRunWithInlineSubagentCarriesQueryStartMs 复现实拍场景：
+// 马拉松由排水进入（turn_start，无 query_start），内联子代理事件流穿插其中。
+// 接管后 metadata.stats.queryStartMs 必须锚定在排水首 turn_start；带标签的
+// 子代理 query_start/query_end 既不重锚也不清零。
+func TestTakeover_DrainRunWithInlineSubagentCarriesQueryStartMs(t *testing.T) {
+	c := newTestConnector(t)
+	ws1 := dialAndStore(t, c)
+	t.Cleanup(func() { _ = ws1.Close() })
+	c.mock().SetQueryStartMsgIdxFn(func() int { return 3 }) // busy=true
+	// 排水形状：turn_start 直接开场，无 query_start。
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"}})
+	agent := &types.AgentMeta{ParentToolUseID: "tu-agent-1", AgentType: "General"}
+	// 内联子代理全程带标签：turn/tool/甚至 query_start + query_end。
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, Agent: agent,
+		ToolUse: &types.ToolUseEvent{ID: "s1", Name: "Grep"}})
+	c.Handle(types.QueryEvent{Type: types.EventToolEnd, Agent: agent,
+		ToolResult: &types.ToolResultEvent{ToolUseID: "s1"}})
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Agent: agent})
+	c.Handle(types.QueryEvent{Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "t2", Name: "Read"}})
+
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+	var stats struct {
+		QueryStartMs int64 `json:"queryStartMs"`
+		ToolCount    int   `json:"toolCount"`
+	}
+	if err := json.Unmarshal(meta.Stats, &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v\nraw: %s", err, meta.Stats)
+	}
+	if stats.ToolCount != 3 {
+		t.Errorf("stats.toolCount = %d, want 3 (t1+s1+t2; job-less sub tools count, tagged query_* don't)", stats.ToolCount)
+	}
+	if stats.QueryStartMs == 0 {
+		t.Fatal("queryStartMs = 0, want non-zero — a drain-entered run (turn_start, no query_start) must anchor at its first top-level turn_start; tagged sub query_start/query_end must neither anchor nor reset")
+	}
+}
+
 // TestTakeover_SnapshotQueryEndAttachmentPath verifies the idle-region half
 // of the two-region contract when a queued attachment is drained AFTER
 // query_end (processAttachments path — the auto-turn emits attachment events

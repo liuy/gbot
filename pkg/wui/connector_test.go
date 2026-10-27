@@ -1879,6 +1879,57 @@ func TestMutA1_AccumulateStatsThinkingEnd(t *testing.T) {
 	}
 }
 
+// TestAccumulateStats_TurnStartAnchorsEpoch pins the turn_start anchoring
+// matrix for drain-entered runs (processAttachments→runTurns emits no
+// query_start, so the run's first top-level turn_start is its only start
+// marker): anchor once per stats epoch, query_start wins when both fire,
+// and tagged sub-agent events never touch startMs.
+func TestAccumulateStats_TurnStartAnchorsEpoch(t *testing.T) {
+	inBubble(t, func(t *testing.T) {
+		// Empty stats + top-level turn_start anchors at the captured reading.
+		before := time.Now().UnixMilli()
+		qsFresh := &queryStats{}
+		accumulateStats(qsFresh, types.QueryEvent{Type: types.EventTurnStart})
+		if got := qsFresh.startMs.Load(); got != before {
+			t.Errorf("drain turn_start: startMs = %d, want the captured reading %d", got, before)
+		}
+
+		// A later top-level turn_start must not re-anchor — the preset 13
+		// vs any bubble-now equality is what kills an unconditional Store.
+		qsRe := &queryStats{}
+		qsRe.startMs.Store(13)
+		accumulateStats(qsRe, types.QueryEvent{Type: types.EventTurnStart})
+		if got, want := qsRe.startMs.Load(), int64(13); got != want {
+			t.Errorf("second turn_start: startMs = %d, want %d", got, want)
+		}
+
+		// Tagged sub-agent turn_start must not anchor.
+		qsAgent := &queryStats{}
+		accumulateStats(qsAgent, types.QueryEvent{Type: types.EventTurnStart, Agent: &types.AgentMeta{ParentToolUseID: "p"}})
+		if got, want := qsAgent.startMs.Load(), int64(0); got != want {
+			t.Errorf("tagged turn_start: startMs = %d, want %d", got, want)
+		}
+
+		// query_start already anchored (mainline query): the turn that
+		// follows keeps the query_start value — no re-anchor.
+		beforeQs := time.Now().UnixMilli()
+		qsMain := &queryStats{}
+		accumulateStats(qsMain, types.QueryEvent{Type: types.EventQueryStart})
+		accumulateStats(qsMain, types.QueryEvent{Type: types.EventTurnStart})
+		if got := qsMain.startMs.Load(); got != beforeQs {
+			t.Errorf("query_start then turn_start: startMs = %d, want the query_start value %d", got, beforeQs)
+		}
+
+		// Tagged sub-agent query_start must not overwrite a preset epoch.
+		qsSub := &queryStats{}
+		qsSub.startMs.Store(13)
+		accumulateStats(qsSub, types.QueryEvent{Type: types.EventQueryStart, Agent: &types.AgentMeta{ParentToolUseID: "p"}})
+		if got, want := qsSub.startMs.Load(), int64(13); got != want {
+			t.Errorf("tagged query_start: startMs = %d, want %d", got, want)
+		}
+	})
+}
+
 // ---- findBlock / targetList ----
 
 func TestMutA1_FindBlock(t *testing.T) {

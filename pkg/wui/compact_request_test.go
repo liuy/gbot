@@ -193,3 +193,60 @@ func TestCompactRequest_Lifecycle_ErrorPath_SingleErrorFrame(t *testing.T) {
 		t.Errorf("error frame count = %d, want exactly 1 (from EventQueryEnd, not from handleCompactRequest)", errorCount)
 	}
 }
+
+func TestCompactRequest_BusyEngineRejected(t *testing.T) {
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+
+	c.mock().isBusyFn = func() bool { return true }
+	c.mock().manualCompactFn = func(_ context.Context, _ types.Message, _ string) (*short.CompactResult, error) {
+		return &short.CompactResult{BeforeTokens: 10000, AfterTokens: 2000}, nil
+	}
+
+	sendJSON(t, ws, map[string]string{"type": "compact_request"})
+
+	// Single read with inverted timeout, shape of compact_request_test.go:84-97.
+	// dialAndStore already drained the connect frames (helpers_test.go:647 →
+	// drainInitialFrames), so the guard's error frame is the FIRST frame on
+	// this conn — no loop needed; timeout, read error, or a non-error frame
+	// all mean the busy guard is missing. ManualCompact must never run: its
+	// top-level query_start/query_end would reset the live stats epoch and
+	// rebuild the "" stream region mid-query.
+	type wsFrame struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan wsFrame, 1)
+	go func() {
+		_, data, err := ws.ReadMessage()
+		ch <- wsFrame{data: data, err: err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("ws closed while waiting for busy error frame: %v", r.err)
+		}
+		var head struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(r.data, &head) != nil || head.Type != "error" {
+			t.Fatalf("frame = %q, want {type:\"error\"}", r.data)
+		}
+		if !strings.Contains(head.Message, "busy") {
+			t.Fatalf("error message = %q, want substring \"busy\"", head.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no {type:\"error\"} frame containing \"busy\" within 2s — busy guard missing")
+	}
+
+	// The guard checks IsBusy before sendWS and returns without reaching
+	// ManualCompact, so once the busy frame is observed the call count is
+	// final — no waitFor needed.
+	c.mock().mu.RLock()
+	defer c.mock().mu.RUnlock()
+	if n := c.mock().manualCompactCalls; n != 0 {
+		t.Errorf("manualCompactCalls = %d, want 0 — compact on a busy engine must be rejected before reaching the engine", n)
+	}
+}

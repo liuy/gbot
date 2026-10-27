@@ -3375,6 +3375,85 @@ describe('chat integration', () => {
   })
 })
 
+// formatDuration renders "0.2s" | "45s" | "5m 0s" | "1h 2m 3s"; parse any of
+// those back to plain seconds so anchoring assertions can use second bounds.
+function parseDurationSeconds(text: string): number {
+  const m = /^(?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s$/.exec(text.trim())
+  if (!m) return NaN
+  return (m[1] ? +m[1] * 3600 : 0) + (m[2] ? +m[2] * 60 : 0) + parseFloat(m[3])
+}
+
+describe('takeover elapsed anchoring', () => {
+  it('takeover: metadata stats.queryStartMs anchors elapsed across the busy page round trip', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      busy: true,
+      stats: { queryStartMs: Date.now() - 300000, usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'working' }],
+      nextCursor: '',
+      hasMore: false,
+      busy: true,
+    })
+    vi.advanceTimersByTime(300)
+    const sep = document.querySelector('.sep-elapsed')
+    expect(sep).not.toBeNull()
+    const elapsedText = sep!.nextElementSibling?.textContent ?? ''
+    const seconds = parseDurationSeconds(elapsedText)
+    // 300s of server-anchored age at the 200ms tick. A Date.now() fallback
+    // (2513 skipped) reads ~0.2s — below the lower bound; a direction/scale
+    // mutation overshoots the upper bound.
+    expect(seconds).toBeGreaterThanOrEqual(299)
+    expect(seconds).toBeLessThan(302)
+    stopStatusSweep()
+    vi.useRealTimers()
+  })
+
+  it('takeover: hydrated thinking block ticks from the server startedAt, not (0s)', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      busy: true,
+      stats: { queryStartMs: Date.now() - 300000, usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'thinking', id: '', text: '', durationNs: 0, active: true, startedAt: Date.now() - 120000 }],
+      nextCursor: '',
+      hasMore: false,
+      busy: true,
+    })
+    vi.advanceTimersByTime(300)
+    const label = Array.from(document.querySelectorAll('[data-thinking] span')).find((el) =>
+      /^Thinking \(/.test(el.textContent ?? ''),
+    )
+    expect(label).toBeDefined()
+    const inner = /^Thinking \((.+)\)$/.exec(label!.textContent ?? '')!
+    const seconds = parseDurationSeconds(inner[1])
+    // 120s of server startedAt at the 200ms tick: the stale static "(0s)"
+    // initial label or a Date.now() fallback reads ~0 — below the lower bound.
+    expect(seconds).toBeGreaterThanOrEqual(119)
+    expect(seconds).toBeLessThan(122)
+    stopStatusSweep()
+    vi.useRealTimers()
+  })
+})
+
 describe('mapHistoryToChatMessages', () => {
   const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
   const user = (id: string, text: string) => ({ id, role: 'user' as const, text, thinking: [], tools: [], usage, error: '', status: 'done' as const, startedAt: 0 })
