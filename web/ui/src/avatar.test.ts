@@ -69,11 +69,33 @@ describe('default avatar rendering', () => {
     expect(el.querySelector('img')).toBeTruthy()
     expect(el.classList.contains('avatar-g-bg')).toBe(false)
     expect(el.style.background).toBe('')
-    // Back to default (probe 404): the backdrop returns with the letter.
+    // Back to default (probe 404): the backdrop returns with the letter —
+    // dark theme paints via the inline style (the class is light-only), so
+    // assert the style too: this exact assertion caught the restore gap.
     stubHead(404)
     await refreshAvatar('agent')
     expect(el.classList.contains('avatar-g-bg')).toBe(true)
+    // jsdom's cssstyle drops gradient declarations on parse, so assert the
+    // attribute string — browsers parse it fine.
+    expect(el.getAttribute('style')).toContain('linear-gradient')
     expect(el.textContent).toBe('G')
+  })
+  it('user mode: strip mirrors agent and restore brings the gray gradient classes back', async () => {
+    const el = userHolder()
+    el.className += ' bg-gradient-to-br from-t2 to-t3'
+    renderAvatarInto(el, 'user')
+    stubHead(200, '"t-2"')
+    await refreshAvatar('user')
+    expect(el.querySelector('img')).toBeTruthy()
+    expect(el.classList.contains('bg-gradient-to-br')).toBe(false)
+    expect(el.classList.contains('from-t2')).toBe(false)
+    expect(el.classList.contains('to-t3')).toBe(false)
+    stubHead(404)
+    await refreshAvatar('user')
+    expect(el.classList.contains('bg-gradient-to-br')).toBe(true)
+    expect(el.classList.contains('from-t2')).toBe(true)
+    expect(el.classList.contains('to-t3')).toBe(true)
+    expect(el.querySelector('svg')).toBeTruthy()
   })
 })
 

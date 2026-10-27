@@ -73,7 +73,13 @@ export function renderAvatarInto(holder: HTMLElement, who: AvatarWho, iconSize =
 function restoreDefaultBackdrop(holder: HTMLElement, who: AvatarWho): void {
   if (who === 'agent') {
     holder.classList.add('avatar-g-bg')
+    // The class only paints in the light theme (.avatar-g-bg is a
+    // [data-theme="light"] override) — the dark-theme gradient carrier is
+    // this inline style, so restoring the class alone would leave a bare
+    // white G. Full style incl. color:#FFFFFF for the letter ink.
+    holder.setAttribute('style', avatarGStyle)
   } else {
+    // The gradient classes paint in both themes — class restore is complete.
     holder.classList.add('bg-gradient-to-br', 'from-t2', 'to-t3')
   }
 }
