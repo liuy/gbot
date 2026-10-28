@@ -143,15 +143,17 @@ describe('feed sink — append + identity', () => {
 describe('feed sink — thinking', () => {
   it('active thinking seam is written in place and finished on end', () => {
     useHydrationTimers()
-    const src = [thinkingBlock('plan ', true)]
+    const src = [thinkingBlock('plan **deep** ', true)]
     const { sink, feedEl } = makeSink(src)
     sink.hydrate()
     const wrap = feedEl.querySelector('[data-thinking]') as HTMLElement
     expect(wrap).not.toBeNull()
+    const p = wrap.querySelector('p') as HTMLElement
+    expect(p.querySelector('strong')?.textContent).toBe('deep')
 
     ;(src[0] as { text: string }).text += 'more'
     sink.syncTail(null)
-    expect(textOf(wrap)).toContain('plan more')
+    expect(textOf(wrap)).toContain('plan deep more')
 
     const t = src[0] as { active: boolean; durationNs: number }
     t.active = false
@@ -160,6 +162,32 @@ describe('feed sink — thinking', () => {
 
     expect(textOf(wrap)).toContain('Thought for 5s')
     expect(wrap.querySelector('p')!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('seam thinking freezes past the limit and finalize converges to markdown', () => {
+    useHydrationTimers()
+    const base = '**deep** ' + 'A'.repeat(16384 - 9)
+    const src = [thinkingBlock(base, true)]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const wrap = feedEl.querySelector('[data-thinking]') as HTMLElement
+    const p = wrap.querySelector('p') as HTMLElement
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    const frozenChild = p.children[0]
+
+    ;(src[0] as { text: string }).text += ' tail'
+    sink.syncTail(null)
+    const span = p.querySelector('[data-think-tail]') as HTMLSpanElement
+    expect(span.textContent).toBe(' tail')
+    expect(p.children[0]).toBe(frozenChild)
+
+    const t = src[0] as { active: boolean; durationNs: number }
+    t.active = false
+    t.durationNs = 4_000_000_000
+    sink.syncTail(null)
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    expect(p.querySelector('strong')?.textContent).toBe('deep')
+    expect(textOf(wrap)).toContain('Thought for 4s')
   })
 })
 

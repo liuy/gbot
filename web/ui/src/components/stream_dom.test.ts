@@ -13,6 +13,9 @@ import {
   setProgressBarUsage,
   refreshProgressBar,
   finalizeProgressBar,
+  writeThinkingText,
+  writeThinkingStream,
+  THINKING_RENDER_LIMIT,
 } from './stream_dom'
 import { stopStatusSweep } from './status_sweep'
 
@@ -413,6 +416,99 @@ describe('toggleToolExpanded', () => {
     toggleToolExpanded(h)
     toggleToolExpanded(h)
     expect(h.body.textContent.match(/streamed frame/g)?.length).toBe(1)
+  })
+})
+
+describe('writeThinkingStream — threshold freeze', () => {
+  it('within threshold renders markdown per write', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    writeThinkingStream(p, '**b**')
+    expect(p.querySelector('strong')?.textContent).toBe('b')
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+  })
+
+  it('past threshold freezes the tree and appends a tail span; later writes touch only the span', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT))
+    expect(p.children.length).toBe(1)
+    const frozenChild = p.children[0]
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT) + '0123456789')
+    expect(p.children.length).toBe(2)
+    const span = p.children[1] as HTMLSpanElement
+    expect(span.textContent).toBe('0123456789')
+    expect(span.classList.contains('whitespace-pre-wrap')).toBe(true)
+    expect(p.children[0]).toBe(frozenChild)
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT) + '0123456789XYZ')
+    expect(p.children.length).toBe(2)
+    expect((p.children[1] as HTMLElement).textContent).toBe('0123456789XYZ')
+    expect(p.children[0]).toBe(frozenChild)
+  })
+
+  it('writeThinkingText finalize removes the tail and renders the full markdown in place', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    const prefix = 'A'.repeat(THINKING_RENDER_LIMIT)
+    writeThinkingStream(p, prefix)
+    writeThinkingStream(p, prefix + '0123456789')
+    expect(p.querySelector('[data-think-tail]')).not.toBeNull()
+    const frozenChild = p.children[0]
+    writeThinkingText(p, prefix + '**tail**')
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    expect(p.querySelector('strong')?.textContent).toBe('tail')
+    expect(p.children[0]).toBe(frozenChild)
+  })
+
+  it('exactly at the limit is not over it: no span until one more char', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT))
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT) + 'x')
+    expect(p.querySelector('[data-think-tail]')?.textContent).toBe('x')
+  })
+
+  it('exact-limit write on an already-rendered p full-renders (strict >, children > 0)', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    // The fresh-p tests above never evaluate the threshold with children
+    // already rendered; grow to LIMIT from below to pin the strict >.
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT - 1))
+    expect(p.children.length).toBe(1)
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT))
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    expect(p.dataset.thinkLen).toBe(String(THINKING_RENDER_LIMIT))
+    writeThinkingStream(p, 'A'.repeat(THINKING_RENDER_LIMIT) + 'x')
+    expect(p.querySelector('[data-think-tail]')?.textContent).toBe('x')
+  })
+
+  it('over-limit text on a fresh p renders once in full, then freezes on the next write', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    const big = 'A'.repeat(20000)
+    writeThinkingStream(p, big)
+    expect(p.children.length).toBe(1)
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+    expect(p.dataset.thinkLen).toBe('20000')
+    writeThinkingStream(p, big + '0123456789')
+    expect(p.querySelector('[data-think-tail]')?.textContent).toBe('0123456789')
+  })
+
+  it('writeThinkingText with identical text is idempotent: same structure, same nodes', () => {
+    const parent = newParent()
+    const { p } = appendThinkingBlock(parent, Date.now())
+    writeThinkingText(p, '**one** and `code`')
+    const childrenBefore = Array.from(p.children)
+    writeThinkingText(p, '**one** and `code`')
+    // Identity, not structural equality: toEqual passes with a rebuilt tree
+    // of identical shape.
+    const childrenAfter = Array.from(p.children)
+    expect(childrenAfter.length).toBe(childrenBefore.length)
+    for (let i = 0; i < childrenAfter.length; i++) {
+      expect(childrenAfter[i]).toBe(childrenBefore[i])
+    }
+    expect(p.dataset.thinkLen).toBe(String('**one** and `code`'.length))
   })
 })
 

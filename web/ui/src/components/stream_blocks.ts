@@ -21,7 +21,7 @@ import {
   appendToolBlock,
   appendToolChildrenContainer,
   setToolSummary,
-  writeThinkingText,
+  writeThinkingStream,
   finishThinking,
   finishTool,
   expandToolChildrenForRunning,
@@ -173,7 +173,7 @@ export function renderStreamBlock(
   } else if (block.kind === 'thinking') {
     const startedAt = block.startedAt || Date.now()
     const { p, labelEl } = appendThinkingBlock(parent, startedAt, before)
-    if (block.text) writeThinkingText(p, block.text)
+    if (block.text) writeThinkingStream(p, block.text)
     if (block.active) {
       const entry: ThinkingEntryData = { p, labelEl, startedAt, pendingBlock: block }
       live?.onThinkingActive(entry, parentID)

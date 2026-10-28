@@ -383,7 +383,7 @@ describe('streamState block tree rendering', () => {
         {
           kind: 'thinking',
           id: 'think-live',
-          text: 'initial thought',
+          text: 'initial **thought**',
           durationNs: 0,
           active: true,
           startedAt: Date.now(),
@@ -398,6 +398,33 @@ describe('streamState block tree rendering', () => {
 
     expect(document.body.textContent).toContain('initial thought')
     expect(document.body.textContent).toContain('more reasoning')
+    const p = document.querySelector('[data-thinking] p') as HTMLElement
+    expect(p.querySelector('strong')?.textContent).toBe('thought')
+
+    dispatchEvents([{ type: 'thinking_end' }])
+    const wrap = document.querySelector('[data-thinking]') as HTMLElement
+    expect(wrap.textContent).toContain('Thought for')
+  })
+
+  it('query_end flush-finalizes an active thinking registered by the backfill flush', () => {
+    mount()
+    // Active thinking at index 0 lands in the rAF backfill region (40 blocks
+    // > 24 triggers sharding; the tail renders the last 8 synchronously).
+    const blocks: Array<Record<string, unknown>> = [
+      { kind: 'thinking', id: 'bf-think', text: '**deep**', durationNs: 0, active: true, startedAt: Date.now() },
+    ]
+    for (let i = 0; i < 39; i++) blocks.push({ kind: 'text', id: '', text: `blk-${i} filler text` })
+    dispatch({ type: 'streamState', blocks })
+
+    // Do NOT advance rAF: the backfill is still pending when query_end
+    // lands. The flush renders the active thinking and registers it via the
+    // live sink — the post-flush sweep must finalize it.
+    dispatch({ type: 'event', event: { type: 'query_end', aborted: true } })
+
+    const wrap = document.querySelector('[data-thinking]') as HTMLElement
+    expect(wrap.textContent).toContain('Thought for')
+    expect((wrap.querySelector('p') as HTMLElement).querySelector('strong')?.textContent).toBe('deep')
+    expect(wrap.querySelector('.heartbeat')).toBeNull()
   })
 
   it('multiple blocks in order preserves DOM order', () => {

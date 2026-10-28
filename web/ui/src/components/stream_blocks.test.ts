@@ -57,6 +57,32 @@ describe('renderStreamBlock — pure rendering (no sink)', () => {
     expect((wrap.querySelector('p') as HTMLElement).classList.contains('hidden')).toBe(true)
   })
 
+  it('renders an active thinking block with markdown streamed in (within-threshold snapshot)', () => {
+    const parent = mount()
+    renderStreamBlock(
+      parent,
+      { kind: 'thinking', id: '', text: 'plan **hi**', durationNs: 0, active: true, startedAt: 0 },
+      null,
+      null,
+    )
+    const p = parent.querySelector('[data-thinking] p') as HTMLElement
+    expect(p.querySelector('strong')?.textContent).toBe('hi')
+    expect(p.querySelector('[data-think-tail]')).toBeNull()
+  })
+
+  it('renders a done thinking block with markdown content', () => {
+    const parent = mount()
+    renderStreamBlock(
+      parent,
+      { kind: 'thinking', id: '', text: 'plan **hi**', durationNs: 0, active: false, startedAt: 0 },
+      null,
+      null,
+    )
+    const wrap = parent.querySelector('[data-thinking]') as HTMLElement
+    expect((wrap.querySelector('p') as HTMLElement).querySelector('strong')?.textContent).toBe('hi')
+    expect(wrap.textContent).toContain('Thought for')
+  })
+
   it('renders a done tool in its finished state: green dot, empty output stays collapsed', () => {
     const parent = mount()
     renderStreamBlock(parent, toolBlock('t-1', 'Grep'), null, null)

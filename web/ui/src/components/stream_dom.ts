@@ -251,13 +251,57 @@ export function appendThinkingBlock(
   return { p, labelEl }
 }
 
+// Detaching the tail (writeThinkingText) and finding it (appendThinkingTail)
+// share this selector literal: the two must match character-for-character —
+// changing one without the other silently cuts the tail at the wrong spot.
+const THINKING_TAIL_SELECTOR = ':scope > span.whitespace-pre-wrap[data-think-tail]'
+
 export function writeThinkingText(p: HTMLParagraphElement, text: string): void {
+  // Same-length skip: within-threshold thinking_end must not re-render
+  // (today's end is render-free), and a sweep right after a hydration flush
+  // must not double-render what flush just wrote. A skip can never leave a
+  // tail behind: freezing only happens while text.length > thinkLen.
+  if (p.dataset.thinkLen === String(text.length)) return
+  p.querySelector(THINKING_TAIL_SELECTOR)?.remove()
   const html = renderMarkdown(text)
+  p.dataset.thinkLen = String(text.length)
   if (p.children.length > 0) {
     morphHtml(p, html)
   } else {
     p.innerHTML = html
   }
+}
+
+// Long-thinking freeze threshold: rendering the full accumulated text on
+// every delta (renderMarkdown+morph) costs linearly more as the buffer
+// grows (65KB ≈ 300-450ms per delta), making the whole stream O(n²). Below
+// the limit streaming keeps today's markdown behavior; past it the rendered
+// tree freezes and new content appends as plain text, finalized by one full
+// render at thinking_end.
+export const THINKING_RENDER_LIMIT = 16384
+
+// Streaming write: the threshold branch lives here; finalize paths call
+// writeThinkingText directly.
+export function writeThinkingStream(p: HTMLParagraphElement, text: string): void {
+  if (text.length > THINKING_RENDER_LIMIT && p.children.length > 0) {
+    appendThinkingTail(p, text)
+    return
+  }
+  writeThinkingText(p, text)
+}
+
+// The tail span carries pre-wrap on itself: white-space is inherited, so a
+// container-level class would change how the already-rendered prefix's p/li
+// wrap after finalize. The freeze boundary is the last fully rendered length
+// (thinkLen), not the threshold — a half-rendered text is never shown.
+function appendThinkingTail(p: HTMLParagraphElement, text: string): void {
+  let tail = p.querySelector(THINKING_TAIL_SELECTOR) as HTMLSpanElement | null
+  if (!tail) {
+    tail = createElement('span', 'whitespace-pre-wrap')
+    tail.dataset.thinkTail = p.dataset.thinkLen ?? '0'
+    p.appendChild(tail)
+  }
+  tail.textContent = text.slice(Number(tail.dataset.thinkTail))
 }
 
 export function refreshThinkingLabel(labelEl: HTMLSpanElement, startedAt: number): void {

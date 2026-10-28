@@ -23,6 +23,7 @@ import {
   setToolSummary,
   setToolOutput,
   writeThinkingText,
+  writeThinkingStream,
   finishThinking,
   finishTool,
   expandToolChildrenForRunning,
@@ -215,8 +216,11 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
       }
     } else if (b.kind === 'thinking') {
       if (b.active) {
-        if (seamThinking) writeThinkingText(seamThinking.p, b.text)
+        if (seamThinking) writeThinkingStream(seamThinking.p, b.text)
       } else if (seamThinking) {
+        // Frozen tails converge here; an already-rendered same-length text
+        // skips inside writeThinkingText.
+        if (b.text) writeThinkingText(seamThinking.p, b.text)
         finishThinking(seamThinking.p, seamThinking.labelEl, b.durationNs)
         // A suffix render may have re-registered the key with a NEW active
         // thinking — only clear the entry we actually finished.

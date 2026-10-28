@@ -40,6 +40,7 @@ import {
   refreshToolDuration,
   refreshThinkingLabel,
   writeThinkingText,
+  writeThinkingStream,
   finishThinking,
   finishTool,
   expandToolChildrenForRunning,
@@ -1218,6 +1219,31 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     return { p, labelEl, startedAt, pendingBlock }
   }
 
+  function finalizeThinking(entry: ThinkingEntry) {
+    if (entry.pendingBlock.text) writeThinkingText(entry.p, entry.pendingBlock.text)
+    finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
+  }
+
+  // Interrupted finalize (query_end/error): what a thinking_end would have
+  // done for every entry still active — main agent, sub-agents, and entries
+  // registered by a hydration flush moments earlier. Idempotent: the first
+  // call clears the registries, so a second call only sees new arrivals.
+  function finalizeActiveThinking() {
+    const finalize = (entry: ThinkingEntry) => {
+      entry.pendingBlock.active = false
+      if (!entry.pendingBlock.durationNs) {
+        entry.pendingBlock.durationNs = (Date.now() - entry.startedAt) * 1e6
+      }
+      finalizeThinking(entry)
+    }
+    if (currentThinking) {
+      finalize(currentThinking)
+      currentThinking = null
+    }
+    currentSubAgentThinking.forEach(finalize)
+    currentSubAgentThinking.clear()
+  }
+
   function startNewTextBlock() {
     const block = {
       kind: 'text' as const,
@@ -1254,7 +1280,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       const anchor = progressAnchor()
       if (anchor) streamContainer.insertBefore(currentThinking.p.parentElement!, anchor)
       else streamContainer.appendChild(currentThinking.p.parentElement!)
-      writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
+      writeThinkingStream(currentThinking.p, currentThinking.pendingBlock.text)
     }
     if (!progressHandles) {
       progressHandles = appendProgressBar(streamContainer)
@@ -1617,6 +1643,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const serverRewound = !!e.rewound
         console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound + ' rewound_text=' + (e.rewound_text ? 'yes' : 'no'))
         finalizeRunningBlocks(pendingBlocks, wasAborted)
+        finalizeActiveThinking()
         // Normal tool_end folds already removed their cards' buttons; this
         // sweep is the abort/leftover guard for any dead button still
         // mounted (server stale frames back it up from the other end).
@@ -1751,6 +1778,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // abort-rewind path the container is already detached; the
         // isConnected guard skips the wasted render but onDone still fires.
         finishStreamHydration()
+        // The flush above just registered any active thinking from its
+        // backfill through the live sink — finalize those too before the
+        // refs are cleared, or their label/heartbeat freezes mid-flight.
+        finalizeActiveThinking()
         cleanupStreamingRefs()
         resetProgressUsage()
         knownToolIDs.clear()
@@ -1800,19 +1831,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             currentSubAgentThinking.set(parentID, newEntry)
             newEntry.pendingBlock.text += e.thinking.text
             tokenRate().add(e.thinking.text, e.tokens ?? 0)
-            writeThinkingText(newEntry.p, newEntry.pendingBlock.text)
+            writeThinkingStream(newEntry.p, newEntry.pendingBlock.text)
             domContainer.appendChild(newEntry.p.parentElement!)
             return
           }
           entry.pendingBlock.text += e.thinking.text
           tokenRate().add(e.thinking.text, e.tokens ?? 0)
-          writeThinkingText(entry.p, entry.pendingBlock.text)
+          writeThinkingStream(entry.p, entry.pendingBlock.text)
           return
         }
         if (!currentThinking) return
         currentThinking.pendingBlock.text += e.thinking.text
         tokenRate().add(e.thinking.text, e.tokens ?? 0)
-        writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
+        writeThinkingStream(currentThinking.p, currentThinking.pendingBlock.text)
         return
       }
       case 'thinking_end': {
@@ -1824,7 +1855,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           entry.pendingBlock.durationNs =
             e.thinking?.duration ?? entry.pendingBlock.durationNs
           accumulatedThinkingMs += Math.round(entry.pendingBlock.durationNs / 1e6)
-          finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
+          finalizeThinking(entry)
           currentSubAgentThinking.delete(parentID)
           return
         }
@@ -1834,7 +1865,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         entry.pendingBlock.durationNs =
           e.thinking?.duration ?? entry.pendingBlock.durationNs
         accumulatedThinkingMs += Math.round(entry.pendingBlock.durationNs / 1e6)
-        finishThinking(entry.p, entry.labelEl, entry.pendingBlock.durationNs)
+        finalizeThinking(entry)
         currentThinking = null
         return
       }
@@ -2761,6 +2792,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // Error boxes attach to the surviving streaming message, so an
         // in-flight hydration must flush before the box is appended.
         finishStreamHydration()
+        // appendError clears the streaming refs outright — active thinking
+        // must finalize first or its label/heartbeat freezes mid-flight.
+        finalizeActiveThinking()
         appendError(msg.message)
         return
       case 'ask': {
