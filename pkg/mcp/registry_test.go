@@ -2633,9 +2633,10 @@ func TestRegistry_StartConfigWatch_EmptyDir(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
 	defer r.Close()
 
-	// configDir is empty by default — should return nil
-	if err := r.StartConfigWatch(); err != nil {
-		t.Errorf("StartConfigWatch with empty dir: %v", err)
+	// configDir is empty by default — no watcher to start
+	r.StartConfigWatch()
+	if r.configWatcher != nil {
+		t.Error("empty configDir must not start a watcher")
 	}
 }
 
@@ -2644,9 +2645,10 @@ func TestRegistry_StartConfigWatch_NonExistentConfigFile(t *testing.T) {
 	defer r.Close()
 
 	r.configDir = t.TempDir()
-	// No .mcp.json file in the temp dir — should return nil
-	if err := r.StartConfigWatch(); err != nil {
-		t.Errorf("StartConfigWatch with no config file: %v", err)
+	// No .mcp.json file in the temp dir — no watcher to start
+	r.StartConfigWatch()
+	if r.configWatcher != nil {
+		t.Error("missing .mcp.json must not start a watcher")
 	}
 }
 

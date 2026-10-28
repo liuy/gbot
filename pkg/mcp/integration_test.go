@@ -1093,10 +1093,7 @@ func TestStartConfigWatch_NoConfigFile_NoWatcher(t *testing.T) {
 	registry.configDir = tmpDir
 	defer registry.Close()
 
-	err := registry.StartConfigWatch()
-	if err != nil {
-		t.Fatalf("StartConfigWatch should not error: %v", err)
-	}
+	registry.StartConfigWatch()
 
 	if registry.configWatcher != nil {
 		t.Error("configWatcher should be nil when no .mcp.json exists — no file to watch")
@@ -1114,10 +1111,7 @@ func TestStartConfigWatch_WithConfigFile_StartsWatcher(t *testing.T) {
 	registry.configDir = tmpDir
 	defer registry.Close()
 
-	err := registry.StartConfigWatch()
-	if err != nil {
-		t.Fatalf("StartConfigWatch should not error: %v", err)
-	}
+	registry.StartConfigWatch()
 
 	if registry.configWatcher == nil {
 		t.Error("configWatcher should be created when .mcp.json exists")

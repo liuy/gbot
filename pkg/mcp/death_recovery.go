@@ -49,16 +49,24 @@ func (r *Registry) EvictIfSame(name string, cs *ConnectedServer) bool {
 //
 // cfg may be nil (stores connection only); when non-nil it is also recorded
 // in r.configs, preserving the two store sites that wrote configs inline.
-// SetConnectionForTest intentionally bypasses this.
-func (r *Registry) adoptConnection(name string, conn ServerConnection, cfg *ScopedMcpServerConfig) {
+// SetConnectionForTest intentionally bypasses this. Returns whether the
+// connection was adopted — callers that must not proceed against a rejected
+// (closed-registry) connection gate on it.
+func (r *Registry) adoptConnection(name string, conn ServerConnection, cfg *ScopedMcpServerConfig) bool {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return
+		// Reject AND close: a connect that finished after Close otherwise
+		// orphans its subprocess/session (same idiom as EvictIfSame).
+		if cs, ok := conn.(*ConnectedServer); ok {
+			go func() { _ = cs.Close() }()
+		}
+		return false
 	}
 	r.connections[name] = conn
 	if cfg != nil {
 		r.configs[name] = *cfg
 	}
 	r.mu.Unlock()
+	return true
 }

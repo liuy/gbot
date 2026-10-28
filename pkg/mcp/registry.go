@@ -275,11 +275,16 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 func (r *Registry) Reconnect(ctx context.Context, serverName string) (ServerConnection, error) {
 	r.mu.RLock()
 	cfg, ok := r.configs[serverName]
+	closed := r.closed
+	r.mu.RUnlock()
 	if !ok {
-		r.mu.RUnlock()
 		return nil, fmt.Errorf("mcp: server %q not found in registry", serverName)
 	}
-	r.mu.RUnlock()
+	// Gate before dialing: an ungated dial on a closed registry spawns a
+	// transport whose subprocess/session adoptConnection then discards.
+	if closed {
+		return nil, fmt.Errorf("mcp: registry is closed, reconnect %q skipped", serverName)
+	}
 
 	// Source: client.ts:2145-2151 — clearServerCache
 	r.manager.InvalidateCache(serverName, cfg)
@@ -291,13 +296,21 @@ func (r *Registry) Reconnect(ctx context.Context, serverName string) (ServerConn
 		// list keeps the server's tools listed (config-driven table), so the
 		// next call retries the not-found → Reconnect path instead of losing
 		// the tool entirely.
+		// timer.Stop blocks scheduled reconnects, not one already dialing —
+		// the write-back must check closed like adoptConnection does.
 		r.mu.Lock()
-		r.connections[serverName] = &FailedServer{Name: serverName, Config: cfg, Error: err.Error()}
+		if !r.closed {
+			r.connections[serverName] = &FailedServer{Name: serverName, Config: cfg, Error: err.Error()}
+		}
 		r.mu.Unlock()
 		return nil, fmt.Errorf("mcp: reconnect %q failed: %w", serverName, err)
 	}
 
-	r.adoptConnection(serverName, conn, nil)
+	if !r.adoptConnection(serverName, conn, nil) {
+		// Close landed mid-flight: adoptConnection closed the fresh connection;
+		// discovery/aggregates/callbacks must not run against a closed session.
+		return nil, fmt.Errorf("mcp: registry is closed, reconnect %q discarded", serverName)
+	}
 
 	// Re-fetch discovery data
 	if cs, ok := conn.(*ConnectedServer); ok {
@@ -503,9 +516,7 @@ func LoadAndConnectMCP(ctx context.Context, cwd string, provider TransportProvid
 
 	// Start config watcher for hot-reload (TS: plugin config effect re-run).
 	// Safe to call even if configDir is empty; it handles that gracefully.
-	if err := registry.StartConfigWatch(); err != nil {
-		slog.Warn("mcp: failed to start config watcher", "error", err)
-	}
+	registry.StartConfigWatch()
 
 	return registry, nil
 }
@@ -577,11 +588,10 @@ const agentServerConnectTimeout = 30 * time.Second
 // AgentServerHandle holds agent-specific MCP connections and their cleanup.
 // Created by ConnectAgentServers; caller must defer handle.Cleanup().
 type AgentServerHandle struct {
-	tools     map[string]DiscoveredTool
-	connNames []string // names of newly created connections (not shared refs)
-	cleanup   func() error
-	cleaned   bool // idempotent guard
-	mu        sync.Mutex
+	tools   map[string]DiscoveredTool
+	cleanup func() error
+	cleaned bool // idempotent guard
+	mu      sync.Mutex
 }
 
 // Tools returns the discovered tools from agent-specific MCP servers.
@@ -630,7 +640,6 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 
 	// Phase 1: Separate string refs from inline specs (pure JSON parsing, no lock).
 	type inlineSpec struct {
-		raw  json.RawMessage
 		cfg  McpServerConfig
 		name string
 	}
@@ -649,7 +658,6 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 			continue
 		}
 		inlineSpecs = append(inlineSpecs, inlineSpec{
-			raw:  raw,
 			cfg:  cfg,
 			name: fmt.Sprintf("agent-%s-%d", agentID, len(inlineSpecs)),
 		})
@@ -747,7 +755,9 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 				slog.Warn("agent MCP server connect failed", "server", res.serverName, "agent", agentID, "error", res.err)
 				continue
 			}
-			r.adoptConnection(res.serverName, res.conn, &res.scopedCfg)
+			if !r.adoptConnection(res.serverName, res.conn, &res.scopedCfg) {
+				continue // closed registry: already closed by adoptConnection
+			}
 			newConnNames = append(newConnNames, res.serverName)
 			for _, dt := range res.tools {
 				handle.tools[dt.Name] = dt
@@ -758,7 +768,6 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 			slog.Info("agent MCP inline servers connected", "agent", agentID, "count", len(newConnNames))
 			namesCopy := make([]string, len(newConnNames))
 			copy(namesCopy, newConnNames)
-			handle.connNames = namesCopy
 			handle.cleanup = func() error {
 				var firstErr error
 				for _, name := range namesCopy {
@@ -1050,9 +1059,9 @@ func (r *Registry) handleCommandNotification(serverName string) {
 // StartConfigWatch starts watching .mcp.json for changes and auto-reloads.
 // Must be called after LoadAndConnectMCP. The watcher runs in a background goroutine.
 // Source: TS chokidar + /reload-plugins + React effect re-run.
-func (r *Registry) StartConfigWatch() error {
+func (r *Registry) StartConfigWatch() {
 	if r.configDir == "" {
-		return nil
+		return
 	}
 
 	configPath := r.configDir + "/.mcp.json"
@@ -1062,25 +1071,17 @@ func (r *Registry) StartConfigWatch() error {
 	// every file change (go build, test outputs, etc.), which is wasteful
 	// and dangerous — it could disconnect plugin servers.
 	if _, err := os.Stat(configPath); err != nil {
-		return nil
+		return
 	}
 
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		r.handleConfigReload()
 	})
-	if err != nil {
-		return fmt.Errorf("mcp: create config watcher: %w", err)
-	}
-
-	if err := watcher.AddPath(configPath); err != nil {
-		watcher.Stop()
-		return fmt.Errorf("mcp: watch config file %q: %w", configPath, err)
-	}
+	watcher.AddPath(configPath)
 
 	r.configWatcher = watcher
 	go watcher.Start()
 	slog.Info("mcp: config hot-reload enabled", "dir", r.configDir)
-	return nil
 }
 
 // handleConfigReload re-reads configs and reconciles server connections.
@@ -1196,7 +1197,9 @@ func (r *Registry) connectSingle(ctx context.Context, name string, cfg ScopedMcp
 		return
 	}
 
-	r.adoptConnection(name, conn, &cfg)
+	if !r.adoptConnection(name, conn, &cfg) {
+		return // closed registry: adoptConnection already closed the connection
+	}
 
 	// Discover tools/resources/commands for the new connection
 	// These functions populate the caches internally.
@@ -1240,6 +1243,11 @@ const drainPollInterval = 25 * time.Millisecond
 // DrainServer waits until serverName has no in-flight calls or timeout
 // elapses. Returns (idle, remaining). Polls at 25ms — cheap and lock-free
 // against the calling goroutines.
+//
+// Postcondition: !idle ⇒ remaining > 0. A zero counter returns (true, 0) on the
+// spot, so the timeout branch can only report a positive count (EnterCall's
+// done-func is deferred exactly once at the single production call site, so the
+// counter never goes negative). Callers gate on idle alone.
 func (r *Registry) DrainServer(serverName string, timeout time.Duration) (bool, int64) {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -1337,7 +1345,7 @@ func (r *Registry) Reconcile(ctx context.Context, configs map[string]ScopedMcpSe
 	drainTargets := append(append([]string(nil), removed...), res.Changed...)
 	sort.Strings(drainTargets)
 	for _, name := range drainTargets {
-		if idle, remaining := r.DrainServer(name, drainTimeout); !idle && remaining > 0 {
+		if idle, remaining := r.DrainServer(name, drainTimeout); !idle {
 			res.DrainedLate = append(res.DrainedLate, name)
 			slog.Warn("mcp: reconcile drain timed out, disconnecting anyway", "server", name, "in_flight", remaining)
 		}

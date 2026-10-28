@@ -21,18 +21,13 @@ func TestConfigWatcher_FileModified(t *testing.T) {
 	}
 
 	reloadDone := make(chan struct{}, 1)
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		select {
 		case reloadDone <- struct{}{}:
 		default:
 		}
 	}, WithInterval(50*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatalf("AddPath: %v", err)
-	}
+	watcher.AddPath(configPath)
 
 	go watcher.Start()
 	defer watcher.Stop()
@@ -61,18 +56,13 @@ func TestConfigWatcher_FileDeleted(t *testing.T) {
 	}
 
 	reloadDone := make(chan struct{}, 1)
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		select {
 		case reloadDone <- struct{}{}:
 		default:
 		}
 	}, WithInterval(50*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatalf("AddPath: %v", err)
-	}
+	watcher.AddPath(configPath)
 
 	go watcher.Start()
 	defer watcher.Stop()
@@ -98,19 +88,14 @@ func TestConfigWatcher_ColdStart(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	reloadDone := make(chan struct{}, 1)
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		select {
 		case reloadDone <- struct{}{}:
 		default:
 		}
 	}, WithInterval(50*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
 	configPath := filepath.Join(tmpDir, ".mcp.json")
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatalf("AddPath: %v", err)
-	}
+	watcher.AddPath(configPath)
 
 	go watcher.Start()
 	defer watcher.Stop()
@@ -130,18 +115,19 @@ func TestConfigWatcher_ColdStart(t *testing.T) {
 
 func TestConfigWatcher_Stop(t *testing.T) {
 	var reloadCount atomic.Int32
-	watcher, err := NewConfigWatcher(func() {
-		reloadCount.Add(1)
-	})
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
+	watcher := NewConfigWatcher(func() { reloadCount.Add(1) }, WithInterval(time.Hour))
+	stopped := make(chan struct{})
+	go func() { watcher.Start(); close(stopped) }()
+	watcher.Stop()
+	watcher.Stop() // idempotent: the sync.Once must not double-close cw.done
+	select {
+	case <-stopped:
+	case <-time.After(time.Second): // REAL-TIME: Start must return once cw.done closes
+		t.Fatal("Start must return after Stop — the done-channel select is load-bearing")
 	}
-
-	go watcher.Start()
-	watcher.Stop()
-
-	// Stop should be idempotent
-	watcher.Stop()
+	if n := reloadCount.Load(); n != 0 {
+		t.Errorf("onReload fired %d times after Stop, want 0", n)
+	}
 }
 
 func TestConfigWatcher_RapidWrites(t *testing.T) {
@@ -153,7 +139,7 @@ func TestConfigWatcher_RapidWrites(t *testing.T) {
 
 	var reloadCount atomic.Int32
 	reloadDone := make(chan struct{})
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		if reloadCount.Add(1) >= 1 {
 			select {
 			case reloadDone <- struct{}{}:
@@ -161,12 +147,7 @@ func TestConfigWatcher_RapidWrites(t *testing.T) {
 			}
 		}
 	}, WithInterval(100*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatalf("AddPath: %v", err)
-	}
+	watcher.AddPath(configPath)
 
 	go watcher.Start()
 	defer watcher.Stop()
@@ -206,15 +187,10 @@ func TestConfigWatcher_NoChange(t *testing.T) {
 	}
 
 	var reloadCount atomic.Int32
-	watcher, err := NewConfigWatcher(func() {
+	watcher := NewConfigWatcher(func() {
 		reloadCount.Add(1)
 	}, WithInterval(50*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatalf("AddPath: %v", err)
-	}
+	watcher.AddPath(configPath)
 
 	go watcher.Start()
 	defer watcher.Stop()
@@ -239,10 +215,8 @@ func TestCheckChanged_FileModified(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watcher, _ := NewConfigWatcher(func() {}, WithInterval(time.Hour))
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatal(err)
-	}
+	watcher := NewConfigWatcher(func() {}, WithInterval(time.Hour))
+	watcher.AddPath(configPath)
 
 	// No change yet
 	if watcher.checkChanged() {
@@ -269,10 +243,8 @@ func TestCheckChanged_FileCreated(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test.json")
 
-	watcher, _ := NewConfigWatcher(func() {}, WithInterval(time.Hour))
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatal(err)
-	}
+	watcher := NewConfigWatcher(func() {}, WithInterval(time.Hour))
+	watcher.AddPath(configPath)
 
 	// File doesn't exist yet — no change
 	if watcher.checkChanged() {
@@ -296,10 +268,8 @@ func TestCheckChanged_FileDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watcher, _ := NewConfigWatcher(func() {}, WithInterval(time.Hour))
-	if err := watcher.AddPath(configPath); err != nil {
-		t.Fatal(err)
-	}
+	watcher := NewConfigWatcher(func() {}, WithInterval(time.Hour))
+	watcher.AddPath(configPath)
 
 	// Baseline exists — no change yet
 	if watcher.checkChanged() {

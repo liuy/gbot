@@ -49,7 +49,7 @@ func WithInterval(d time.Duration) ConfigWatcherOpt {
 
 // NewConfigWatcher creates a config file watcher.
 // onReload is called when a watched file's mtime changes.
-func NewConfigWatcher(onReload func(), opts ...ConfigWatcherOpt) (*ConfigWatcher, error) {
+func NewConfigWatcher(onReload func(), opts ...ConfigWatcherOpt) *ConfigWatcher {
 	cw := &ConfigWatcher{
 		onReload: onReload,
 		interval: 2 * time.Second,
@@ -61,20 +61,19 @@ func NewConfigWatcher(onReload func(), opts ...ConfigWatcherOpt) (*ConfigWatcher
 		opt(cw)
 	}
 
-	return cw, nil
+	return cw
 }
 
 // AddPath adds a file path to watch. Captures current mtime as baseline.
 // If the file doesn't exist, the baseline is empty — file creation will be
 // detected on the next poll.
-func (cw *ConfigWatcher) AddPath(path string) error {
+func (cw *ConfigWatcher) AddPath(path string) {
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
 	cw.paths = append(cw.paths, path)
 	if info, err := os.Stat(path); err == nil {
 		cw.mtimes[path] = info.ModTime()
 	}
-	return nil
 }
 
 // Start begins polling for file changes.

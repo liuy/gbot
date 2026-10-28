@@ -15,18 +15,12 @@ import (
 // Kills watcher.go:55 numbers/decrementer (2→1) and :55 numbers/incrementer
 // (2→3): the documented default polling interval is exactly 2 seconds.
 func TestNewConfigWatcher_DefaultInterval2s(t *testing.T) {
-	cw, err := NewConfigWatcher(func() {})
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
+	cw := NewConfigWatcher(func() {})
 	if cw.interval != 2*time.Second {
 		t.Errorf("default interval = %v, want 2s", cw.interval)
 	}
 
-	custom, err := NewConfigWatcher(func() {}, WithInterval(250*time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher(custom): %v", err)
-	}
+	custom := NewConfigWatcher(func() {}, WithInterval(250*time.Millisecond))
 	if custom.interval != 250*time.Millisecond {
 		t.Errorf("custom interval = %v, want 250ms", custom.interval)
 	}
@@ -43,16 +37,9 @@ func TestCheckChanged_MissingPathDoesNotStopScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cw, err := NewConfigWatcher(func() {}, WithInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
-	if err := cw.AddPath(missing); err != nil {
-		t.Fatal(err)
-	}
-	if err := cw.AddPath(existing); err != nil {
-		t.Fatal(err)
-	}
+	cw := NewConfigWatcher(func() {}, WithInterval(time.Hour))
+	cw.AddPath(missing)
+	cw.AddPath(existing)
 
 	time.Sleep(10 * time.Millisecond) // REAL-TIME: ensure mtime differs on filesystem
 	if err := os.WriteFile(existing, []byte(`v2`), 0644); err != nil {
@@ -80,10 +67,7 @@ func TestConfigWatcher_ConcurrentAddAndCheck(t *testing.T) {
 		}
 	}
 
-	cw, err := NewConfigWatcher(func() {}, WithInterval(time.Hour))
-	if err != nil {
-		t.Fatalf("NewConfigWatcher: %v", err)
-	}
+	cw := NewConfigWatcher(func() {}, WithInterval(time.Hour))
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -92,9 +76,7 @@ func TestConfigWatcher_ConcurrentAddAndCheck(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			if err := cw.AddPath(paths[i]); err != nil {
-				t.Errorf("AddPath(%d): %v", i, err)
-			}
+			cw.AddPath(paths[i])
 		}(i)
 	}
 	for range 10 {
