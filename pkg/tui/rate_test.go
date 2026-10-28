@@ -517,11 +517,11 @@ func TestTokenRate_StreamDuration_ThinkingPauseCountsAsStreaming(t *testing.T) {
 	})
 }
 
-func TestTokenRate_ResetSeedsNextQuery(t *testing.T) {
-	// omp seed(): the previous query's evidence carries over, so the reading
-	// holds for the next query ("even short turns read immediately... the
-	// reading holds until the next message blends with it") instead of
-	// restarting cold. Per-query accounting still
+func TestTokenRate_ResetWipesMeterForNewQuery(t *testing.T) {
+	// Reset is a full wipe (user decision, see Clear's doc): the omp seed —
+	// the previous query's evidence carrying over — polluted the next
+	// query's first seconds whenever the meter belonged to another engine,
+	// so every query is metered independently. Per-query accounting still
 	// clears: stream duration, burst state, and the pause flag.
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
@@ -532,14 +532,13 @@ func TestTokenRate_ResetSeedsNextQuery(t *testing.T) {
 			}
 		}
 		held, ok := r.Rate() // dt=0 read right at the last delta
-		if !ok {
-			t.Fatal("Rate() before Reset = not ok, want ok")
+		if !ok || held <= 0 {
+			t.Fatalf("held reading = (%v, %v), want a live one", held, ok)
 		}
 		r.Pause() // query ended on a tool boundary; Reset must clear the flag
 		r.Reset()
 		// TTFT: Reset disarms the clock, so the bar shows no reading until
-		// this query's first delta — the seed is last query's recording and
-		// must not play back over the new query's wait.
+		// this query's first delta.
 		if _, ok := r.Rate(); ok {
 			t.Fatal("Rate() between Reset and the first delta = ok, want false (TTFT blank)")
 		}
@@ -559,22 +558,23 @@ func TestTokenRate_ResetSeedsNextQuery(t *testing.T) {
 		if got := r.StreamDuration(); got != wantZero {
 			t.Errorf("StreamDuration() after Reset = %v, want 0", got)
 		}
-		// The new query's first delta blends with the seeded evidence.
+		// The new query's first delta reads alone: 100 tokens landing on both
+		// scales over the 0.3s prior. A surviving seed would hold the reading
+		// near `held` (~200 t/s) instead of this fresh-delta value.
 		r.Add("chunk", 100)
-		seeded, ok := r.Rate()
+		fresh, ok := r.Rate()
 		if !ok {
-			t.Fatal("Rate() after first delta of the new query = not ok, want ok (seeded)")
+			t.Fatal("Rate() after first delta of the new query = not ok, want ok")
 		}
-		if seeded < held*0.5 {
-			t.Errorf("Rate() after first delta = %.9f, want near the held reading %.9f (seeded, blended)", seeded, held)
+		if want := 200.0 / meterPriorSec; math.IsNaN(fresh) || math.Abs(fresh-want) > 1e-9 {
+			t.Errorf("Rate() after first delta = %.9f, want %.9f (fresh delta alone over the prior, no seed)", fresh, want)
 		}
 	})
 }
 
-func TestTokenRate_ClearKillsTheSeedAtSessionBoundary(t *testing.T) {
-	// /clear starts another session: Reset would seed the first delta from
-	// the old session's sums, but another session's recording must not blend
-	// into this one — Clear wipes the sums so the meter reads fresh.
+func TestTokenRate_ClearWipesSumsAtSessionBoundary(t *testing.T) {
+	// /clear starts another session: another session's recording must not
+	// blend into this one — Clear wipes the sums so the meter reads fresh.
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
 		for range 12 {
@@ -600,11 +600,11 @@ func TestTokenRate_ClearKillsTheSeedAtSessionBoundary(t *testing.T) {
 	})
 }
 
-func TestTokenRate_ResetKeepsSumsUnscaled(t *testing.T) {
-	// Reset keeps the sums verbatim (the old seed scaling died with the
-	// gate): a weak previous turn (60 tokens over 0.75s) already reads, and
-	// after Reset the reading is the exact same kernel value plus the prior
-	// — not an amplified one.
+func TestTokenRate_ResetWipesSums(t *testing.T) {
+	// A weak previous turn (60 tokens over 0.75s) reads ~67 t/s; after Reset
+	// the first delta reads alone: 1 token on both scales over the 0.3s
+	// prior. The exact value pins that none of the old evidence survived —
+	// the seed-era reading sat inside (held, held*1.05].
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
 		for i := range 4 {
@@ -621,30 +621,18 @@ func TestTokenRate_ResetKeepsSumsUnscaled(t *testing.T) {
 		if _, ok := r.Rate(); ok {
 			t.Fatal("Rate() between Reset and the first delta = ok, want false (TTFT blank)")
 		}
-		r.Add("c", 1) // first delta arms the clock; the seed carries over verbatim
-		seeded, ok := r.Rate()
+		r.Add("c", 1) // first delta arms the clock on an empty kernel
+		fresh, ok := r.Rate()
 		if !ok {
 			t.Fatal("Rate() after the first delta = not ok, want ok")
 		}
-		// The 1-token delta (added to both scales) perturbs the ~60-token
-		// evidence by a few percent: the reading stays in a tight band above
-		// the held value. A Reset that cleared or rescaled the sums falls
-		// out of this band.
-		if seeded < held || seeded > held*1.05 {
-			t.Errorf("Rate() after first delta = %.12f, want within (held, held*1.05] = (%.12f, %.12f]", seeded, held, held*1.05)
+		if fresh > held*0.5 {
+			t.Errorf("Rate() after first delta = %.12f, want ≤ %.12f — old evidence survived the Reset", fresh, held*0.5)
 		}
-		// Exact kernel value from the construction: 4x15 tokens at 0.25s
-		// spacing, prior in the shared denominator. The 1-token arming delta
-		// lands on both scales.
-		f5 := math.Exp2(-0.25 / 5)
-		f20 := math.Exp2(-0.25 / 20)
-		tokens5 := 15*(f5*f5*f5+f5*f5+f5+1) + 1
-		tokens20 := 15*(f20*f20*f20+f20*f20+f20+1) + 1
-		time5 := 5 / math.Ln2 * (1 - f5*f5*f5)
-		time20 := 20 / math.Ln2 * (1 - f20*f20*f20)
-		want := (tokens5 + tokens20) / (time5 + time20 + 0.3)
-		if math.IsNaN(seeded) || math.Abs(seeded-want) > 1e-9 {
-			t.Errorf("Rate() after first delta = %.12f, want %.12f (kernel value + prior + 1-token blend)", seeded, want)
+		// Exact kernel value from the construction: 1 token on each scale,
+		// zero time integral, prior in the shared denominator.
+		if want := 2.0 / meterPriorSec; math.IsNaN(fresh) || math.Abs(fresh-want) > 1e-9 {
+			t.Errorf("Rate() after first delta = %.12f, want %.12f (fresh delta alone over the prior)", fresh, want)
 		}
 	})
 }

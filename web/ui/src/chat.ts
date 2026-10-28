@@ -575,7 +575,24 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   let currentThinking: ThinkingEntry | null = null
   let accumulatedThinkingMs = 0  // restored from connect_status, incremented by thinking_end
   let contextTotal = 0
-  const tokenRate = new TokenRate()
+  // One meter per engine ID, mirroring the TUI's per-engine ReplState (each
+  // engine's view owns its rate meter). Buckets are defense in depth against a
+  // missed reset: with a shared meter, one missed reset made engine B display
+  // engine A's rate; with buckets the same miss at worst shows an engine its
+  // own stale reading. Engines are only ever added in wui (engine_new /
+  // engine_switch both broadcast the full list; EngineManager.Remove has no
+  // wui message path), so the map is bounded by the session's engine count —
+  // natural accumulation, no pruning needed.
+  const tokenRates = new Map<string, TokenRate>()
+  let activeEngineID = ''
+  const tokenRate = (): TokenRate => {
+    let m = tokenRates.get(activeEngineID)
+    if (m === undefined) {
+      m = new TokenRate()
+      tokenRates.set(activeEngineID, m)
+    }
+    return m
+  }
   let progressHandles: ProgressDomHandles | null = null
   let progressUsage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
   // The turn's wire estimate of input tokens, shown until its usage event
@@ -676,6 +693,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const header = createHeader({
     onModelSelect: (provider, model) => conn.send({ type: 'model_switch', provider, model }),
     onEngineSwitch: (engineID) => {
+      // Bucket attribution waits for the server's confirmation (metadata /
+      // connect_status) — reader and writer share activeEngineID, so display
+      // stays consistent even when the answer is dropped.
       takeoverBar.start()
       conn.send({ type: 'engine_switch', engineID })
     },
@@ -1053,7 +1073,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     pendingSubtree.clear()
     currentTextDiv = null
     currentThinking = null
-    tokenRate.reset()
+    tokenRate().reset()
     progressHandles = null
     pendingBlocks.length = 0
     pendingToolByID.clear()
@@ -1255,7 +1275,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
       })
       if (progressHandles) {
-        const r = tokenRate.rate()
+        const r = tokenRate().rate()
         refreshProgressBar(
           progressHandles,
           streamStartedAt,
@@ -1264,7 +1284,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         )
         // Live ↓output: authoritative usage-so-far plus wire tokens since the
         // last usage event, so the counter moves during streaming.
-        writeSweepChars(progressHandles.outEl, '↓' + formatTokenCount(progressUsage.outputTokens + tokenRate.localTokens()))
+        writeSweepChars(progressHandles.outEl, '↓' + formatTokenCount(progressUsage.outputTokens + tokenRate().localTokens()))
         // null only while paused (tool execution): display 0.0 rather than
         // an em-dash (user preference — the dash reads as a visual glitch).
         writeSweepChars(progressHandles.rateEl, r !== null ? r.toFixed(1) + ' t/s' : '0.0 t/s')
@@ -1585,7 +1605,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // turns are interior to a parent Agent tool run and own no
         // main-meter boundary.
         if (e.agent) return
-        tokenRate.pause()
+        tokenRate().pause()
         return
       }
       case 'query_end': {
@@ -1720,7 +1740,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
                 cacheCreation: e.usage_event.cache_creation_input_tokens ?? 0,
               }
             : progressUsage
-          const streamMs = tokenRate.streamDurationMs()
+          const streamMs = tokenRate().streamDurationMs()
           finalizeProgressBar(progressHandles, finalUsage,
             streamMs > 0 ? streamMs : (Date.now() - streamStartedAt),
             committedToolCount, accumulatedThinkingMs)
@@ -1779,19 +1799,19 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             container.push(newEntry.pendingBlock)
             currentSubAgentThinking.set(parentID, newEntry)
             newEntry.pendingBlock.text += e.thinking.text
-            tokenRate.add(e.thinking.text, e.tokens ?? 0)
+            tokenRate().add(e.thinking.text, e.tokens ?? 0)
             writeThinkingText(newEntry.p, newEntry.pendingBlock.text)
             domContainer.appendChild(newEntry.p.parentElement!)
             return
           }
           entry.pendingBlock.text += e.thinking.text
-          tokenRate.add(e.thinking.text, e.tokens ?? 0)
+          tokenRate().add(e.thinking.text, e.tokens ?? 0)
           writeThinkingText(entry.p, entry.pendingBlock.text)
           return
         }
         if (!currentThinking) return
         currentThinking.pendingBlock.text += e.thinking.text
-        tokenRate.add(e.thinking.text, e.tokens ?? 0)
+        tokenRate().add(e.thinking.text, e.tokens ?? 0)
         writeThinkingText(currentThinking.p, currentThinking.pendingBlock.text)
         return
       }
@@ -1826,7 +1846,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       case 'text_delta': {
         if (!e.text) return
         if (e.agent) {
-          tokenRate.add(e.text, e.tokens ?? 0)
+          tokenRate().add(e.text, e.tokens ?? 0)
           const parentID = e.agent.parent_tool_use_id
           const container = pendingChildrenFor(parentID)
           if (!container) return
@@ -1866,7 +1886,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         }
         if (currentPendingText) {
           currentPendingText.block.text += e.text
-          tokenRate.add(e.text, e.tokens ?? 0)
+          tokenRate().add(e.text, e.tokens ?? 0)
           if (currentTextDiv) {
             morphHtml(currentTextDiv, renderMarkdown(currentPendingText.block.text))
       wireCopyButtons(currentTextDiv)
@@ -1943,7 +1963,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'tool_param_delta': {
-        if (e.partial_input?.delta) tokenRate.add(e.partial_input.delta, e.tokens ?? 0)
+        if (e.partial_input?.delta) tokenRate().add(e.partial_input.delta, e.tokens ?? 0)
         if (!e.partial_input || !e.partial_input.summary) return
         const targetId = e.partial_input.id
         const summary = e.partial_input.summary
@@ -1964,7 +1984,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // Execution boundary (omp end): params may still stream between
         // tool_start and here — those are generation tokens. From tool_run
         // until the next delta nothing flows, so the clock stops.
-        tokenRate.pause()
+        tokenRate().pause()
         if (!e.tool_use) return
         const ruEntry = toolEntries.get(e.tool_use.id)
         if (!ruEntry) return
@@ -2036,7 +2056,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         progressUsage.outputTokens += u.output_tokens
         // The billed count now covers the streamed deltas: drop the local
         // running sum so ↓output does not double-count them.
-        tokenRate.reconcileLocal()
+        tokenRate().reconcileLocal()
         progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
         progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
         // contextUsed = this turn's total tokens in context (not cumulative)
@@ -2441,6 +2461,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             return
           }
         }
+        // Flip the bucket pointer BEFORE resetAllState: the reset inside must
+        // wipe the incoming engine's bucket (full-clear semantics — its first
+        // stream after the switch meters from zero), not the outgoing one.
+        activeEngineID = msg.engines.activeID
         sidebar.closeImmediate()
         header.setStatus(c.connected)
         header.setModel(c.model ?? '')
@@ -2532,6 +2556,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'connect_status':
+        // engineID rides connect_status "so the frontend can track which
+        // engine is active during a switch" (buildConnectStatus) — set it
+        // before the reset below so the wipe lands on the incoming engine's
+        // bucket, same ordering as the metadata handler.
+        if (msg.engineID) activeEngineID = msg.engineID
         sidebar.closeImmediate()
         header.setStatus(msg.connected)
         header.setModel(msg.model ?? '')
@@ -2540,10 +2569,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!msg.connected) void sttSession.stop()
     resetAllState()
     if (msg.sessionID && msg.sessionID !== currentSessionID) {
-      // New session (sidebar new / session_new): the meter's sums are the
-      // old session's recording and must not seed this one. A reconnect to
-      // the same session keeps them.
-      tokenRate.clear()
+      // New session (sidebar new / session_new). resetAllState's reset()
+      // above already wiped the meter (queries are metered independently),
+      // so this clear() is the same wipe spelled at the session boundary —
+      // kept as the explicit marker of that boundary.
+      tokenRate().clear()
     }
     if (msg.inputHistory) inputHistory.load(msg.inputHistory)
         taskPanel.setTasks([])

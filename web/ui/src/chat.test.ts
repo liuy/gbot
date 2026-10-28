@@ -1476,6 +1476,210 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it("engine switch does not seed the new engine's rate from the old engine's meter", () => {
+    // Regression: engine_switch → server sendMetadata → resetAllState →
+    // tokenRate.reset() kept the decayed sums (omp seed semantics). With one
+    // shared meter for all engines, the new engine's first stream
+    // blended the old engine's rate: slow→fast kept reading ~48 t/s while
+    // the fast engine streamed 120 t/s.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+
+    // Engine A (slow): 15 tokens per 500ms = 30 t/s for 12s.
+    setTextarea('slow engine answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 24; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'slow chunk of words', tokens: 15 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    const slow = parseFloat(findRateSpan()!.textContent!)
+    expect(slow).toBeGreaterThan(20)
+    expect(slow).toBeLessThan(40)
+
+    // A's query ends; the user switches engines. The server answers
+    // engine_switch with a metadata frame for the new engine (connector.go
+    // switchEngine → sendMetadata).
+    dispatchEvents([{ type: 'turn_end' }, { type: 'query_end' }])
+    vi.advanceTimersByTime(2000)
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'engineB' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    // metadata sets pendingPageZero and buffers live events until the page
+    // lands — flush it so engine B's events are applied live.
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false })
+
+    // Engine B (fast): 60 tokens per 500ms = 120 t/s.
+    setTextarea('fast engine answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 8; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'fast chunk of words!', tokens: 60 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    const fast = parseFloat(findRateSpan()!.textContent!)
+    // A's frozen sums dominate the kernel for tens of seconds (20s tail):
+    // the buggy blend reads ~48 t/s; a meter cleared on the switch reads
+    // ~130 t/s from B's deltas alone.
+    expect(fast).toBeGreaterThanOrEqual(80)
+    vi.useRealTimers()
+  })
+
+  it('per-engine buckets: B reads pure B, and returning to A is not polluted by B', () => {
+    // Full A→B→A cycle with per-engine buckets. Each switch's full-clear
+    // wipes the incoming engine's bucket, and B's fast episode never enters
+    // A's bucket — the return stream reads ~30 t/s, not a blend pushed up
+    // by B's 120 t/s residue.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true, engineID: 'engineA' })
+
+    const meta = (engineID: string) => ({
+      type: 'metadata',
+      connect: { connected: true, engineID },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: engineID },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    const flushPage = () =>
+      dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+
+    // Engine A (slow): 15 tokens per 500ms = 30 t/s, turn left dangling.
+    setTextarea('slow engine answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 24; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'slow chunk of words', tokens: 15 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeGreaterThan(20)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeLessThan(40)
+
+    // Mid-stream switch to B (no turn_end/query_end for A) + page flush.
+    dispatch(meta('engineB'))
+    flushPage()
+
+    // Engine B (fast): 60 tokens per 500ms = 120 t/s.
+    setTextarea('fast engine answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 8; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'fast chunk of words!', tokens: 60 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeGreaterThanOrEqual(80)
+
+    // Back to A: A's bucket was wiped by the switch, and B's evidence never
+    // entered it — A's fresh 30 t/s stream reads in the pure-A band (a
+    // B-blended reading would sit well above it).
+    dispatch(meta('engineA'))
+    flushPage()
+    setTextarea('slow engine again')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 24; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'slow chunk of words', tokens: 15 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeGreaterThan(20)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeLessThan(40)
+    vi.useRealTimers()
+  })
+
+  it('per-engine buckets: dropped metadata answer keeps reader and writer on the same bucket', () => {
+    // engine_switch does not flip activeEngineID locally — attribution moves
+    // only on the server's confirmation. With the answer dropped, B's deltas
+    // meter into the pre-switch bucket, the same one the refresh loop reads:
+    // the reading converges on B's actual rate as B's evidence dominates the
+    // kernel (A's decayed 30 t/s tail holds the blend to ~86 t/s after 12s of
+    // B's 120 t/s). A reader/writer bucket split — deltas metered where the
+    // display never looks — would strand the reading on A's decay at ~9 t/s.
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true, engineID: 'e1' })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true, engineID: 'e1' },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: {
+        engines: [
+          { id: 'e1', name: 'agent-1', model: 'm' },
+          { id: 'e2', name: 'agent-2', model: 'm' },
+        ],
+        activeID: 'e1',
+      },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({ type: 'history', messages: [], nextCursor: '', hasMore: false })
+
+    // Engine A (slow): 15 tokens per 500ms = 30 t/s, turn left dangling.
+    setTextarea('slow engine answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    for (let i = 0; i < 24; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'slow chunk of words', tokens: 15 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeGreaterThan(20)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeLessThan(40)
+
+    // User picks agent-2: engine_switch leaves, and the answer never comes.
+    const trigger = document.querySelector(
+      'header button.text-\\[15px\\]:not(.hidden)',
+    ) as HTMLButtonElement
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panel = document.querySelector(
+      '[data-testid="engine-picker-panel"]',
+    ) as HTMLElement
+    const row = Array.from(panel.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('agent-2'),
+    ) as HTMLButtonElement
+    row.click()
+    expect(
+      sent.find((m) => (m as { type: string }).type === 'engine_switch'),
+    ).toEqual({ type: 'engine_switch', engineID: 'e2' })
+
+    // B's deltas land with no reset: 60 tokens per 500ms = 120 t/s, 12s —
+    // the blend must climb past the pure-B band's floor, proving the
+    // displayed meter is still tracking the deltas that actually arrive.
+    for (let i = 0; i < 24; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'fast chunk of words!', tokens: 60 }])
+      vi.advanceTimersByTime(500)
+    }
+    vi.advanceTimersByTime(200)
+    expect(parseFloat(findRateSpan()!.textContent!)).toBeGreaterThanOrEqual(80)
+    vi.useRealTimers()
+  })
+
   it('tool_run pauses the rate display; the resumed reading excludes the tool gap', () => {
     // omp: "Tool execution between messages neither ages the sums nor counts
     // as time" — tool_run is the wui's execution boundary. The display falls
@@ -1653,7 +1857,7 @@ describe('chat integration', () => {
     }
     vi.useRealTimers()
   })
-  it('second query inherits the previous reading immediately (Reset seeding)', () => {
+  it('second query meters independently: TTFT blank, first delta reads on its own', () => {
     vi.useFakeTimers()
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -1668,20 +1872,20 @@ describe('chat integration', () => {
     const r0 = parseFloat(findRateSpan()?.textContent ?? '0')
     expect(r0).toBeGreaterThan(0)
     dispatchEvents([{ type: 'query_end' }])
-    // Next query: the first tick after query_start must already show the
-    // seeded reading, not a cold 0.0 (omp seed parity).
+    // Next query: the meter was wiped at query_start — TTFT stays 0.0, and
+    // the first delta reads on its own (no gate: the 300ms prior makes even
+    // one token visible).
     setTextarea('second query')
     pressEnter()
     dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
     vi.advanceTimersByTime(200)
-    // TTFT: no delta yet — the seeded reading must not play back over the
-    // new query's wait; the bar reads 0.0.
+    // TTFT: no delta yet — nothing to read; the bar reads 0.0.
     const ttft = document.body.textContent?.match(/([\d.]+) t\/s/g) ?? []
     expect(ttft.some((s) => parseFloat(s) > 0)).toBe(false)
     dispatchEvents([{ type: 'text_delta', text: 'first', tokens: 1 }])
     vi.advanceTimersByTime(200)
-    const seeded = document.body.textContent?.match(/([\d.]+) t\/s/g) ?? []
-    expect(seeded.some((s) => parseFloat(s) > 0)).toBe(true)
+    const firstDelta = document.body.textContent?.match(/([\d.]+) t\/s/g) ?? []
+    expect(firstDelta.some((s) => parseFloat(s) > 0)).toBe(true)
     // Sidebar new-session: connect_status with a different sessionID wipes
     // the meter — the new session starts with no old-session blend.
     dispatch({ type: 'connect_status', connected: true, sessionID: 'other-session' })
@@ -1692,7 +1896,8 @@ describe('chat integration', () => {
     vi.advanceTimersByTime(200)
     const fresh = parseFloat(findRateSpan()?.textContent ?? '999')
     expect(fresh).toBeLessThanOrEqual(10) // 2 tokens / 0.3s ≈ 6.7, no blend
-    // Reconnect to the same session keeps the sums (seed survives).
+    // Reconnect to the same session (sessionID unchanged, no clear()):
+    // dispatch must not throw.
     dispatch({ type: 'connect_status', connected: true, sessionID: 'other-session' })
     expect(() => dispatchEvents([{ type: 'text_delta', text: 'x', tokens: 1 }])).not.toThrow()
     vi.useRealTimers()

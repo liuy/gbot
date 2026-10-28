@@ -55,10 +55,12 @@ describe('TokenRate', () => {
     vi.useRealTimers()
   })
 
-  it('reset seeds the next query: reading holds, per-query accounting clears', () => {
-    // omp seed(): the previous query's evidence carries over, so the reading
-    // holds instead of restarting cold; the local ledger and
-    // stream-duration accounting are per-query and still clear.
+  it('reset wipes the meter for the next query: fresh evidence, per-query accounting clears', () => {
+    // Full clear (user decision, see clear()'s doc): the omp seed — the
+    // previous query's evidence carrying over — polluted the next query's
+    // first seconds whenever the meter belonged to another engine, so every
+    // query is metered independently. The local ledger and stream-duration
+    // accounting are per-query and still clear.
     vi.useFakeTimers()
     const tr = new TokenRate()
     for (let i = 0; i < 12; i++) {
@@ -70,21 +72,24 @@ describe('TokenRate', () => {
     tr.pause() // query ended on a tool boundary; reset must clear the flag
     tr.reset()
     // TTFT: reset disarms the clock — no reading until this query's first
-    // delta (the seed is last query's recording and must not play back).
+    // delta.
     expect(tr.rate()).toBe(null)
     expect(tr.localTokens()).toBe(0)
     expect(tr.streamDurationMs()).toBe(0)
-    // The new query's first delta blends with the seeded evidence.
+    // The new query's first delta reads alone: 100 tokens landing on both
+    // scales over the 300ms prior. A surviving seed would hold the reading
+    // near `held` (~200 t/s) instead of this fresh-delta value.
     tr.add('chunk', 100)
-    const seeded = tr.rate()
-    expect(seeded).not.toBe(null)
-    expect(seeded!).toBeGreaterThan(held! * 0.5)
+    const fresh = tr.rate()
+    expect(fresh).not.toBe(null)
+    expect(fresh!).toBeCloseTo((200 * 1000) / 300, 6)
+    expect(fresh!).toBeGreaterThan(held! * 2)
     vi.useRealTimers()
   })
-  it('clear kills the seed at a session boundary', () => {
-    // New session (sidebar new-session / TUI /clear): reset() would seed
-    // from the old session's sums, but another session's recording must not
-    // blend into this one — clear() wipes the sums and the meter reads fresh.
+  it('clear wipes the sums at a session boundary', () => {
+    // New session (sidebar new-session / TUI /clear): another session's
+    // recording must not blend into this one — clear() wipes the sums and
+    // the meter reads fresh.
     vi.useFakeTimers()
     const tr = new TokenRate()
     for (let i = 0; i < 12; i++) {
@@ -103,10 +108,11 @@ describe('TokenRate', () => {
     expect(fresh!).toBeLessThanOrEqual((20 / 300) * 1000 * 1.05)
     vi.useRealTimers()
   })
-  it('reset keeps the sums unscaled: the seeded reading is the kernel value', () => {
-    // Reset keeps the sums verbatim — the old seed scaling died with the
-    // gate. A weak turn (60 tokens over 0.75s) already reads, and Reset
-    // holds the exact same kernel value, derived from the construction.
+  it('reset wipes the sums: the first delta reads alone', () => {
+    // A weak previous turn (60 tokens over 0.75s) reads ~67 t/s; after
+    // reset the first delta reads alone — 1 token on both scales over the
+    // 300ms prior. The exact value pins that none of the old evidence
+    // survived the reset.
     vi.useFakeTimers()
     const tr = new TokenRate()
     for (let i = 0; i < 4; i++) {
@@ -116,16 +122,13 @@ describe('TokenRate', () => {
     const held = tr.rate() // dt=0 read right at the last delta
     expect(held).not.toBe(null)
     tr.reset()
-    // TTFT blank, then the first delta blends 1 token into both scales.
+    // TTFT blank, then the first delta arms the clock on an empty kernel.
     expect(tr.rate()).toBe(null)
     tr.add('c', 1)
-    const seeded = tr.rate()
-    expect(seeded).not.toBe(null)
-    const f5 = 2 ** (-250 / 5000)
-    const f20 = 2 ** (-250 / 20000)
-    const tokens = 15 * (f5 * f5 * f5 + f5 * f5 + f5 + 1) + 15 * (f20 * f20 * f20 + f20 * f20 + f20 + 1) + 2
-    const time = (5000 / Math.LN2) * (1 - f5 * f5 * f5) + (20000 / Math.LN2) * (1 - f20 * f20 * f20)
-    expect(seeded!).toBeCloseTo((tokens * 1000) / (time + 300), 6)
+    const fresh = tr.rate()
+    expect(fresh).not.toBe(null)
+    expect(fresh!).toBeLessThan(held! * 0.5)
+    expect(fresh!).toBeCloseTo((2 * 1000) / 300, 6)
     vi.useRealTimers()
   })
 

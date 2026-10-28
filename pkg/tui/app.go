@@ -171,7 +171,8 @@ type App struct {
 	// Spinner progress state
 	allToolsExpanded bool
 
-	// Real-time token rate cached for 1s to avoid jitter. ok=false while the
+	// Real-time token rate cached for 500ms (the progress-line throttle) to
+	// avoid jitter. ok=false while the
 	// evidence gate is closed: the rate segment is then omitted rather than
 	// shown as a misleading 0.0.
 	rateDisplayVal  float64

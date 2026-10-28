@@ -258,6 +258,11 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	a.toolBlink = false
 	a.toolBlinkTick = 0
 	a.retryActive = false
+	// The rate cache is App-level display state like the rest of this block:
+	// left stamped, the first post-switch frame — inside the 500ms throttle
+	// window — attributes the old engine's t/s to the new engine's stream.
+	// A zero stamp expires the throttle, so that frame reads the new meter.
+	a.rateDisplayTime = time.Time{}
 	// committedCount, displayedInputTokens, etc. live on ReplState and
 	// travel with a.repl automatically when switchEngine rebinds it —
 	// no manual reset here.

@@ -76,10 +76,15 @@ func NewTokenRate() *TokenRate {
 	return r
 }
 
-// Clear wipes the meter entirely, sums included. Session boundary use only
-// (/clear, new session): Reset seeds the next query of the SAME session from
-// the surviving sums, but a different session's rate is another world's
-// recording and must not blend into this one's first delta.
+// Clear wipes the meter entirely, sums included. Both boundary spellings land
+// here: the session boundary (/clear, new session) and — via Reset — every
+// query boundary. omp's seed() kept the sums so the next query's first deltas
+// blended with a live reading; dropped deliberately (user decision): the
+// reading belongs to the query that is producing it — carried-over evidence
+// is a stale recording of a different stream state (context grown, cache
+// cold), and its 1-2s of opening smoothness is not worth a reading that
+// starts describing the previous query. The 0.3s prior keeps the cold
+// restart conservative enough that the climb is barely visible.
 func (r *TokenRate) Clear() {
 	if r == nil {
 		return
@@ -214,8 +219,8 @@ func (r *TokenRate) Rate() (float64, bool) {
 	if r.paused {
 		return 0, false
 	}
-	// Between Reset and the first delta of the query (TTFT): the seeded sums
-	// are last query's recording, and the bar belongs to this query — no
+	// Between Reset and the first delta of the query (TTFT): the meter holds
+	// no evidence (Reset wiped it), and the bar belongs to this query — no
 	// reading until the first delta arms the clock.
 	if r.advancedTo.IsZero() {
 		return 0, false
@@ -231,26 +236,11 @@ func (r *TokenRate) Rate() (float64, bool) {
 	return totalTokens / (totalTime + meterPriorSec), true
 }
 
-// Reset starts a new query. The rate sums are kept on purpose: like omp's
-// seed(), the previous query's evidence carries over ("even short turns
-// read immediately... the reading holds until the next message blends with
-// it"), so the first deltas of the new query blend with a live reading.
-// Keeping the sums is the seed equivalent — and simpler — since the previous
-// query's evidence is still in the kernel and decays naturally into the new
-// one. Per-query accounting (stream duration, burst state, pause flag) still
-// clears, and advancedTo zeroes so no cross-query wall time ages the sums
-// before the first delta re-arms the clock.
+// Reset starts a new query on a fresh meter: it delegates to Clear — after
+// the seed semantics died (see Clear), a query boundary and a session
+// boundary wipe the same, so every query is metered independently.
 func (r *TokenRate) Reset() {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.advancedTo = time.Time{}
-	r.paused = false
-	r.totalStreamingNs = 0
-	r.curBurstStart = time.Time{}
-	r.lastSampleTs = time.Time{}
+	r.Clear()
 }
 
 // StreamDuration returns the total wall-clock time spent streaming,

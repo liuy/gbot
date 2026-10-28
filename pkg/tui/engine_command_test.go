@@ -777,6 +777,120 @@ func TestSwitchEngine_ToStreamingEngine_RestoresProgressLine(t *testing.T) {
 	}
 }
 
+// TestSwitchEngine_RateDisplayReflectsNewEngine verifies the progress line's
+// rate segment right after switching INTO a streaming engine reads the new
+// engine's meter. The throttle cache (a.rateDisplayVal/Ok/Time) is App-level
+// display state: switchEngine rebinds a.repl but does not invalidate the
+// cache, so the first post-switch render — inside the 500ms throttle window —
+// attributes the previous engine's t/s to the new engine's stream.
+func TestSwitchEngine_RateDisplayReflectsNewEngine(t *testing.T) {
+	// Writes the package-level nowFn; must not run in parallel. Base seeds
+	// the fake meter clock; all meter time advances through advance() below.
+	base := time.Now() // REAL-TIME: fake-clock seed, only the offset is real
+	cur := base
+	orig := nowFn
+	nowFn = func() time.Time { return cur }
+	t.Cleanup(func() { nowFn = orig })
+	advance := func(d time.Duration) { cur = cur.Add(d) }
+
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+	mainRepl := a.repl
+	e2Repl := a.engineMgr.Get("e2").Repl.(replSnapshotAdapter).r
+
+	mainRepl.StartQuery()
+	// e2 is mid-stream (its query started before the switch). Its background
+	// drain never feeds the rate meter (multiengine.go buildBackgroundDrainFn),
+	// so seed e2's meter directly — standing in for whatever evidence it carries.
+	e2Repl.StartQueryAtForTest(time.Now().Add(-12 * time.Second)) // REAL-TIME: relative offset only, anchors the progress line
+
+	// Interleaved feeding keeps both meters' last sample at the same fake
+	// instant, so each reads at dt=0: main at 30 t/s, e2 at 120 t/s.
+	for i := range 24 {
+		if i > 0 {
+			advance(500 * time.Millisecond)
+		}
+		mainRepl.TokenRate().Add("slow chunk", 15)
+		e2Repl.TokenRate().Add("fast chunk", 60)
+	}
+
+	// Load the throttle cache with main's reading (~30 t/s). The 500ms
+	// throttle compares against production time.Now(); a 1s-old stamp forces
+	// the refresh, and the post-switch View below runs well inside the window.
+	a.rateDisplayTime = time.Now().Add(-time.Second) // REAL-TIME: the throttle's clock is real
+	rMain := extractViewRateTps(t, a.View())
+	if rMain < 20 || rMain > 40 {
+		t.Fatalf("precondition: main's displayed rate = %.1f t/s, want ~30 (15 tokens per 500ms)", rMain)
+	}
+
+	// Switch into the streaming engine and render immediately — well inside
+	// the 500ms throttle window, like the real first post-switch frame.
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine(main→e2) returned nil cmd")
+	}
+	rPost := extractViewRateTps(t, a.View())
+	if rPost < 80 {
+		t.Errorf("progress-line rate after switch = %.1f t/s, want >=80 (e2 streams 60 tokens per 500ms = 120 t/s) — "+
+			"the App-level rateDisplay cache carried main's %.1f t/s across the engine switch", rPost, rMain)
+	}
+	if rPost > 200 {
+		t.Errorf("progress-line rate after switch = %.1f t/s, want <=200 sanity bound", rPost)
+	}
+}
+
+// TestSwitchEngine_TokenRateMeterIsPerEngine pins the per-engine meter
+// contract: after a switch, active-path deltas feed the NEW engine's meter
+// and the display reads that same meter — the previous engine's evidence
+// never blends in. This is what pkg/tui gets right that the wui twin
+// (web/ui/src/chat.ts keeps one module-level meter) gets wrong.
+func TestSwitchEngine_TokenRateMeterIsPerEngine(t *testing.T) {
+	// Writes the package-level nowFn; must not run in parallel. Base seeds
+	// the fake meter clock; all meter time advances through advance() below.
+	base := time.Now() // REAL-TIME: fake-clock seed, only the offset is real
+	cur := base
+	orig := nowFn
+	nowFn = func() time.Time { return cur }
+	t.Cleanup(func() { nowFn = orig })
+	advance := func(d time.Duration) { cur = cur.Add(d) }
+
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+	mainRepl := a.repl
+
+	// main's last query left a 1000-token dump in its meter.
+	mainRepl.StartQuery()
+	mainRepl.TokenRate().Add("leftover from main's query", 1000)
+
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine(main→e2) returned nil cmd")
+	}
+	if a.repl.TokenRate() == mainRepl.TokenRate() {
+		t.Fatal("a.repl.TokenRate() still points at main's meter after switchEngine")
+	}
+
+	// New engine's query streams 3x100 tokens at 500ms: e2-only evidence
+	// reads ~260 t/s. main's 1000-token dump blended in would read >1000.
+	a.repl.StartQuery()
+	for i := range 3 {
+		if i > 0 {
+			advance(500 * time.Millisecond)
+		}
+		a.updateRepl(textDeltaMsg{Text: "chunk", Tokens: 100})
+	}
+	rate, ok := a.repl.TokenRate().Rate()
+	if !ok {
+		t.Fatal("post-switch Rate() = not ok — e2's deltas did not feed the new engine's meter")
+	}
+	if rate < 230 || rate > 290 {
+		t.Errorf("post-switch rate = %.1f t/s, want ~260 from e2's deltas alone — "+
+			"the previous engine's meter evidence leaked across the engine switch", rate)
+	}
+}
+
 // TestSwitchEngine_ToStreamingEngine_BootstrapsSpinnerTick verifies that
 // switching INTO a streaming engine bootstraps the spinner animation:
 // (1) a.spinner.Start() is called so the spinner renders frames, and

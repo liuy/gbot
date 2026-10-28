@@ -105,8 +105,8 @@ export class TokenRate {
    * returns null — 0.0 t/s is more honest than a stale frozen value. */
   rate(): number | null {
     if (this.paused) return null
-    // Between reset and the first delta of the query (TTFT): the seeded sums
-    // are last query's recording, and the bar belongs to this query — null
+    // Between reset and the first delta of the query (TTFT): the meter holds
+    // no evidence (reset wiped it), and the bar belongs to this query — null
     // until the first delta arms the clock.
     if (this.advancedTo === 0) return null
     const dtMs = Date.now() - this.advancedTo
@@ -140,30 +140,29 @@ export class TokenRate {
     return totalMs > 0 ? totalMs : 0
   }
 
-  /** Start a new query. The rate sums are kept on purpose: like omp's
-   * seed(), the previous query's evidence carries over ("even short turns
-   * read immediately... the reading holds until the next message blends
-   * with it"), so the first deltas of the new query blend with a live
-   * reading. omp seeds
-   * scaled output/duration; keeping the sums is the equivalent — and
-   * simpler — implementation. Per-query accounting (local ledger, stream
-   * duration, burst state, pause flag) still clears, and advancedTo zeroes
-   * so no cross-query wall time ages the sums before the first delta
-   * re-arms the clock. */
+  /** Start a new query on a fresh meter: delegates to clear() — after the
+   * seed semantics died (see clear()), a query boundary and a session
+   * boundary wipe the same, so every query is metered independently. */
   reset(): void {
+    this.clear()
+  }
+
+  /** Wipe entirely, sums included. Both boundary spellings land here: the
+   * session boundary (new session) and — via reset() — every query boundary.
+   * omp's seed() kept the sums so the next query's first deltas blended with
+   * a live reading; dropped deliberately (user decision): the reading
+   * belongs to the query that is producing it — carried-over evidence is a
+   * stale recording of a different stream state (context grown, cache cold),
+   * and its 1-2s of opening smoothness is not worth a reading that starts
+   * describing the previous query. The 0.3s prior keeps the cold
+   * restart conservative enough that the climb is barely visible. */
+  clear(): void {
     this.advancedTo = 0
     this.paused = false
     this.local = 0
     this.totalStreamingNs = 0
     this.curBurstStart = 0
     this.lastSampleTs = 0
-  }
-
-  /** Wipe entirely, sums included. Session boundary use only (new session):
-   * reset() seeds the next query of the SAME session from the surviving
-   * sums, but another session's rate is another world's recording. */
-  clear(): void {
-    this.reset()
     for (const s of this.sums) {
       s.tokens = 0
       s.time = 0
