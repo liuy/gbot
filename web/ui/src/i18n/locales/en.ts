@@ -242,7 +242,6 @@ export const dict = {
   shareDlOk: 'Download',
   shareDlCancel: 'Cancel',
   artifactDownload: 'Download',
-  expandEarlier: (n: number) => `⋯ expand earlier (${n})`,
 } as const
 
 export const endonym = 'English'

@@ -217,7 +217,6 @@ export const dict: Dict = {
   shareDlOk: '下載',
   shareDlCancel: '取消',
   artifactDownload: '下載',
-  expandEarlier: (n: number) => `⋯ 展開更早 (${n})`,
 }
 
 export const endonym = '繁體中文'

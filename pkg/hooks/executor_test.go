@@ -169,8 +169,11 @@ func TestExecuteHook_StdoutNonJSON(t *testing.T) {
 
 func TestExecuteHook_Timeout(t *testing.T) {
 	e := &CommandExecutor{}
-	// Command that sleeps longer than timeout
-	result := e.ExecuteHook(context.Background(), "sleep 10", &HookInput{}, 100*time.Millisecond, nil)
+	// Command that sleeps longer than timeout. The window is 1s, not tens of
+	// ms: under make check's parallel load a bash fork/exec can itself exceed
+	// 100ms, and CommandContext.Start fails on an already-expired ctx — that
+	// surfaces as non_blocking_error instead of Timeout (flaky seen 10-29).
+	result := e.ExecuteHook(context.Background(), "sleep 5", &HookInput{}, 1*time.Second, nil)
 	if result.Outcome != HookOutcomeTimeout {
 		t.Errorf("Outcome = %v, want HookOutcomeTimeout", result.Outcome)
 	}

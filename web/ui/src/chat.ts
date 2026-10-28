@@ -620,15 +620,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (parentID) currentSubAgentThinking.set(parentID, entry)
       else currentThinking = entry
     },
-    onExpandEarlier: (block, btn) => {
-      btn.addEventListener('click', () => {
-        if (btn.disabled) return
-        btn.disabled = true
-        const nonce = nextHistoryNonce()
-        pendingSubtree.set(nonce, { blockID: block.id, btn })
-        conn.send({ type: 'subtree_request', blockID: block.id, anchor: block.truncatedCursor ?? '', limit: 30, nonce })
-      })
-    },
+    onTruncated: (block) => fireSubtreeFetch(block),
   }
   let queuedMsgs: QueuedMsg[] = []
   // Local metas for the attachment blocks of the last abort-rewound user
@@ -653,14 +645,30 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Not cleared in resetAllState: every send overwrites it, and no frame
   // can arrive between the reset and the next send.
   let expectedHistoryNonce = 0
-  // In-flight subtree_request reconciliation: nonce → requesting blockID +
-  // button. Entries deliberately hold no block reference — pendingToolByID
-  // owns the object, so the anchor-advance write and the click closure's
-  // next read can never drift between two copies. Nonce 0 never appears in
-  // a real request (nextHistoryNonce returns ≥1), so the server's
-  // `nonce uint64 omitempty` can never strip the echo key of a live entry
-  // and strand its button disabled.
-  const pendingSubtree = new Map<number, { blockID: string; btn: HTMLButtonElement }>()
+  // In-flight subtree_request reconciliation: nonce → requesting blockID.
+  // Entries deliberately hold no block reference — pendingToolByID owns the
+  // object, so the anchor-advance write and the next send's read can never
+  // drift between two copies. Nonce 0 never appears in a real request
+  // (nextHistoryNonce returns ≥1), so the server's `nonce uint64 omitempty`
+  // can never strip the echo key of a live entry and strand the block
+  // unfetchable.
+  const pendingSubtree = new Map<number, { blockID: string }>()
+
+  // Single send gate shared by the render-time first page and the scroll
+  // continuation. No separate "done" flag: hasMore:false writes back
+  // truncated=0/nextAnchor='' and a stale frame clears the cursor, so both
+  // terminals close this gate for good.
+  function subtreeInFlight(blockID: string): boolean {
+    for (const e of pendingSubtree.values()) if (e.blockID === blockID) return true
+    return false
+  }
+  function fireSubtreeFetch(block: ToolBlock): void {
+    if ((block.truncated ?? 0) <= 0 || !block.truncatedCursor) return
+    if (subtreeInFlight(block.id)) return
+    const nonce = nextHistoryNonce()
+    pendingSubtree.set(nonce, { blockID: block.id })
+    conn.send({ type: 'subtree_request', blockID: block.id, anchor: block.truncatedCursor, limit: 30, nonce })
+  }
 
   // ── Shell DOM: relative root, sidebar + mainContent, scroll fills viewport.
   const root = createElement('div', 'relative flex flex-col h-dvh')
@@ -999,7 +1007,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       scrollBtnHandle.setProgress(progress)
     }
     maybePrefetchHistory()
-    autoExpandSubtrees()
+    autoFetchSubtrees()
   }
 
   // Prefetch when fewer than REMAINING_THRESHOLD messages are above the viewport.
@@ -1023,21 +1031,22 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  // Auto-expand: a truncation sentinel within SUBTREE_AUTO_EXPAND_PX of the
-  // viewport top (either side) pulls its page via btn.click() — the same
-  // listener the manual path wires, so the disabled dedup and the anchor
-  // advance are shared. The upper bound matters as much as the lower: with
-  // only "top > -PX" a sentinel far below the viewport would fire on every
-  // scroll. Buttons are queried from live DOM per event — no observers to
-  // register, nothing to clean on block teardown. Runs in the same callback
-  // as maybePrefetchHistory; truncated blocks are rare, so the selector hits
-  // a handful.
-  const SUBTREE_AUTO_EXPAND_PX = 300
-  function autoExpandSubtrees() {
-    for (const btn of (streamContainer ?? document).querySelectorAll<HTMLButtonElement>('[data-subtree-expand]')) {
-      if (btn.disabled) continue
-      const top = btn.getBoundingClientRect().top
-      if (top > -SUBTREE_AUTO_EXPAND_PX && top < SUBTREE_AUTO_EXPAND_PX) btn.click()
+  // Auto continuation: a truncated block whose children-container top (the
+  // old button seat — same geometry) sits within SUBTREE_AUTO_FETCH_PX of
+  // the viewport top (either side) pulls its next page. The upper bound
+  // matters as much as the lower: with only "top > -PX" a seam far below
+  // the viewport would fire on every scroll. Tool entries are iterated, not
+  // the DOM — a truncated block is necessarily running (tool_end clears
+  // children before any later freeze), and tool_end's entry delete skips
+  // folded blocks for free. The loop only writes pendingSubtree (via the
+  // shared send gate), never toolEntries, so the iteration cannot break.
+  const SUBTREE_AUTO_FETCH_PX = 300
+  function autoFetchSubtrees() {
+    for (const entry of toolEntries.values()) {
+      const block = entry.pendingBlock
+      if ((block.truncated ?? 0) <= 0 || !block.truncatedCursor) continue
+      const top = entry.handles.childrenContainer.getBoundingClientRect().top
+      if (top > -SUBTREE_AUTO_FETCH_PX && top < SUBTREE_AUTO_FETCH_PX) fireSubtreeFetch(block)
     }
   }
 
@@ -1644,10 +1653,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         console.debug('[chat] query_end aborted=' + wasAborted + ' rewound=' + serverRewound + ' rewound_text=' + (e.rewound_text ? 'yes' : 'no'))
         finalizeRunningBlocks(pendingBlocks, wasAborted)
         finalizeActiveThinking()
-        // Normal tool_end folds already removed their cards' buttons; this
-        // sweep is the abort/leftover guard for any dead button still
-        // mounted (server stale frames back it up from the other end).
-        streamContainer?.querySelectorAll('[data-subtree-expand]').forEach((el) => el.remove())
 
         if (wasAborted) {
           const last = messages[messages.length - 1]
@@ -2738,14 +2743,17 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!entry) return
         pendingSubtree.delete(msg.nonce)
         if (msg.stale) {
-          entry.btn.remove()
+          // Generation moved on — the anchor will never match again. Clearing
+          // the cursor permanently closes the send gate (truncated stays: the
+          // tool_end fold condition still needs it).
+          const parent = pendingToolByID.get(msg.blockID)
+          if (parent) parent.truncatedCursor = undefined
           return
         }
         const parent = pendingToolByID.get(msg.blockID)
         const container = subAgentContainer(msg.blockID)
         if (!parent || !container) {
           // tool_end/query_end already folded the card: nowhere to prepend.
-          entry.btn.remove()
           return
         }
         const seen = new Set<string>()
@@ -2763,8 +2771,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           }
         }
         parent.children.unshift(...kept)
-        // Anchor advance writes the same object the click closure reads —
-        // the next click sends msg.nextAnchor, not the stale cursor.
+        // Anchor advance writes the same object the send gate reads — the
+        // next fetch sends msg.nextAnchor, not the stale cursor.
         parent.truncated = msg.remaining
         parent.truncatedCursor = msg.nextAnchor
         registerBlocksForStreamState(kept, msg.blockID)
@@ -2772,15 +2780,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         const prevTop = scroll.scrollTop
         const frag = createFragment()
         for (const b of kept) renderStreamBlock(frag as unknown as HTMLElement, b, null, msg.blockID, liveSink)
-        container.insertBefore(frag, entry.btn.nextSibling)
+        container.insertBefore(frag, container.firstChild)
         if (!isNearBottom) {
           scroll.scrollTop = prevTop + (scroll.scrollHeight - prevHeight)
-        }
-        if (msg.hasMore) {
-          entry.btn.disabled = false
-          entry.btn.textContent = t('expandEarlier')(msg.remaining)
-        } else {
-          entry.btn.remove()
         }
         return
       }
