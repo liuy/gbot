@@ -79,23 +79,11 @@ func UnmarshalMcpPolicyEntry(raw json.RawMessage) (McpPolicyEntry, error) {
 
 	switch {
 	case probe.ServerName != nil:
-		var e McpNameEntry
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, err
-		}
-		return &e, nil
+		return &McpNameEntry{ServerName: *probe.ServerName}, nil
 	case len(probe.ServerCommand) > 0:
-		var e McpCommandEntry
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, err
-		}
-		return &e, nil
+		return &McpCommandEntry{ServerCommand: probe.ServerCommand}, nil
 	case probe.ServerUrl != nil:
-		var e McpUrlEntry
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return nil, err
-		}
-		return &e, nil
+		return &McpUrlEntry{ServerUrl: *probe.ServerUrl}, nil
 	default:
 		return nil, fmt.Errorf("invalid policy entry: must have serverName, serverCommand, or serverUrl")
 	}
@@ -176,7 +164,7 @@ func AddScopeToServers(
 func GetServerCommandArray(cfg McpServerConfig) []string {
 	// Non-stdio servers don't have commands.
 	// TS: config.type !== undefined && config.type !== 'stdio' → return null
-	if t := cfg.GetTransport(); t != TransportStdio && t != "" {
+	if t := cfg.GetTransport(); t != TransportStdio {
 		return nil
 	}
 	stdio, ok := cfg.(*StdioConfig)
@@ -294,10 +282,8 @@ func UrlPatternToRegex(pattern string) string {
 // UrlMatchesPattern checks if a URL matches a pattern with wildcard support.
 // Source: config.ts:331-334 urlMatchesPattern
 func UrlMatchesPattern(url, pattern string) bool {
-	re, err := regexp.Compile(UrlPatternToRegex(pattern))
-	if err != nil {
-		return false
-	}
+	// UrlPatternToRegex output is QuoteMeta-escaped with "*"→".*", always compilable.
+	re, _ := regexp.Compile(UrlPatternToRegex(pattern))
 	return re.MatchString(url)
 }
 
@@ -383,7 +369,7 @@ func DedupClaudeAiMcpServers(
 	servers = make(map[string]ScopedMcpServerConfig)
 	for name, cfg := range claudeAiServers {
 		sig := GetMcpServerSignature(cfg.Config)
-		if manualDup, ok := manualSigs[sig]; ok && sig != "" {
+		if manualDup, ok := manualSigs[sig]; ok {
 			suppressed = append(suppressed, SuppressedServer{
 				Name:        name,
 				DuplicateOf: manualDup,
@@ -580,12 +566,7 @@ func IsMcpServerAllowedByPolicy(
 				return false
 			}
 			// No command entries — check name-based.
-			for _, entry := range allowedEntries {
-				if ne, ok := entry.(*McpNameEntry); ok && ne.ServerName == serverName {
-					return true
-				}
-			}
-			return false
+			return nameEntryAllowed(allowedEntries, serverName)
 		} else if serverUrl != "" {
 			// Remote server.
 			if hasUrlEntries {
@@ -597,24 +578,19 @@ func IsMcpServerAllowedByPolicy(
 				return false
 			}
 			// No URL entries — check name-based.
-			for _, entry := range allowedEntries {
-				if ne, ok := entry.(*McpNameEntry); ok && ne.ServerName == serverName {
-					return true
-				}
-			}
-			return false
+			return nameEntryAllowed(allowedEntries, serverName)
 		} else {
 			// Unknown server type — check name-based only.
-			for _, entry := range allowedEntries {
-				if ne, ok := entry.(*McpNameEntry); ok && ne.ServerName == serverName {
-					return true
-				}
-			}
-			return false
+			return nameEntryAllowed(allowedEntries, serverName)
 		}
 	}
 
 	// No config provided — check name-based only.
+	return nameEntryAllowed(allowedEntries, serverName)
+}
+
+// nameEntryAllowed reports whether a name-based policy entry matches serverName.
+func nameEntryAllowed(allowedEntries []McpPolicyEntry, serverName string) bool {
 	for _, entry := range allowedEntries {
 		if ne, ok := entry.(*McpNameEntry); ok && ne.ServerName == serverName {
 			return true
@@ -700,16 +676,9 @@ func ParseMcpConfig(
 					Suggestion: fmt.Sprintf("Set the following environment variables: %s", strings.Join(missingVars, ", ")),
 				})
 			}
-			// Re-marshal the expanded config.
-			expandedRaw, marshalErr := json.Marshal(expanded)
-			if marshalErr != nil {
-				allErrors = append(allErrors, ValidationError{
-					File:    filePath,
-					Path:    fmt.Sprintf("mcpServers.%s", name),
-					Message: fmt.Sprintf("Failed to marshal expanded config: %v", marshalErr),
-				})
-				continue
-			}
+			// Re-marshal the expanded config. Marshal cannot fail here:
+			// expanded holds only the 8 concrete config types just parsed.
+			expandedRaw, _ := json.Marshal(expanded)
 			validatedServers[name] = expandedRaw
 		} else {
 			validatedServers[name] = serverRaw

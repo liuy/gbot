@@ -350,8 +350,14 @@ func TestDedupClaudeAiMcpServers_EnabledManualSuppresses(t *testing.T) {
 	if len(servers) != 0 {
 		t.Errorf("enabled manual should suppress connector, got %d servers", len(servers))
 	}
-	if len(suppressed) != 1 || suppressed[0].DuplicateOf != "slack" {
-		t.Errorf("expected 1 suppressed matching 'slack', got %v", suppressed)
+	if len(suppressed) != 1 {
+		t.Fatalf("expected 1 suppressed entry, got %v", suppressed)
+	}
+	if suppressed[0].DuplicateOf != "slack" {
+		t.Errorf("suppressed DuplicateOf = %q, want 'slack'", suppressed[0].DuplicateOf)
+	}
+	if suppressed[0].Name != "claude.ai Slack" {
+		t.Errorf("suppressed Name = %q, want 'claude.ai Slack'", suppressed[0].Name)
 	}
 }
 
@@ -635,8 +641,14 @@ func TestParseMcpConfigFromFilePath_NotFound(t *testing.T) {
 	if config != nil {
 		t.Error("expected nil config for missing file")
 	}
-	if len(errors) != 1 || !strings.Contains(errors[0].Message, "not found") {
+	if len(errors) != 1 {
+		t.Fatalf("expected 1 error, got %v", errors)
+	}
+	if !strings.Contains(errors[0].Message, "not found") {
 		t.Errorf("expected 'not found' error, got %v", errors)
+	}
+	if errors[0].File != "/nonexistent/.mcp.json" {
+		t.Errorf("File = %q, want the config path", errors[0].File)
 	}
 }
 
@@ -1984,6 +1996,9 @@ func TestParseMcpConfig_NilMcpServers(t *testing.T) {
 	if config == nil {
 		t.Fatal("expected non-nil config")
 	}
+	if config.McpServers == nil {
+		t.Error("McpServers = nil, want non-nil empty map")
+	}
 	if len(config.McpServers) != 0 {
 		t.Errorf("expected empty McpServers, got %d", len(config.McpServers))
 	}
@@ -2003,28 +2018,6 @@ func TestParseMcpConfig_InvalidServerConfig(t *testing.T) {
 	}
 	if len(config.McpServers) != 0 {
 		t.Errorf("expected 0 valid servers, got %d", len(config.McpServers))
-	}
-}
-
-func TestParseMcpConfig_ExpandVarsWithMarshalError(t *testing.T) {
-	// This is hard to trigger normally — the expanded config is re-marshaled
-	// and should never fail since it came from a valid config. Test what we can.
-	t.Setenv("MCP_EXPAND_TEST", "expanded")
-	input := `{"mcpServers":{"srv":{"command":"${MCP_EXPAND_TEST}","args":[]}}}`
-	config, errors := ParseMcpConfig([]byte(input), true, ScopeProject, "test.json")
-	if len(errors) != 0 {
-		t.Fatalf("unexpected errors: %v", errors)
-	}
-	if config == nil {
-		t.Fatal("expected non-nil config")
-	}
-	cfg, err := UnmarshalServerConfig(config.McpServers["srv"])
-	if err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	stdio := cfg.(*StdioConfig)
-	if stdio.Command != "expanded" {
-		t.Errorf("command = %q, want expanded", stdio.Command)
 	}
 }
 
@@ -2058,29 +2051,8 @@ func TestParseMcpConfigFromFilePath_ReadError(t *testing.T) {
 	if !strings.Contains(errors[0].Message, "Failed to read file") {
 		t.Errorf("error = %v, want 'Failed to read file'", errors[0])
 	}
-}
-
-// ---------------------------------------------------------------------------
-// WriteMcpjsonFile — sync error, close error, chmod error
-// ---------------------------------------------------------------------------
-
-func TestWriteMcpjsonFile_SyncError(t *testing.T) {
-	// We can't easily force a sync error, but we can test the chmod path
-	// by writing to a read-only directory.
-	dir := t.TempDir()
-	readOnlyDir := filepath.Join(dir, "readonly")
-	mustMkdirAll(t, readOnlyDir)
-	_ = os.Chmod(readOnlyDir, 0555)
-	defer func() { _ = os.Chmod(readOnlyDir, 0755) }()
-
-	config := &McpJsonConfig{
-		McpServers: map[string]json.RawMessage{
-			"srv": json.RawMessage(`{"command":"node"}`),
-		},
-	}
-	err := WriteMcpjsonFile(readOnlyDir, config)
-	if err == nil {
-		t.Fatal("want error writing to read-only dir")
+	if errors[0].File != path {
+		t.Errorf("File = %q, want %q", errors[0].File, path)
 	}
 }
 
@@ -2168,6 +2140,9 @@ func TestLoadMcpServersFromConfig_InvalidEntry(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Message, "Invalid config") {
 		t.Errorf("error = %v, want 'Invalid config'", errs[0])
+	}
+	if errs[0].Path != "mcpServers.bad" {
+		t.Errorf("Path = %q, want mcpServers.bad", errs[0].Path)
 	}
 }
 
@@ -2407,17 +2382,6 @@ func TestWriteMcpjsonFile_NonexistentDir(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// WriteMcpjsonFile — chmod error path (read-only temp file after close)
-// ---------------------------------------------------------------------------
-
-func TestWriteMcpjsonFile_ChmodError(t *testing.T) {
-	// chmod error is hard to trigger on Linux since file owners can always
-	// chmod their own files. The rename error path is tested instead via
-	// TestWriteMcpjsonFile_RenameError which writes over a read-only file.
-	t.Skip("chmod error path cannot be reliably triggered on Linux")
-}
-
 func TestWriteMcpjsonFile_RenameError(t *testing.T) {
 	// Cross-device rename would fail, but within t.TempDir() it won't.
 	// Instead, test that a valid write succeeds when existing file
@@ -2445,35 +2409,6 @@ func TestWriteMcpjsonFile_RenameError(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "srv") {
 		t.Errorf("file should contain 'srv', got: %s", data)
-	}
-}
-
-func TestWriteMcpjsonFile_WriteError(t *testing.T) {
-	// Test write error by making the temp file unwritable.
-	// This is hard to trigger precisely because the temp file is created
-	// by WriteMcpjsonFile itself. Instead, test that writing to a directory
-	// that becomes read-only after temp file creation fails.
-	// The existing SyncError test covers the read-only directory case.
-	// We verify the error message format matches expectations.
-	dir := t.TempDir()
-	readOnlyDir := filepath.Join(dir, "ro")
-	mustMkdirAll(t, readOnlyDir)
-	_ = os.Chmod(readOnlyDir, 0555)
-	defer func() { _ = os.Chmod(readOnlyDir, 0755) }()
-
-	config := &McpJsonConfig{
-		McpServers: map[string]json.RawMessage{
-			"srv": json.RawMessage(`{"command":"node"}`),
-		},
-	}
-	err := WriteMcpjsonFile(readOnlyDir, config)
-	if err == nil {
-		t.Fatal("want error for read-only directory")
-	}
-	// Error should mention either "create", "write", or "temp file"
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "temp file") && !strings.Contains(errMsg, "failed") {
-		t.Errorf("error = %v, want mention of temp file creation failure", err)
 	}
 }
 
@@ -2563,7 +2498,7 @@ func TestParseMcpConfig_ExpandVarsFilePath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// UnmarshalMcpPolicyEntry — invalid JSON body after probe succeeds
+// UnmarshalMcpPolicyEntry — command-branch dispatch
 // ---------------------------------------------------------------------------
 
 func TestUnmarshalMcpPolicyEntry_CommandOnly(t *testing.T) {
@@ -2945,13 +2880,15 @@ func (n *nonStdioButStdioTransport) MarshalJSON() ([]byte, error) {
 }
 
 // ---------------------------------------------------------------------------
-// UrlMatchesPattern — compile error path
+// UrlMatchesPattern — regex metacharacters in patterns are QuoteMeta-escaped
+// and matched literally (an unbalanced "[" is a plain char, not a compile
+// failure)
 // ---------------------------------------------------------------------------
 
 func TestUrlMatchesPattern_InvalidRegex(t *testing.T) {
 	result := UrlMatchesPattern("https://example.com", "https://[invalid")
 	if result {
-		t.Error("expected false for pattern that fails regex compilation")
+		t.Error("expected false — unbalanced \"[\" is QuoteMeta-escaped and matched literally")
 	}
 }
 
@@ -2976,34 +2913,6 @@ func TestWriteMcpjsonFile_ReadOnlyDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "temp file") {
 		t.Errorf("error should mention temp file, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WriteMcpjsonFile — close error (via permission change after open)
-// ---------------------------------------------------------------------------
-
-func TestWriteMcpjsonFile_CloseError(t *testing.T) {
-	// This tests the writeErr path: write succeeds but close fails.
-	// On Linux, Close rarely fails for regular files, so we test the
-	// sync path by writing to a dir where the temp file can be created
-	// but sync/close may fail (e.g., full disk simulation is hard).
-	// Instead, verify the normal path exercises close successfully.
-	dir := t.TempDir()
-	cfg := &McpJsonConfig{
-		McpServers: map[string]json.RawMessage{
-			"test": json.RawMessage(`{"command":"echo"}`),
-		},
-	}
-	if err := WriteMcpjsonFile(dir, cfg); err != nil {
-		t.Fatalf("expected success, got: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, ".mcp.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "echo") {
-		t.Errorf("file content should contain 'echo', got: %s", data)
 	}
 }
 
@@ -3073,7 +2982,12 @@ func TestGetProjectMcpConfigs_ParseErrors(t *testing.T) {
 	if servers == nil {
 		t.Error("expected non-nil servers map")
 	}
-	t.Logf("servers=%d, errors=%d, errs=%v", len(servers), len(errs), errs)
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want the schema-validation error", errs)
+	}
+	if !strings.Contains(errs[0].Message, "unknown server config type") {
+		t.Errorf("errs[0].Message = %q, want unknown-type report", errs[0].Message)
+	}
 }
 
 // ---------------------------------------------------------------------------
