@@ -4,6 +4,8 @@
 // later references). Uses XMLHttpRequest, not fetch, because only
 // xhr.upload.onprogress keeps the chip progress bar alive; AbortController
 // maps to xhr.abort() for stop/disconnect cancellation.
+// Also hosts `pooled`, the small concurrency pool the send loop uses to pace
+// uploads against the server's upload sem.
 
 export interface AttachmentMeta {
   id: string
@@ -50,6 +52,39 @@ export function attachmentMeta(file: File, id: string, sizeOverride?: number): A
     mime: file.type || sniffFromExt(file.name),
     size: sizeOverride ?? file.size,
   }
+}
+
+// pooled runs task once per item with at most `limit` tasks in flight and
+// resolves when every task has settled (allSettled semantics: a rejecting
+// task never cancels siblings). Rejects with the FIRST task error after all
+// tasks settle; callers that handle errors inside the task (like onSend)
+// therefore always see a resolve.
+export async function pooled<T>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
+  // At least one worker (a nonsense limit <= 0 still runs all items rather
+  // than silently dropping them), never more workers than items.
+  const n = Math.max(1, Math.min(limit, items.length))
+  let cursor = 0
+  // Closure assignments defeat tsc's control-flow narrowing, so the first
+  // error rides in an array instead of a nullable box.
+  const errors: unknown[] = []
+  const worker = async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++]
+      try {
+        await task(item)
+      } catch (err) {
+        if (errors.length === 0) errors.push(err) // keep only the FIRST error
+      }
+    }
+  }
+  const workers: Promise<void>[] = []
+  for (let i = 0; i < n; i++) workers.push(worker())
+  await Promise.all(workers)
+  if (errors.length > 0) throw errors[0]
 }
 
 // uploadAttachment POSTs file as the multipart "file" field and resolves with

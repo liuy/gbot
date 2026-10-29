@@ -18,6 +18,9 @@ function installConn(opts: { connected?: boolean } = {}) {
 }
 
 function pushState(cs: string) {
+  // Mirror the real ws module: only 'connected' means connected — the
+  // disconnect gate in the upload task reads this, not the state string.
+  connState.connected = cs === 'connected'
   stateListeners.forEach((fn) => fn(cs))
 }
 
@@ -387,16 +390,17 @@ describe('chat attachment rendering', () => {
     attachFile(f2)
     clickSend()
 
+    // Both files are attempted at once, not one-after-the-other.
     await vi.waitFor(() => {
-      expect(XHRStub.instances.length).toBe(1)
+      expect(XHRStub.instances.length).toBe(2)
     })
-    // First upload dies on the network: chip turns red, loop breaks before
-    // the second file, no commit frame.
+    // Both die on the network: every chip turns red, no commit frame.
     XHRStub.instances[0].onerror!()
+    XHRStub.instances[1].onerror!()
 
     await vi.waitFor(() => {
       const failed = document.querySelectorAll('.border-red-500')
-      expect(failed.length).toBe(1)
+      expect(failed.length).toBe(2)
     })
     expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
 
@@ -449,20 +453,21 @@ describe('chat attachment rendering', () => {
     attachFile(f2)
     clickSend()
 
-    // First send: f1 uploads fine, f2's POST dies → f2 marked failed, no
-    // commit frame.
-    await vi.waitFor(() => {
-      expect(XHRStub.instances.length).toBe(1)
-    })
-    respondUpload(XHRStub.instances[0], 'i:a1')
+    // First send: both POSTs in flight; f2's dies, f1's succeeds — the
+    // sibling failure must not cancel anything or skip the rest of the
+    // batch (both were already attempted).
     await vi.waitFor(() => {
       expect(XHRStub.instances.length).toBe(2)
     })
     XHRStub.instances[1].onerror!()
+    respondUpload(XHRStub.instances[0], 'i:a1')
     await vi.waitFor(() => {
       expect(document.querySelectorAll('.border-red-500').length).toBe(1)
     })
+    expect(XHRStub.instances.length).toBe(2)
     expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('two files')
 
     // Retry the failed chip: exactly one more POST, which succeeds.
     clickRetry()
@@ -559,6 +564,165 @@ describe('chat attachment rendering', () => {
       expect(document.querySelectorAll('.border-red-500').length).toBe(1)
     })
     expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+  })
+
+  it('ParallelUploads_TwoInFlightTogether_IndependentProgress', async () => {
+    mount()
+    setTextarea('both bars')
+    const fileA = new File([pngBlob()], 'a.png', { type: 'image/png' })
+    const fileB = new File([pngBlob()], 'b.png', { type: 'image/png' })
+    attachFile(fileA)
+    attachFile(fileB)
+    clickSend()
+
+    // Overlap barrier: BOTH POSTs exist before either is answered — the
+    // stubs only complete when this test fires onload.
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(2)
+    })
+    // Item-order scheduling: instance index matches attach order.
+    expect((XHRStub.instances[0].body as FormData).get('file')).toBe(fileA)
+    expect((XHRStub.instances[1].body as FormData).get('file')).toBe(fileB)
+
+    // Two progress bars advance at once, each on its own chip.
+    XHRStub.instances[0].upload.onprogress!({ lengthComputable: true, loaded: 512, total: 1024 })
+    XHRStub.instances[1].upload.onprogress!({ lengthComputable: true, loaded: 256, total: 1024 })
+    const fills = document.querySelectorAll<HTMLElement>('.bg-blue')
+    expect(fills.length).toBe(2)
+    expect(fills[0].style.width).toBe('50%')
+    expect(fills[1].style.width).toBe('25%')
+
+    respondUpload(XHRStub.instances[0], 'i:par-a')
+    respondUpload(XHRStub.instances[1], 'i:par-b')
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+    const msg = sent.find((m) => (m as { type?: string }).type === 'message') as {
+      attachments: Array<{ id: string; name: string }>
+    }
+    expect(msg.attachments.map((a) => [a.name, a.id])).toEqual([
+      ['a.png', 'i:par-a'],
+      ['b.png', 'i:par-b'],
+    ])
+    expect(document.querySelectorAll('.border-red-500').length).toBe(0)
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('')
+  })
+
+  it('ThirdUploadWaitsForFreeSlot_PoolOfTwo', async () => {
+    mount()
+    setTextarea('three files')
+    const fileA = new File([pngBlob()], 'a.png', { type: 'image/png' })
+    const fileB = new File([pngBlob()], 'b.png', { type: 'image/png' })
+    const fileC = new File([pngBlob()], 'c.png', { type: 'image/png' })
+    attachFile(fileA)
+    attachFile(fileB)
+    attachFile(fileC)
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(2)
+    })
+    expect(XHRStub.instances[2]).toBeUndefined()
+    expect((XHRStub.instances[0].body as FormData).get('file')).toBe(fileA)
+    expect((XHRStub.instances[1].body as FormData).get('file')).toBe(fileB)
+
+    // Freeing one slot lets exactly one more POST through, carrying fileC.
+    respondUpload(XHRStub.instances[0], 'i:slot-a')
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(3)
+    })
+    expect((XHRStub.instances[2].body as FormData).get('file')).toBe(fileC)
+
+    respondUpload(XHRStub.instances[1], 'i:slot-b')
+    respondUpload(XHRStub.instances[2], 'i:slot-c')
+    await vi.waitFor(() => {
+      expect(sent.filter((m) => (m as { type?: string }).type === 'message').length).toBe(1)
+    })
+    const msg = sent.find((m) => (m as { type?: string }).type === 'message') as {
+      attachments: Array<{ id: string; name: string }>
+    }
+    // Commit order follows the files array, not completion order.
+    expect(msg.attachments.map((a) => [a.name, a.id])).toEqual([
+      ['a.png', 'i:slot-a'],
+      ['b.png', 'i:slot-b'],
+      ['c.png', 'i:slot-c'],
+    ])
+    expect(document.querySelectorAll('.border-red-500').length).toBe(0)
+  })
+
+  it('DisconnectAbortsBothInFlightUploads_NoCommit', async () => {
+    mount()
+    setTextarea('three files')
+    const fileA = new File([pngBlob()], 'a.png', { type: 'image/png' })
+    const fileB = new File([pngBlob()], 'b.png', { type: 'image/png' })
+    const fileC = new File([pngBlob()], 'c.png', { type: 'image/png' })
+    attachFile(fileA)
+    attachFile(fileB)
+    attachFile(fileC)
+    clickSend()
+
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(2)
+    })
+    pushState('reconnecting')
+    expect(XHRStub.instances[0].aborted).toBe(true)
+    expect(XHRStub.instances[1].aborted).toBe(true)
+    XHRStub.instances[0].onabort!()
+    XHRStub.instances[1].onabort!()
+
+    // The disconnect gate inside the task means the idle worker marks the
+    // queued third file failed WITHOUT posting it: after a disconnect no
+    // new upload bytes move. All three chips go red, no commit, draft restored.
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.border-red-500').length).toBe(3)
+    })
+    expect(XHRStub.instances.length).toBe(2)
+
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.value).toBe('three files')
+  })
+
+  it('ReconnectRace_HealedSocketLetsQueuedFileUpload_GateIsNotSticky', async () => {
+    installConn()
+    mount()
+    setTextarea('race')
+    const fileA = new File([pngBlob()], 'a.png', { type: 'image/png' })
+    const fileB = new File([pngBlob()], 'b.png', { type: 'image/png' })
+    const fileC = new File([pngBlob()], 'c.png', { type: 'image/png' })
+    attachFile(fileA)
+    attachFile(fileB)
+    attachFile(fileC)
+    clickSend()
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(2)
+    })
+    // Disconnect aborts the two in-flight POSTs, but the socket heals before
+    // the idle worker dequeues the third file: the gate reads the LIVE
+    // connected flag, so the queued upload must proceed, not latch on the
+    // earlier disconnect.
+    pushState('reconnecting')
+    expect(XHRStub.instances[0].aborted).toBe(true)
+    expect(XHRStub.instances[1].aborted).toBe(true)
+    pushState('connected')
+    XHRStub.instances[0].onabort!()
+    XHRStub.instances[1].onabort!()
+    await vi.waitFor(() => {
+      expect(XHRStub.instances.length).toBe(3)
+    })
+    respondUpload(XHRStub.instances[2], 'i:queuelive0000000f')
+    await vi.waitFor(() => {
+      // The two aborted chips stay red; the healed third is done (bar gone).
+      expect(document.querySelectorAll('.border-red-500').length).toBe(2)
+    })
+    expect(sent.some((m) => (m as { type?: string }).type === 'message')).toBe(false)
+    // The draft restore lands after pooled settles (microtask chain past the
+    // healed third upload) — wait for the terminal state, don't sample early.
+    await vi.waitFor(() => {
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement
+      expect(ta.value).toBe('race')
+    })
   })
 
   it('NoConnection_PreFlightMarksFailure_NoPost', async () => {

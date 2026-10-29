@@ -70,7 +70,7 @@ import { notifyCapsule } from './capsule'
 import { TokenRate } from './token_rate'
 import { History } from './history'
 import { initTheme } from './theme'
-import { uploadAttachment, attachmentMeta } from './upload'
+import { uploadAttachment, attachmentMeta, pooled } from './upload'
 import {
   errorBox,
   compactDividerContainer,
@@ -88,6 +88,11 @@ import {
   disconnectText,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
+
+// Mirrors uploadMaxConcurrent in pkg/wui/upload.go: a client pool at or below
+// the server's upload sem means a send batch can never receive the 503
+// "upload busy" pacing refusal (the server refuses rather than queues).
+const uploadConcurrency = 2
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -2334,9 +2339,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
     // Two-phase commit path — upload files only (paste already inlined).
     // Paste MUST be filtered out before this loop: paste refs have no `file`,
-    // so uploadAttachment would crash dereferencing ref.file. Uploads are
-    // serial per file (parallel uploads on a mobile uplink are a separate UX
-    // change) with a break on the first failure.
+    // so uploadAttachment would crash dereferencing ref.file. Uploads run
+    // through a two-slot pool matching the server's upload sem; every file
+    // is attempted, and each failure marks only its own chip.
     // The commit needs the socket anyway, so a doomed upload must not move
     // bytes: an offline connection fails every chip up front.
     if (!conn.connected) {
@@ -2352,8 +2357,16 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     inputBar.setUploading(true)
     let anyFailed = false
-    for (const ref of files) {
-      if (ref.uploadedID) continue // bytes already staged server-side (retry path)
+    const pending = files.filter((ref) => !ref.uploadedID) // already staged server-side (retry path)
+    await pooled(pending, uploadConcurrency, async (ref) => {
+      // Same rule as the pre-flight check, applied to files still queued
+      // when the socket drops mid-batch: mark them failed, post nothing.
+      // (In-flight uploads are aborted separately via inflightUploads.)
+      if (!conn.connected) {
+        anyFailed = true
+        inputBar.markAttachmentFailures([ref])
+        return
+      }
       const ac = new AbortController()
       inflightUploads.add(ac)
       try {
@@ -2366,11 +2379,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       } catch {
         anyFailed = true
         inputBar.markAttachmentFailures([ref])
-        break // stop on first failure — the commit must not run half-uploaded
       } finally {
         inflightUploads.delete(ac)
       }
-    }
+    })
     inputBar.setUploading(false)
     if (anyFailed) {
       // Restore the user's TYPED text (not fullText) — paste chips stay in

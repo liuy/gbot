@@ -198,7 +198,7 @@ describe('cancel_result: queued message restore', () => {
     expect(ta.value).toBe('optimistic msg')
   })
 
-  it('restored attachments rebuild chips that re-send without re-upload', () => {
+  it('restored attachments rebuild chips that re-send without re-upload', async () => {
     mount()
     setTextarea('initial')
     pressEnter()
@@ -242,16 +242,20 @@ describe('cancel_result: queued message restore', () => {
     if (!chipImg) throw new Error('restored image chip not rendered')
 
     // Re-send while idle: the frame references the fresh id and the REAL
-    // size (the stub File is zero-byte).
+    // size (the stub File is zero-byte). The commit lands a microtask after
+    // pressEnter now that the send path always awaits the upload pool.
     events([{ type: 'query_end' }])
     setTextarea('again')
     pressEnter()
-    const frame = sent
-      .filter((m) => (m as { type?: string }).type === 'message')
-      .pop() as { attachments?: { id: string; size: number }[] }
-    if (!frame || !frame.attachments) {
-      throw new Error('re-send message frame with attachments never sent')
-    }
+    const frame = await vi.waitFor(() => {
+      const f = sent
+        .filter((m) => (m as { type?: string }).type === 'message')
+        .pop() as { attachments?: { id: string; size: number }[] } | undefined
+      if (!f || !f.attachments) {
+        throw new Error('re-send message frame with attachments never sent')
+      }
+      return f
+    })
     expect(frame.attachments).toEqual([{ id: 'fresh-id', name: 'image.png', mime: 'image/png', size: 1234 }])
   })
 })

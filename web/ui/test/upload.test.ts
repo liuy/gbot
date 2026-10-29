@@ -31,7 +31,7 @@ class XHRStub {
   abort() { this.aborted = true }
 }
 
-import { uploadAttachment, attachmentMeta } from '../src/upload'
+import { uploadAttachment, attachmentMeta, pooled } from '../src/upload'
 
 function pngFile(): File {
   return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])], 'photo.png', { type: 'image/png' })
@@ -152,5 +152,103 @@ describe('attachmentMeta', () => {
     expect(attachmentMeta(pdf, 'd:pdf').mime).toBe('application/pdf')
     const unknown = new File([new Uint8Array([0x01])], 'weird.xyz', { type: '' })
     expect(attachmentMeta(unknown, 'd:x').mime).toBe('application/octet-stream')
+  })
+})
+
+describe('pooled', () => {
+  // deferred exposes a promise's resolve so a test can park tasks at a
+  // chosen point and release them in a chosen order.
+  function deferred(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it('StartOrder_ItemOrder_ThirdWaitsForSlot', async () => {
+    const started: number[] = []
+    const gates = [deferred(), deferred(), deferred()]
+    let inFlight = 0
+    let maxInFlight = 0
+    const p = pooled([0, 1, 2], 2, async (i) => {
+      started.push(i)
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      try {
+        await gates[i].promise
+      } finally {
+        inFlight--
+      }
+    })
+    // Both workers start synchronously inside pooled's prologue, in item
+    // order — the third item must not start until a slot frees.
+    expect(started).toEqual([0, 1])
+    gates[0].resolve()
+    await vi.waitFor(() => {
+      expect(started).toEqual([0, 1, 2])
+    })
+    gates[1].resolve()
+    gates[2].resolve()
+    await p
+    expect(maxInFlight).toBe(2)
+  })
+
+  it('ImmediateTasks_AllComplete_NeverExceedTwo', async () => {
+    const calls: number[] = []
+    let inFlight = 0
+    let maxInFlight = 0
+    await pooled([0, 1, 2, 3, 4], 2, async (i) => {
+      calls.push(i)
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await Promise.resolve()
+      inFlight--
+    })
+    expect(calls).toEqual([0, 1, 2, 3, 4])
+    expect(maxInFlight).toBe(2)
+  })
+
+  it('EmptyItems_Resolves_NoTasks', async () => {
+    const task = vi.fn(async () => {})
+    await pooled([], 2, task)
+    expect(task).toHaveBeenCalledTimes(0)
+  })
+
+  it('LimitClamp_ZeroLimitStillRunsAll', async () => {
+    const done: number[] = []
+    // limit above item count: workers clamp to the item count.
+    await pooled([0, 1], 5, async (i) => {
+      done.push(i)
+    })
+    expect(done).toEqual([0, 1])
+    // A nonsense limit still runs every item rather than dropping them.
+    await pooled([7], 0, async (i) => {
+      done.push(i)
+    })
+    expect(done).toEqual([0, 1, 7])
+  })
+
+  it('TaskRejection_RunsSiblings_RethrowsFirstError', async () => {
+    const started: number[] = []
+    const p = pooled([0, 1, 2], 1, async (i) => {
+      started.push(i)
+      if (i === 0) throw new Error('boom-first')
+    })
+    await expect(p).rejects.toThrow('boom-first')
+    // Siblings still ran to completion despite the first task's rejection —
+    // falsifies both early-abort and error-swallowing.
+    expect(started).toEqual([0, 1, 2])
+  })
+
+  it('SyncThrowingTask_IsCaught_AllItemsAttempted', async () => {
+    const started: number[] = []
+    const p = pooled([0, 1], 2, (i): Promise<void> => {
+      started.push(i)
+      if (i === 0) throw new Error('sync-boom') // thrown before any await
+      return Promise.resolve()
+    })
+    await expect(p).rejects.toThrow('sync-boom')
+    expect(started).toEqual([0, 1])
   })
 })
