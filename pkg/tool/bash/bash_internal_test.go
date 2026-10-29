@@ -1177,7 +1177,7 @@ func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 	defer func() { ptySupported = orig }()
 
 	result, err := Execute(context.Background(),
-		json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil)
+		json.RawMessage(`{"command":"sleep 5","timeout":1000}`), nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}

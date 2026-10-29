@@ -16,7 +16,10 @@ import (
 // readUntilType reads WS frames until one matches wantType (or times out).
 func readUntilType(t *testing.T, ws *websocket.Conn, wantType string) json.RawMessage {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	// 15s, not 5s: under make check's parallel load the server read loop can
+	// lag past 5s and this read is a functional assertion, not a timing one
+	// (flaky seen 10-29 on TestMutC_ReadLimitBoundary).
+	deadline := time.Now().Add(15 * time.Second) // REAL-TIME
 	for time.Now().Before(deadline) {           // REAL-TIME
 		data := readWSMessage(t, ws)
 		var head struct {

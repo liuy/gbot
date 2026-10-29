@@ -1742,6 +1742,11 @@ func a1AssistantMsg(text string) types.Message {
 }
 
 // ---- resetQueryStats ----
+// Naming note for the TestMut* family (also in settings/artifacts/attachment/
+// context_breakdown/games/jobs_panel/logs tests): MutA..MutD are mutation-class
+// ids from the 10-27 mutate campaign — each test pins one escaped mutant. The
+// names are labels, not semantics; read the comment above each test for what
+// it actually pins.
 
 func TestMutA1_ResetQueryStatsZeroesAllFields(t *testing.T) {
 	qs := &queryStats{}
