@@ -3715,6 +3715,47 @@ describe('mapHistoryToChatMessages', () => {
     expect(blocks[1].kind).toBe('document')
     expect(blocks[1]).toEqual({ kind: 'document', id: '', name: 'report.pdf', mime: 'application/pdf', size: 4321 })
   })
+
+  it('keeps an image-only user message: empty text with an image block is not dropped', () => {
+    const result = mapHistoryToChatMessages([{
+      id: 'u-img',
+      role: 'user' as const,
+      text: '',
+      thinking: [],
+      tools: [],
+      usage,
+      error: '',
+      status: 'done' as const,
+      startedAt: 0,
+      blocks: [{ kind: 'image', src: 'data:image/jpeg;base64,AAAA' }],
+    }])
+    expect(result.length).toBe(1)
+    expect(result[0].id).toBe('u-img')
+    expect(result[0].blocks).toEqual([{ kind: 'image', id: '', src: 'data:image/jpeg;base64,AAAA' }])
+  })
+
+  it('keeps a document-only user message: empty text with a document block is not dropped', () => {
+    const result = mapHistoryToChatMessages([{
+      id: 'u-doc-only',
+      role: 'user' as const,
+      text: '',
+      thinking: [],
+      tools: [],
+      usage,
+      error: '',
+      status: 'done' as const,
+      startedAt: 0,
+      blocks: [{ kind: 'document', name: 'x.pdf', size: 1 }],
+    }])
+    expect(result.length).toBe(1)
+    expect(result[0].id).toBe('u-doc-only')
+    expect(result[0].blocks).toEqual([{ kind: 'document', id: '', name: 'x.pdf', mime: undefined, size: 1 }])
+  })
+
+  it('still drops a textless user message that carries no renderable blocks', () => {
+    const result = mapHistoryToChatMessages([user('u-empty', '   ')])
+    expect(result).toEqual([])
+  })
 })
 
 describe('document block history rendering', () => {
@@ -3772,6 +3813,33 @@ describe('document block history rendering', () => {
     expect(chip.textContent).toBe('[no-size.bin]')
   })
 
+  it('document-only user message (no text) still renders its chip on replay', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-doc-only',
+        role: 'user',
+        text: '',
+        thinking: [],
+        tools: [],
+        usage,
+        error: '',
+        status: 'done',
+        startedAt: 0,
+        blocks: [{ kind: 'document', name: 'x.pdf', mime: 'application/pdf', size: 1 }],
+      }],
+      nextCursor: '',
+      hasMore: false,
+    })
+    const chip = Array.from(document.querySelectorAll('span')).find(el =>
+      el.textContent?.includes('x.pdf')) as HTMLElement
+    expect(chip).toBeDefined()
+    expect(chip.textContent).toBe('[x.pdf 1 B]')
+    expect(document.body.textContent).not.toContain('application/pdf')
+  })
+
   it('legacy [Document: ...] text block still renders chip plus remaining text', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -3783,6 +3851,86 @@ describe('document block history rendering', () => {
     expect(chip).toBeDefined()
     expect(chip?.textContent).toBe('[notes.txt]')
     expect(document.body.textContent).toContain('leftover body text')
+  })
+})
+
+describe('image-only user message history rendering', () => {
+  const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }
+  const IMG = 'data:image/jpeg;base64,AAAA'
+
+  function dispatchHistory(messages: unknown[]) {
+    dispatch({
+      type: 'history',
+      messages,
+      nextCursor: '',
+      hasMore: false,
+    })
+  }
+
+  function userMsg(id: string, text: string, blocks: unknown[]) {
+    return { id, role: 'user', text, thinking: [], tools: [], usage, error: '', status: 'done', startedAt: 0, blocks }
+  }
+
+  function historyImage(): HTMLImageElement | null {
+    const img = Array.from(document.querySelectorAll('img')).find(
+      (el) => el.getAttribute('src') === IMG,
+    )
+    return img ? (img as HTMLImageElement) : null
+  }
+
+  it('image-only user message renders its thumbnail between adjacent text messages', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      userMsg('u-img', '', [{ kind: 'image', src: IMG }]),
+      userMsg('u-t1', 'first text', [{ kind: 'text', text: 'first text' }]),
+      userMsg('u-t2', 'second text', [{ kind: 'text', text: 'second text' }]),
+      { id: 'a1', role: 'assistant', text: 'answer', thinking: [], tools: [], usage, error: '', status: 'done', startedAt: 0, blocks: [] },
+    ])
+    const img = historyImage()
+    expect(img).not.toBeNull()
+    // History attachment thumbnails are lightbox-wired (cursor-zoom-in).
+    expect(img!.className).toContain('cursor-zoom-in')
+    // Control group: the adjacent plain-text messages still render.
+    expect(document.body.textContent).toContain('first text')
+    expect(document.body.textContent).toContain('second text')
+    // Cross-shell DOM order: thumbnail shell, then first text shell, then
+    // second text shell — frag append order, attachments not regrouped.
+    // data-block-kind="user" selects exactly the committed user text spans
+    // (assistant markdown carries no such marker), and the img is matched by
+    // src so avatar <img>s can't alias.
+    const spans = Array.from(document.querySelectorAll('[data-block-kind="user"]'))
+    expect(spans.map((s) => s.textContent)).toEqual(['first text', 'second text'])
+    const ordered = [img!, ...spans].sort((a, b) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
+    expect(ordered).toEqual([img, ...spans])
+  })
+
+  it('image+text user message renders both blocks, image first', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      userMsg('u-mix1', 'caption after', [{ kind: 'image', src: IMG }, { kind: 'text', text: 'caption after' }]),
+    ])
+    const img = historyImage()
+    expect(img).not.toBeNull()
+    const kids = Array.from(img!.parentElement!.children)
+    expect(kids.indexOf(img!)).toBe(0)
+    const span = kids.find((el) => el.textContent === 'caption after')
+    expect(span?.tagName).toBe('SPAN')
+  })
+
+  it('image+text user message renders both blocks, text first', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchHistory([
+      userMsg('u-mix2', 'caption before', [{ kind: 'text', text: 'caption before' }, { kind: 'image', src: IMG }]),
+    ])
+    const img = historyImage()
+    expect(img).not.toBeNull()
+    const kids = Array.from(img!.parentElement!.children)
+    expect(kids.indexOf(img!)).toBe(1)
+    expect(kids[0].textContent).toBe('caption before')
   })
 })
 

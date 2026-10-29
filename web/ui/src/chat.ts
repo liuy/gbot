@@ -141,7 +141,14 @@ export interface ChatHandles {
 export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessage[] {
   const merged: HistoryChatMsg[] = []
   for (const h of histMsgs) {
-    if (h.role === 'user' && (!h.text || h.text.trim() === '')) continue
+    // Textless user messages drop only when they carry no renderable blocks:
+    // an attachment-only send (image/document, no caption) has empty text but
+    // the attachments ARE the message.
+    if (
+      h.role === 'user' &&
+      (!h.text || h.text.trim() === '') &&
+      !(h.blocks ?? []).some((b) => b.kind === 'image' || b.kind === 'document')
+    ) continue
     if (h.role === 'system') continue  // markers intercepted in loadHistory; defense-in-depth
     const last = merged[merged.length - 1]
     if (last && last.role === 'assistant' && h.role === 'assistant') {
