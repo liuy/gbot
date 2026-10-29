@@ -1,9 +1,8 @@
 package wui
 
 // inboundContent is the wire shape of one entry in user_message.content[]
-// (legacy) or one entry produced by attachmentAccumulator.buildContents
-// (new WS upload path). Path is the absolute media.Store path the
-// accumulator assigned after bytes landed via binary frames.
+// (legacy) or one entry produced by resolveAttachments for the commit frame.
+// Path is the absolute media.Store object the content-addressed id resolved to.
 type inboundContent struct {
 	Type   string        `json:"type"` // "image" | "document"
 	Source inboundSource `json:"source"`

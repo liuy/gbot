@@ -1221,25 +1221,32 @@ func TestWSFrameCompressed(t *testing.T) {
 	}
 }
 
-// TestReadLimitBoundary pins the read limit at exactly
-// maxAttachmentSize+64KiB: a frame at the limit is accepted, and one past it
-// kills the read loop.
+// TestWSReadLimitExact pins the frame bound to its literal. The two boundary
+// tests below drive their frame sizes from the constant, so a mutated constant
+// would otherwise move the goalposts along with the assertion.
+func TestWSReadLimitExact(t *testing.T) {
+	if wsReadLimit != 50<<20+64*1024 {
+		t.Errorf("wsReadLimit = %d, want %d (50 MiB + 64 KiB framing headroom)", wsReadLimit, 50<<20+64*1024)
+	}
+}
+
+// TestReadLimitBoundary pins the read limit at exactly wsReadLimit: a frame
+// at the limit is accepted (the loop answers a barrier afterwards), and one
+// past it kills the read loop.
 func TestReadLimitBoundary(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
 	drainInitialFrames(t, ws)
 
-	limit := maxAttachmentSize + 64*1024
-	buf := make([]byte, limit+1024)
+	buf := make([]byte, wsReadLimit+1024)
 	for i := range buf {
 		buf[i] = byte('A' + i%26)
 	}
 
-	// Exactly at the limit: gorilla rejects only strictly larger messages,
-	// so the frame is delivered and answered with the no-active-upload
-	// error. The 0x00 attachment prefix is part of the wire frame, so the
-	// payload is one byte shorter to keep the boundary property.
+	// Exactly at the limit: gorilla rejects only strictly larger messages, so
+	// the frame is delivered (binary frames route to the transport hub; with
+	// no hub it is a no-op) and the loop stays alive.
 	// 60s is infrastructure patience (1MB under full-suite parallel load),
 	// not a timing assertion; refreshed before every write because one
 	// deadline spanning the response wait + barrier round trips went stale
@@ -1247,21 +1254,12 @@ func TestReadLimitBoundary(t *testing.T) {
 	if err := ws.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil { // REAL-TIME
 		t.Fatal(err)
 	}
-	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, buf[:limit-1]...)); err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, buf[:wsReadLimit]); err != nil {
 		t.Fatal(err)
 	}
-	frame := readUntilType(t, ws, "error")
-	var e struct {
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(frame, &e); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(e.Message, "no active attachment") {
-		t.Fatalf("error message = %q, want the accumulator rejection (frame at the limit must be read)", e.Message)
-	}
-	// The loop must still be alive afterwards.
-	mutCBarrier(t, ws)
+	// The loop must still be alive afterwards — and must not have emitted an
+	// error frame for the at-limit binary message.
+	mutCBarrier(t, ws, "error")
 
 	// One KiB past the limit: the read fails and the loop exits, so nothing
 	// answers afterwards.
@@ -1286,8 +1284,7 @@ func TestReadLimitPlus64Rejected(t *testing.T) {
 	ws := mutCDialChat(t, c)
 	drainInitialFrames(t, ws)
 
-	limit := maxAttachmentSize + 64*1024
-	buf := make([]byte, limit+64)
+	buf := make([]byte, wsReadLimit+64)
 	for i := range buf {
 		buf[i] = byte('A' + i%26)
 	}
@@ -1300,7 +1297,7 @@ func TestReadLimitPlus64Rejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWSText(t, ws, map[string]any{"type": "session_list_request"})
-	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME // REAL-TIME
+	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
 	if _, _, err := ws.ReadMessage(); err == nil {
 		t.Fatal("received a response after a limit+64 frame, want the read loop dead")
 	}
@@ -1319,59 +1316,6 @@ func TestReadLoopInvalidJSONIgnored(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestBinaryWithoutUploadErrors(t *testing.T) {
-	c := newTestConnector(t)
-	mutCEnableSessions(c)
-	ws := mutCDialChat(t, c)
-	drainInitialFrames(t, ws)
-
-	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, []byte("chunk")...)); err != nil {
-		t.Fatal(err)
-	}
-	frame := readUntilType(t, ws, "error")
-	var e struct {
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(frame, &e); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(e.Message, "no active attachment") {
-		t.Fatalf("error message = %q, want the accumulator rejection", e.Message)
-	}
-	mutCBarrier(t, ws)
-}
-
-func TestCommitDuringUploadRejectedAndAlive(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	mutCEnableSessions(c)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "a.bin", "mime": "application/octet-stream", "size": 4,
-	})
-	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, []byte("data")...)); err != nil {
-		t.Fatal(err)
-	}
-	// Committing mid-stream must be rejected, and the rejection must not
-	// tear down the connection.
-	writeWSText(t, ws, map[string]any{
-		"type": "message", "text": "too early",
-		"attachments": []map[string]any{{"id": "a1", "name": "a.bin", "mime": "application/octet-stream", "size": 4}},
-	})
-	frame := readUntilType(t, ws, "error")
-	var e struct {
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(frame, &e); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(e.Message, "upload in progress") {
-		t.Fatalf("error message = %q, want the mid-stream rejection", e.Message)
-	}
-	mutCBarrier(t, ws)
-}
-
 func TestCommitMissingIDRejectedAndAlive(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mutCEnableSessions(c)
@@ -1380,7 +1324,7 @@ func TestCommitMissingIDRejectedAndAlive(t *testing.T) {
 
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "ghost file",
-		"attachments": []map[string]any{{"id": "ghost", "name": "g.bin", "mime": "application/octet-stream", "size": 1}},
+		"attachments": []map[string]any{{"id": "d:ffffffffffffffff.txt", "name": "g.bin", "mime": "application/octet-stream", "size": 1}},
 	})
 	frame := readUntilType(t, ws, "error")
 	var e struct {
@@ -1389,8 +1333,8 @@ func TestCommitMissingIDRejectedAndAlive(t *testing.T) {
 	if err := json.Unmarshal(frame, &e); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(e.Message, "missing attachment uploads: ghost") {
-		t.Fatalf("error message = %q, want the missing-id rejection", e.Message)
+	if !strings.Contains(e.Message, "attachment not found: d:ffffffffffffffff.txt") {
+		t.Fatalf("error message = %q, want the unknown-id rejection", e.Message)
 	}
 	mutCBarrier(t, ws)
 }
@@ -1415,16 +1359,10 @@ func TestAttachmentCommitDispatches(t *testing.T) {
 	drainInitialFrames(t, ws)
 
 	png := mutCPNG(t)
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "img1", "name": "dot.png", "mime": "image/png", "size": len(png),
-	})
-	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, png...)); err != nil {
-		t.Fatal(err)
-	}
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "img1"})
+	uploaded := postUpload(t, srv, "dot.png", png)
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "see the dot",
-		"attachments": []map[string]any{{"id": "img1", "name": "dot.png", "mime": "image/png", "size": len(png)}},
+		"attachments": []map[string]any{{"id": uploaded.ID, "name": "dot.png", "mime": uploaded.Mime, "size": uploaded.Size}},
 	})
 
 	if !waitFor(5*time.Second, func() bool {
@@ -1449,21 +1387,19 @@ func TestAttachmentCommitDispatches(t *testing.T) {
 	if qctx == nil || engine.SourceFromContext(qctx) != "wui" {
 		t.Errorf("query ctx source = %q, want wui", engine.SourceFromContext(qctx))
 	}
-	// The commit must retire the staged upload: a second message reusing the
-	// same id is rejected (the frontend re-uploads instead).
+	// Ids are content-addressed and stateless: a second commit with the SAME
+	// id dispatches again (the cache object outlives any single commit).
+	gotBlocks = nil
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "again",
-		"attachments": []map[string]any{{"id": "img1", "name": "dot.png", "mime": "image/png", "size": len(png)}},
+		"attachments": []map[string]any{{"id": uploaded.ID, "name": "dot.png", "mime": uploaded.Mime, "size": uploaded.Size}},
 	})
-	frame := readUntilType(t, ws, "error")
-	e2 := struct {
-		Message string `json:"message"`
-	}{}
-	if err := json.Unmarshal(frame, &e2); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(e2.Message, "missing attachment uploads: img1") {
-		t.Fatalf("second commit error = %q, want the missing-id rejection (staged uploads are one-shot)", e2.Message)
+	if !waitFor(5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotBlocks != nil
+	}) {
+		t.Fatal("second commit with the same id never dispatched (ids must be reusable)")
 	}
 	// The commit must not end the loop: later requests still answer.
 	mutCBarrier(t, ws)

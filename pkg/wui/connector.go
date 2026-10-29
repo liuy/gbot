@@ -26,7 +26,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"uuid"
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/config"
@@ -625,23 +624,16 @@ type WUIConnector struct {
 	// SetCreateEngineFn. nil when engine_new is not supported.
 	createEngine func(name string) (string, error)
 
-	// mediaCache saves files received via the WS chunked-upload path. nil
-	// until SetMediaCache is called — handlers must check for nil and
-	// degrade to text-only when unset.
+	// mediaCache saves files uploaded via the HTTP upload route and backs the
+	// content-addressed attachment ids the commit frame resolves. nil until
+	// SetMediaCache is called — handlers must check for nil and degrade to
+	// text-only when unset.
 	mediaCache *media.Store
 
-	// restoredUploads keeps cancel-restored attachment ids alive across WS
-	// reconnects: the accumulator is per-connection, so without this map a
-	// page refresh between restore and re-send would leave the chip's id
-	// unresolvable ("missing attachment uploads"). Guarded by restoreMu.
-	// Entries are intentionally never evicted: they must survive multiple
-	// re-send attempts, and each is a tiny path/mime/kind struct.
-	restoreMu       sync.Mutex
-	restoredUploads map[string]savedAttachment
-
-	// rewindStash holds the attachment blocks of the last auto-rewound prompt
-	// (see rewindStash). Written by the hub goroutine in autoRewindOnAbortFor,
-	// consumed by readLoop's restore_attachments handler. Guarded by restoreMu.
+	// restoreMu guards rewindStash (written by the hub goroutine in
+	// autoRewindOnAbortFor, consumed by readLoop's restore_attachments
+	// handler).
+	restoreMu   sync.Mutex
 	rewindStash *rewindStash
 
 	// thumbs memoizes resized history thumbnails (data URL form) so
@@ -3289,10 +3281,9 @@ func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 	c.createEngine = fn
 }
 
-// SetMediaCache injects the media store used by the WS chunked-upload path
-// to save uploaded files. Without this call, attachment uploads degrade to
-// text-only (the readLoop's accumulator rejects handleEnd with "no media
-// cache").
+// SetMediaCache injects the media store backing the HTTP upload route and the
+// content-addressed attachment ids. Without this call, uploads answer 503 and
+// commits with attachment ids answer "attachment not found".
 func (c *WUIConnector) SetMediaCache(store *media.Store) {
 	c.mediaCache = store
 }
@@ -3429,48 +3420,13 @@ type queuedMsgJSON struct {
 	Attachments []queuedAttachmentJSON `json:"attachments,omitempty"`
 }
 
-// rememberUpload mirrors a cancel-restored attachment id at the connector
-// level so it survives WS reconnects (the accumulator is per-connection).
-func (c *WUIConnector) rememberUpload(id string, att savedAttachment) {
-	c.restoreMu.Lock()
-	defer c.restoreMu.Unlock()
-	if c.restoredUploads == nil {
-		c.restoredUploads = make(map[string]savedAttachment)
-	}
-	c.restoredUploads[id] = att
-}
-
-// resolveContents is buildContents with a connector-level fallback for ids
-// restored in a PREVIOUS connection (page refresh between restore and
-// re-send would otherwise strand the chip with "missing attachment
-// uploads").
-func (c *WUIConnector) resolveContents(acc *attachmentAccumulator, atts []inboundAttachment) ([]inboundContent, string) {
-	out, missing := acc.buildContents(atts)
-	if missing == "" {
-		return out, ""
-	}
-	// Bind any missing ids found in the connector-level map (idempotent for
-	// ids that already resolved), then rebuild once.
-	c.restoreMu.Lock()
-	for _, att := range atts {
-		if saved, ok := c.restoredUploads[att.ID]; ok {
-			acc.bindSaved(att.ID, saved)
-		}
-	}
-	c.restoreMu.Unlock()
-	return acc.buildContents(atts)
-}
-
 // buildRestoredMsg maps ONE popped queue item to the cancel-restore wire
-// shape: text plus attachments re-staged under fresh upload ids. Documents
-// re-bind their existing 30-day cache path (no IO); file-sourced images
-// re-bind their path the same way, while base64 images (queued items)
-// re-materialize their bytes into the cache. Ids are registered
-// ONLY in the connector-level restoredUploads map (mutex-guarded): this
-// runs on the readLoop for pops AND on parse goroutines for late restores,
-// while the per-connection accumulator stays readLoop-owned. The commit
-// path (resolveContents) binds ids into the accumulator on demand, which
-// covers both same-connection and post-reconnect re-sends.
+// shape: text plus attachments re-staged under content-addressed ids. Bytes
+// already in the media cache bind to their cache id with no IO; blocks over
+// outside paths (and base64 images, whose bytes live only in the queued item)
+// are materialized into the cache by cachedID. Ids are pure functions of the
+// bytes, so they stay valid across reconnects, page reloads, and daemon
+// restarts — no session or connection state is involved.
 func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 	msg := queuedMsgJSON{UUID: item.UUID}
 	var sb strings.Builder
@@ -3481,14 +3437,14 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 				sb.WriteString(cb.Text)
 			}
 		case types.ContentTypeDocument:
-			if cb.Path == "" {
+			if cb.Path == "" || c.mediaCache == nil {
 				continue
 			}
-			id := uuid.New().String()
-			c.rememberUpload(id, savedAttachment{path: cb.Path, mime: cb.Mime, kind: "document"})
-			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
-				ID: id, Name: cb.Name, Mime: cb.Mime, Size: int(cb.Size),
-			})
+			if id := cachedID(c.mediaCache, cb.Path, "document"); id != "" {
+				msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
+					ID: id, Name: cb.Name, Mime: cb.Mime, Size: int(cb.Size),
+				})
+			}
 		case types.ContentTypeImage:
 			if cb.Source == nil {
 				continue
@@ -3496,17 +3452,19 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 			if cb.Source.Data == "" {
 				// File-sourced image blocks (sessions rehydrated from the
 				// store keep file references instead of inlined base64):
-				// re-bind the existing path like the document branch, no IO.
-				// Live-dispatched prompts carry base64 and take the path
-				// below.
-				if cb.Source.Path == "" {
+				// bind the existing path like the document branch. Live-
+				// dispatched prompts carry base64 and take the path below.
+				if cb.Source.Path == "" || c.mediaCache == nil {
 					continue
 				}
-				id := uuid.New().String()
-				c.rememberUpload(id, savedAttachment{path: cb.Source.Path, mime: cb.Source.MediaType, kind: "image"})
-				msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
-					ID: id, Mime: cb.Source.MediaType,
-				})
+				if id := cachedID(c.mediaCache, cb.Source.Path, "image"); id != "" {
+					msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
+						ID: id, Mime: cb.Source.MediaType,
+					})
+				}
+				continue
+			}
+			if c.mediaCache == nil {
 				continue
 			}
 			data, err := base64.StdEncoding.DecodeString(cb.Source.Data)
@@ -3518,13 +3476,12 @@ func (c *WUIConnector) buildRestoredMsg(item types.QueuedItem) queuedMsgJSON {
 			if i := strings.Index(cb.Source.MediaType, "/"); i >= 0 {
 				ext = "." + cb.Source.MediaType[i+1:]
 			}
-			path, err := c.mediaCache.Save(media.CategoryImage, data, ext)
+			path, err := c.mediaCache.Save(media.CategoryImage, data, sanitizeUploadExt(ext))
 			if err != nil {
 				slog.Warn("wui:restore image re-materialize failed", "error", err)
 				continue
 			}
-			id := uuid.New().String()
-			c.rememberUpload(id, savedAttachment{path: path, mime: cb.Source.MediaType, kind: "image"})
+			id := attachmentID(media.CategoryImage, path)
 			msg.Attachments = append(msg.Attachments, queuedAttachmentJSON{
 				ID: id, Mime: cb.Source.MediaType, Size: len(data),
 			})
@@ -3629,8 +3586,8 @@ func lastPromptAttachmentBlocks(msgs []types.Message) []types.ContentBlock {
 // already removed the prompt from engine history before the client could
 // ask — and falls back to walking Messages() for the last attachment-bearing
 // prompt. Responds restore_result with the re-staged attachments reusing
-// buildRestoredMsg's id/rememberUpload machinery, so a re-send commit
-// resolves the ids without re-uploading bytes.
+// buildRestoredMsg's cachedID machinery: ids are content-addressed, so a
+// re-send commit resolves them without re-uploading bytes.
 func (c *WUIConnector) handleRestoreAttachments() {
 	attachments := []queuedAttachmentJSON{}
 	if slot := c.activeSlot(); slot != nil && slot.engine != nil {

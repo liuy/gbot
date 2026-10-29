@@ -8,10 +8,13 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -118,6 +121,11 @@ func (s *Store) Path(cat Category, data []byte, ext string) string {
 	return filepath.Join(s.RootDir, string(cat), name)
 }
 
+// ErrTooLarge is returned by SaveReader when the reader yields more than
+// maxBytes bytes. Exported so callers can distinguish "over the cap" (413) from
+// "the client died" (400).
+var ErrTooLarge = errors.New("media: exceeds size limit")
+
 // Save writes data to {root}/{category}/{sha256[:16]}.{ext} and returns the
 // absolute path. If the file already exists (same content hash), it is NOT
 // rewritten — the existing path is returned, preserving the original mtime
@@ -125,26 +133,75 @@ func (s *Store) Path(cat Category, data []byte, ext string) string {
 // Writes are atomic: data lands in a temp file then os.Rename into place, so a
 // crash never leaves a partial cache file.
 func (s *Store) Save(cat Category, data []byte, ext string) (string, error) {
+	path, _, err := s.saveReader(cat, ext, bytes.NewReader(data), -1)
+	return path, err
+}
+
+// SaveReader streams r into {root}/{category}/<sha256[:16]><ext>, hashing as it
+// copies, and returns the final path plus the byte count. maxBytes <= 0 means
+// unbounded. On any error (read failure, over-cap, rename failure) no file is
+// left in the category dir — the temp is removed.
+func (s *Store) SaveReader(cat Category, ext string, r io.Reader, maxBytes int64) (path string, size int64, err error) {
+	return s.saveReader(cat, ext, r, maxBytes)
+}
+
+// saveReader is the shared streaming core behind Save and SaveReader.
+func (s *Store) saveReader(cat Category, ext string, r io.Reader, maxBytes int64) (string, int64, error) {
 	if ext == "" {
 		ext = ".bin"
 	}
-	dst := s.Path(cat, data, ext)
-	// Dedup: same content hash already on disk → return without rewriting so
-	// the original mtime (used by LRU eviction) is preserved.
-	if info, err := os.Stat(dst); err == nil && !info.IsDir() {
-		return dst, nil
-	} else if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("media: stat %s: %w", dst, err)
+	dir := filepath.Join(s.RootDir, string(cat))
+	// The final name is unknown until the hash completes, so the temp is
+	// created before copying. os.CreateTemp, not a destination+pid name: two
+	// concurrent saves of the same bytes would share a pid-derived temp, and
+	// the first rename could publish the other's half-written bytes under a
+	// name whose hash no longer matches its content. CreateTemp's O_EXCL also
+	// prevents hijacking a pre-existing path.
+	tmp, err := os.CreateTemp(dir, "save-*.tmp")
+	if err != nil {
+		return "", 0, fmt.Errorf("media: create temp in %s: %w", dir, err)
 	}
-	tmp := dst + ".tmp." + fmt.Sprintf("%d", os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return "", fmt.Errorf("media: write temp %s: %w", tmp, err)
+	tmpName := tmp.Name()
+	h := sha256.New()
+	var n int64
+	if maxBytes > 0 {
+		// +1 lets the copy observe one byte past the cap — the over-cap
+		// detector below distinguishes "at the limit" (accepted) from "past
+		// it" (refused) without a second read.
+		n, err = io.Copy(tmp, io.TeeReader(io.LimitReader(r, maxBytes+1), h))
+	} else {
+		n, err = io.Copy(tmp, io.TeeReader(r, h))
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("media: rename %s: %w", dst, err)
+	if err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", 0, fmt.Errorf("media: stream save: %w", err)
 	}
-	return dst, nil
+	if maxBytes > 0 && n > maxBytes {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return "", 0, fmt.Errorf("media: exceeds %d byte limit: %w", maxBytes, ErrTooLarge)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", 0, fmt.Errorf("media: close temp: %w", err)
+	}
+	name := hex.EncodeToString(h.Sum(nil)[:8]) + ext
+	dst := filepath.Join(dir, name)
+	// Dedup: same content already on disk → drop the temp and return the
+	// existing path, preserving its mtime (the LRU eviction input). Exotic
+	// stat errors and non-regular entries fall through to the rename: the
+	// observable member of that class (a directory parked at dst) fails the
+	// rename and surfaces the error.
+	if info, err := os.Stat(dst); err == nil && info.Mode().IsRegular() {
+		_ = os.Remove(tmpName)
+		return dst, n, nil
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		_ = os.Remove(tmpName)
+		return "", 0, fmt.Errorf("media: rename %s: %w", dst, err)
+	}
+	return dst, n, nil
 }
 
 // Cleanup removes files under {root}/{category}/ whose mtime is older than

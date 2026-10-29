@@ -2,7 +2,8 @@
 // Wire protocol (server contract, pkg/wui/server.go):
 //   text   {"type":"channel_open","channel":name} → channel_opened{channelId}
 //          {"type":"channel_close","channelId":N} (both directions)
-//   binary [1-byte channelId][payload]            (0x00 is the upload lane)
+//   binary [1-byte channelId][payload]            (ids start at 1; 0x00 is
+//                                                 never assigned)
 //
 // Ids are assigned by the server; a channel object exists locally from
 // openChannel() and queues outbound frames until channel_opened arrives

@@ -35,7 +35,7 @@ func readUntilType(t *testing.T, ws *websocket.Conn, wantType string) json.RawMe
 
 // TestCancelQueued_RestoresAttachmentsWithResendableIDs pins the queue-cancel
 // restore contract: cancel_queued must return the popped messages with their
-// attachments re-staged under fresh upload ids, so the client can rebuild
+// attachments re-staged under content-addressed ids, so the client can rebuild
 // chips that re-send without re-uploading bytes.
 func TestCancelQueued_RestoresAttachmentsWithResendableIDs(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
@@ -56,16 +56,11 @@ func TestCancelQueued_RestoresAttachmentsWithResendableIDs(t *testing.T) {
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
 
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1",
-		"name": "shot.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
+	uploaded := postUpload(t, srv, "shot.png", minimalPNGAttachment)
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "see this",
 		"attachments": []map[string]any{
-			{"id": "a1", "name": "shot.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
+			{"id": uploaded.ID, "name": "shot.png", "mime": uploaded.Mime, "size": uploaded.Size},
 		},
 	})
 
@@ -105,16 +100,17 @@ func TestCancelQueued_RestoresAttachmentsWithResendableIDs(t *testing.T) {
 	if len(atts) != 1 {
 		t.Fatalf("restored attachments = %+v, want 1", atts)
 	}
-	// Image blocks lose their filename at assembly (queuedAttachmentJSON
-	// contract); the client synthesizes a display name from the mime.
-	if atts[0].ID == "" || atts[0].ID == "a1" {
-		t.Fatalf("restored attachment id = %q, want a fresh re-staged id", atts[0].ID)
+	// Ids are content-addressed: re-staging identical bytes yields the SAME
+	// id the upload minted (retry is idempotent, valid across reconnects).
+	if atts[0].ID != uploaded.ID {
+		t.Fatalf("restored attachment id = %q, want the upload id %q (content-addressed)", atts[0].ID, uploaded.ID)
 	}
 	if atts[0].Mime != "image/png" || atts[0].Size != len(minimalPNGAttachment) {
 		t.Fatalf("restored attachment meta = %+v", atts[0])
 	}
 
-	// The fresh id must round-trip: resend while idle dispatches the image.
+	// The id must round-trip: resend while idle dispatches the image without
+	// any new byte upload.
 	busy.Store(false)
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "again",
@@ -242,33 +238,5 @@ func TestCancelEpoch_MidParseCancelRestoresInsteadOfEnqueue(t *testing.T) {
 	mock.mu.Unlock()
 	if enqueued != 0 {
 		t.Fatalf("enqueueCalls = %d, want 0 (late path must not enqueue)", enqueued)
-	}
-}
-
-// TestResolveContents_BindsRestoredIDAcrossConnections pins the reconnect
-// survival: a fresh accumulator (new WS connection) resolves an attachment
-// id remembered by a PREVIOUS connection through the connector-level map.
-func TestResolveContents_BindsRestoredIDAcrossConnections(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	defer srv.Close()
-	c.rememberUpload("restored-1", savedAttachment{
-		path: "/cache/doc.pdf", mime: "application/pdf", kind: "document",
-	})
-	acc := &attachmentAccumulator{}
-	contents, missing := c.resolveContents(acc, []inboundAttachment{
-		{ID: "restored-1", Name: "doc.pdf", Mime: "application/pdf", Size: 10},
-	})
-	if missing != "" {
-		t.Fatalf("missing = %q, want resolved via connector map", missing)
-	}
-	if len(contents) != 1 || contents[0].Source.Path != "/cache/doc.pdf" {
-		t.Fatalf("contents = %+v", contents)
-	}
-	// Second resolve on the SAME accumulator now hits acc.saved directly.
-	_, missing2 := c.resolveContents(acc, []inboundAttachment{
-		{ID: "restored-1", Name: "doc.pdf", Mime: "application/pdf", Size: 10},
-	})
-	if missing2 != "" {
-		t.Fatalf("second resolve missing = %q", missing2)
 	}
 }

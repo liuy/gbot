@@ -3,12 +3,18 @@ package media
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -414,5 +420,413 @@ func TestCleanupNestedSubdirs(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Errorf("fresh zip was removed: %v", err)
+	}
+}
+
+// countFiles lists the regular files directly inside dir (no recursion).
+func countFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	var files []string
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			files = append(files, e.Name())
+		}
+	}
+	return files
+}
+
+func TestSaveReader_DedupNoRewrite(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	b := []byte("streamed-once-streamed-twice")
+	path1, size1, err := s.SaveReader(CategoryDocument, ".txt", bytes.NewReader(b), -1)
+	if err != nil {
+		t.Fatalf("first SaveReader: %v", err)
+	}
+	backdated := time.Now().Add(-2 * time.Hour) // REAL-TIME
+	if err := os.Chtimes(path1, backdated, backdated); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	path2, size2, err := s.SaveReader(CategoryDocument, ".txt", bytes.NewReader(b), -1)
+	if err != nil {
+		t.Fatalf("second SaveReader: %v", err)
+	}
+	if path1 != path2 {
+		t.Errorf("dedup path mismatch: %q != %q", path1, path2)
+	}
+	if size1 != int64(len(b)) || size2 != int64(len(b)) {
+		t.Errorf("sizes = %d/%d, want %d/%d", size1, size2, len(b), len(b))
+	}
+	info, err := os.Stat(path2)
+	if err != nil {
+		t.Fatalf("stat dedup path: %v", err)
+	}
+	if !info.ModTime().Equal(backdated) {
+		t.Errorf("dedup rewrote file: mtime = %v, want %v", info.ModTime(), backdated)
+	}
+}
+
+func TestSaveReader_TooLarge_NoLeftovers(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", bytes.NewReader(bytes.Repeat([]byte("x"), 1024)), 512)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if path != "" || size != 0 {
+		t.Errorf("over-cap return = (%q, %d), want (\"\", 0)", path, size)
+	}
+	if got := countFiles(t, filepath.Join(s.RootDir, string(CategoryDocument))); len(got) != 0 {
+		t.Errorf("category dir = %v, want empty (temp removed on over-cap)", got)
+	}
+}
+
+func TestSaveReader_ReadError_CleansTemp(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	boom := errors.New("boom")
+	r := io.MultiReader(bytes.NewReader(bytes.Repeat([]byte("y"), 100)), iotest.ErrReader(boom))
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", r, -1)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it wrapping boom (%%w)", err)
+	}
+	if path != "" || size != 0 {
+		t.Errorf("read-error return = (%q, %d), want (\"\", 0)", path, size)
+	}
+	if got := countFiles(t, filepath.Join(s.RootDir, string(CategoryDocument))); len(got) != 0 {
+		t.Errorf("category dir = %v, want empty (temp removed on read error)", got)
+	}
+}
+
+// countingReader never ends, so a save that drains it past maxBytes+1 is
+// observable as over-consumption of the caller's stream (an HTTP body would be
+// read further than the cap detector needs).
+type countingReader struct{ n int }
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.n += len(p)
+	return len(p), nil
+}
+
+// The over-cap detector must stop at exactly one byte past the limit: enough to
+// prove the stream is over, no more.
+func TestSaveReader_OverCapReadsOneBytePastLimit(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	cr := &countingReader{}
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", cr, 1)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if cr.n != 2 {
+		t.Errorf("source bytes consumed = %d, want 2 (maxBytes+1) — the copy must not drain the reader", cr.n)
+	}
+	if path != "" || size != 0 {
+		t.Errorf("over-cap return = (%q, %d), want (\"\", 0)", path, size)
+	}
+	if got := countFiles(t, filepath.Join(s.RootDir, string(CategoryDocument))); len(got) != 0 {
+		t.Errorf("category dir = %v, want empty", got)
+	}
+}
+
+// maxBytes <= 0 is the documented unbounded sentinel: 0 must behave exactly like
+// -1, not like a cap of zero bytes.
+func TestSaveReader_ZeroLimitMeansUnbounded(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	b := bytes.Repeat([]byte("z"), 100)
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", bytes.NewReader(b), 0)
+	if err != nil {
+		t.Fatalf("SaveReader(maxBytes=0): %v", err)
+	}
+	if size != 100 {
+		t.Errorf("size = %d, want 100 (0 is unbounded, not a zero-byte cap)", size)
+	}
+	if want := s.Path(CategoryDocument, b, ".txt"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if !bytes.Equal(got, b) {
+		t.Errorf("object bytes = %q, want the full 100-byte input", got)
+	}
+}
+
+// Exactly maxBytes bytes is accepted: the limit is inclusive, so the over-cap
+// detector fires at maxBytes+1 and not at maxBytes.
+func TestSaveReader_ExactlyAtLimit_Accepted(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	b := bytes.Repeat([]byte("q"), 100)
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", bytes.NewReader(b), 100)
+	if err != nil {
+		t.Fatalf("SaveReader(maxBytes=100, 100 bytes): %v", err)
+	}
+	if size != 100 {
+		t.Errorf("size = %d, want 100", size)
+	}
+	if want := s.Path(CategoryDocument, b, ".txt"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+}
+
+// A missing category dir makes the temp create fail: the error must name the
+// directory, keep the errno reachable through %w, and return the zero values.
+func TestSaveReader_MissingCategoryDir_Errors(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	dir := filepath.Join(s.RootDir, string(CategoryDocument))
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove category dir: %v", err)
+	}
+	path, size, err := s.SaveReader(CategoryDocument, ".txt", strings.NewReader("abc"), -1)
+	if err == nil {
+		t.Fatal("SaveReader into a missing category dir should fail")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want it wrapping os.ErrNotExist (%%w)", err)
+	}
+	if want := "media: create temp in " + dir + ": "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("err = %q, want it to start with %q", err, want)
+	}
+	if path != "" || size != 0 {
+		t.Errorf("temp-create return = (%q, %d), want (\"\", 0)", path, size)
+	}
+	if _, err := s.Save(CategoryDocument, []byte("abc"), ".txt"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Save err = %v, want it wrapping os.ErrNotExist", err)
+	}
+}
+
+// A directory parked at the destination fails the rename: the errno must stay
+// reachable through %w and the return must be the zero values.
+func TestSaveReader_RenameFailure_WrapsCause(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	data := []byte("rename-target")
+	dst := s.Path(CategoryDocument, data, ".pdf")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatalf("mkdir dst: %v", err)
+	}
+	path, size, err := s.SaveReader(CategoryDocument, ".pdf", bytes.NewReader(data), -1)
+	if err == nil {
+		t.Fatal("SaveReader into a directory-occupied destination should fail")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("err = %v, want it wrapping the rename errno (%%w)", err)
+	}
+	if path != "" || size != 0 {
+		t.Errorf("rename-failure return = (%q, %d), want (\"\", 0)", path, size)
+	}
+	if !strings.Contains(err.Error(), dst) {
+		t.Errorf("err = %v, want it naming the destination %q", err, dst)
+	}
+	if got := countFiles(t, filepath.Join(s.RootDir, string(CategoryDocument))); len(got) != 0 {
+		t.Errorf("category dir = %v, want empty (temp removed on rename failure)", got)
+	}
+}
+
+// waitForTemps polls dir until exactly want save-*.tmp temps exist, or fails
+// after a deadline. The deadline failure mode is the whole point of M4: with a
+// destination-derived temp name the second save reuses the first temp's path
+// and the count never reaches two distinct names.
+func waitForTemps(t *testing.T, dir string, want int) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	for {
+		matches, err := filepath.Glob(filepath.Join(dir, "save-*.tmp"))
+		if err != nil {
+			t.Fatalf("glob temps: %v", err)
+		}
+		if len(matches) == want {
+			return matches
+		}
+		if len(matches) > want {
+			t.Fatalf("found %d temps, want exactly %d: %v", len(matches), want, matches)
+		}
+		if time.Now().After(deadline) { // REAL-TIME
+			t.Fatalf("only %d in-flight temps after deadline, want %d: %v", len(matches), want, matches)
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+}
+
+func TestSave_UniqueTempNamesPerCall(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	dir := filepath.Join(s.RootDir, string(CategoryImage))
+	payload := []byte("abcd")
+
+	// Save 1: hold the copy mid-stream (pipe writer left open) so its temp is
+	// observable on disk. io.Pipe writes are synchronous, so Write returns only
+	// after the copy consumed the bytes — the ordering is deterministic.
+	pr1, pw1 := io.Pipe()
+	res1 := make(chan error, 1)
+	go func() {
+		_, _, err := s.SaveReader(CategoryImage, ".png", pr1, -1)
+		res1 <- err
+	}()
+	if _, err := pw1.Write(payload); err != nil {
+		t.Fatalf("write pipe1: %v", err)
+	}
+	waitForTemps(t, dir, 1)
+
+	// Save 2: identical bytes while the first copy is still parked.
+	pr2, pw2 := io.Pipe()
+	res2 := make(chan error, 1)
+	go func() {
+		_, _, err := s.SaveReader(CategoryImage, ".png", pr2, -1)
+		res2 <- err
+	}()
+	if _, err := pw2.Write(payload); err != nil {
+		t.Fatalf("write pipe2: %v", err)
+	}
+	temps := waitForTemps(t, dir, 2)
+	if temps[0] == temps[1] {
+		t.Fatalf("two concurrent saves share temp name %q — the first rename can publish the other's bytes", temps[0])
+	}
+
+	// Release both writers; both copies complete and collapse onto one object.
+	if err := pw1.Close(); err != nil {
+		t.Fatalf("close pipe1: %v", err)
+	}
+	if err := pw2.Close(); err != nil {
+		t.Fatalf("close pipe2: %v", err)
+	}
+	for _, res := range []chan error{res1, res2} {
+		if err := <-res; err != nil {
+			t.Fatalf("SaveReader: %v", err)
+		}
+	}
+
+	files := countFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("category dir = %v, want exactly one published object", files)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, files[0]))
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("object bytes = %q, want %q", got, payload)
+	}
+	sum := sha256.Sum256(payload)
+	wantName := hex.EncodeToString(sum[:8]) + ".png"
+	if files[0] != wantName {
+		t.Errorf("object name = %q, want %q", files[0], wantName)
+	}
+}
+
+func TestSaveReader_PathMatchesHash(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	// Deterministic pseudo-random bytes: generated content defeats any
+	// shortcut that hashes a prefix instead of the whole stream.
+	rng := rand.New(rand.NewSource(42))
+	data := make([]byte, 300*1024)
+	if _, err := rng.Read(data); err != nil {
+		t.Fatalf("rng: %v", err)
+	}
+	path, size, err := s.SaveReader(CategoryImage, "", bytes.NewReader(data), -1)
+	if err != nil {
+		t.Fatalf("SaveReader: %v", err)
+	}
+	wantPath := s.Path(CategoryImage, data, "")
+	if path != wantPath {
+		t.Errorf("path = %q, want %q (hash drifted from the copied bytes)", path, wantPath)
+	}
+	if size != int64(len(data)) {
+		t.Errorf("size = %d, want %d", size, len(data))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("object bytes diverge from input (truncated copy?)")
+	}
+}
+
+func TestSave_StillDedupsAndRejectsDir(t *testing.T) {
+	s, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	data := []byte("regression-guard")
+	path1, err := s.Save(CategoryDocument, data, ".txt")
+	if err != nil {
+		t.Fatalf("first Save: %v", err)
+	}
+	backdated := time.Now().Add(-2 * time.Hour) // REAL-TIME
+	if err := os.Chtimes(path1, backdated, backdated); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	path2, err := s.Save(CategoryDocument, data, ".txt")
+	if err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+	if path1 != path2 {
+		t.Errorf("dedup path mismatch: %q != %q", path1, path2)
+	}
+	info, err := os.Stat(path2)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !info.ModTime().Equal(backdated) {
+		t.Errorf("dedup rewrote file: mtime = %v, want %v", info.ModTime(), backdated)
+	}
+
+	// A directory parked at the destination: rename fails, the error names the
+	// destination, and no temp is left behind.
+	other := []byte("collides-with-a-dir")
+	dst := s.Path(CategoryDocument, other, ".pdf")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatalf("mkdir dst: %v", err)
+	}
+	if _, err := s.Save(CategoryDocument, other, ".pdf"); err == nil {
+		t.Fatal("Save into a directory-occupied destination should fail")
+	} else if !strings.Contains(err.Error(), dst) {
+		t.Errorf("err = %v, want it naming the destination %q", err, dst)
+	}
+	dirEntries, err := os.ReadDir(filepath.Dir(dst))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var temps []string
+	for _, e := range dirEntries {
+		if strings.HasPrefix(e.Name(), "save-") {
+			temps = append(temps, e.Name())
+		}
+	}
+	if len(temps) != 0 {
+		t.Errorf("leftover temps after rename failure: %v", temps)
 	}
 }

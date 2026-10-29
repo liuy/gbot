@@ -217,8 +217,8 @@ func (h *Hub) Connected(plugin string) bool {
 }
 
 // OpenChannel binds the named plugin's pipe to sink and returns the wire
-// channel id. Ids are allocated monotonically from 1 and never reused
-// within a hub's lifetime; 0x00 stays reserved for attachment frames.
+// channel id. Ids are allocated monotonically from 1 and never reused within
+// a hub's lifetime; 0x00 is never assigned.
 func (h *Hub) OpenChannel(sink ClientSink, plugin string) (uint8, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

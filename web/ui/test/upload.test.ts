@@ -1,200 +1,156 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-// getConnection is mocked per-test to capture sent frames + binary writes
-// and to allow flipping `connected` mid-stream.
-type SendCall = { kind: 'text'; payload: unknown } | { kind: 'binary'; data: ArrayBuffer }
+// jsdom's real XHR accepts send(FormData) but never fires upload.onprogress,
+// so tests install this stub class over globalThis.XMLHttpRequest and drive
+// the events the transport is expected to emit explicitly (real Chromium
+// fires them).
+class XHRStub {
+  static instances: XHRStub[] = []
+  method = ''
+  url = ''
+  requestHeaders: [string, string][] = []
+  body: unknown = null
+  sent = false
+  aborted = false
+  progressAttachedAtSend = false
+  upload: { onprogress: ((e: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } = { onprogress: null }
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onabort: (() => void) | null = null
+  status = 0
+  responseText = ''
 
-interface FakeConn {
-  connected: boolean
-  send: (p: unknown) => void
-  sendBinary: (d: ArrayBuffer) => void
-}
-
-let fakeConn: FakeConn
-let sendCalls: SendCall[]
-
-vi.mock('../src/ws', () => ({
-  getConnection: () => fakeConn,
-}))
-
-import { sendAttachmentViaWS, attachmentMeta, newAttachmentID } from '../src/upload'
-
-function installFakeConn(opts: { connected?: boolean; disconnectAfterBinary?: number } = {}): FakeConn {
-  sendCalls = []
-  let binaryCount = 0
-  fakeConn = {
-    connected: opts.connected ?? true,
-    send: (p: unknown) => {
-      sendCalls.push({ kind: 'text', payload: p })
-    },
-    sendBinary: (d: ArrayBuffer) => {
-      sendCalls.push({ kind: 'binary', data: d })
-      binaryCount++
-      if (opts.disconnectAfterBinary !== undefined && binaryCount >= opts.disconnectAfterBinary) {
-        fakeConn.connected = false
-      }
-    },
+  constructor() { XHRStub.instances.push(this) }
+  open(method: string, url: string) { this.method = method; this.url = url }
+  setRequestHeader(k: string, v: string) { this.requestHeaders.push([k, v]) }
+  send(body: unknown) {
+    this.sent = true
+    this.body = body
+    this.progressAttachedAtSend = this.upload.onprogress !== null
   }
-  return fakeConn
+  abort() { this.aborted = true }
 }
 
-describe('sendAttachmentViaWS', () => {
-  beforeEach(() => {
-    installFakeConn()
+import { uploadAttachment, attachmentMeta } from '../src/upload'
+
+function pngFile(): File {
+  return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])], 'photo.png', { type: 'image/png' })
+}
+
+function okBody(id = 'i:ab12cd34ef56ab12') {
+  return JSON.stringify({ id, mime: 'image/png', size: 6, kind: 'image' })
+}
+
+beforeEach(() => {
+  XHRStub.instances = []
+  vi.stubGlobal('XMLHttpRequest', XHRStub)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('uploadAttachment', () => {
+  it('XHRPostsFormDataToUploadRoute', async () => {
+    const file = pngFile()
+    const p = uploadAttachment(file, {})
+    expect(XHRStub.instances.length).toBe(1)
+    const x = XHRStub.instances[0]
+    expect(x.method).toBe('POST')
+    expect(x.url).toBe('/api/upload')
+    // No manual Content-Type: the browser must set the multipart boundary.
+    expect(x.requestHeaders.length).toBe(0)
+    expect(x.sent).toBe(true)
+    expect(x.body).toBeInstanceOf(FormData)
+    expect((x.body as FormData).get('file')).toBe(file)
+    x.status = 200
+    x.responseText = okBody()
+    x.onload!()
+    await expect(p).resolves.toEqual({ id: 'i:ab12cd34ef56ab12', mime: 'image/png', size: 6, kind: 'image' })
   })
 
-  afterEach(() => {
-    vi.restoreAllMocks()
+  it('UploadProgressPlumbsToCallback', async () => {
+    const onProgress = vi.fn()
+    const p = uploadAttachment(pngFile(), { onProgress })
+    const x = XHRStub.instances[0]
+    // The callback must be attached before send so the first byte event is
+    // never dropped.
+    expect(x.progressAttachedAtSend).toBe(true)
+    x.upload.onprogress!({ lengthComputable: true, loaded: 512, total: 1024 })
+    expect(onProgress).toHaveBeenCalledTimes(1)
+    expect(onProgress).toHaveBeenCalledWith(0.5)
+    onProgress.mockClear()
+    // lengthComputable=false must not divide by a useless total (NaN widths).
+    x.upload.onprogress!({ lengthComputable: false, loaded: 10, total: 0 })
+    expect(onProgress).not.toHaveBeenCalled()
+    x.status = 200
+    x.responseText = okBody('i:progress')
+    x.onload!()
+    await p
   })
 
-  it('SplitsBigFileInto256KiBChunks', async () => {
-    // 600 KiB → ceil(600/256) = 3 chunks (256K + 256K + 88K tail).
-    const totalBytes = 600 * 1024
-    const data = new Uint8Array(totalBytes)
-    for (let i = 0; i < totalBytes; i++) data[i] = i & 0xff
-    const file = new File([data], 'big.bin', { type: 'application/octet-stream' })
-
-    const fracs: number[] = []
-    await sendAttachmentViaWS(file, 'id-1', (f) => fracs.push(f))
-
-    // Exactly one attachment_start, three binary frames, one attachment_end.
-    const textCalls = sendCalls.filter((c) => c.kind === 'text')
-    const binaryCalls = sendCalls.filter((c) => c.kind === 'binary')
-    expect(binaryCalls.length).toBe(3)
-    expect(textCalls.length).toBe(2)
-
-    // First text frame is attachment_start with full metadata.
-    expect((textCalls[0] as { payload: unknown }).payload).toEqual({
-      type: 'attachment_start',
-      id: 'id-1',
-      name: 'big.bin',
-      mime: 'application/octet-stream',
-      size: totalBytes,
-    })
-    // Last text frame is attachment_end.
-    expect((textCalls[1] as { payload: unknown }).payload).toEqual({
-      type: 'attachment_end',
-      id: 'id-1',
-    })
-
-    // Binary frames appear between the two text frames in send order.
-    expect(sendCalls[0].kind).toBe('text')
-    expect(sendCalls[sendCalls.length - 1].kind).toBe('text')
-    for (let i = 1; i < sendCalls.length - 1; i++) {
-      expect(sendCalls[i].kind).toBe('binary')
-    }
-
-    // Progress is strictly increasing and ends at exactly 1.0.
-    for (let i = 1; i < fracs.length; i++) {
-      expect(fracs[i]).toBeGreaterThan(fracs[i - 1])
-    }
-    expect(fracs[fracs.length - 1]).toBe(1)
-    // First chunk reports 256KiB/600KiB.
-    expect(fracs[0]).toBeCloseTo(256 / 600, 5)
+  it('HttpError_SurfacesServerMessage', async () => {
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 413
+    x.responseText = JSON.stringify({ error: 'upload exceeds 50.0MB limit' })
+    x.onload!()
+    await expect(p).rejects.toThrow(/upload exceeds 50\.0MB limit/)
   })
 
-  it('RejectsWhenDisconnectedAtStart', async () => {
-    installFakeConn({ connected: false })
-    const file = new File([new Uint8Array([0x01])], 'tiny.bin')
-    await expect(sendAttachmentViaWS(file, 'id-x')).rejects.toThrow(/WS not connected/)
-    expect(sendCalls.length).toBe(0)
+  it('HttpError_NonJsonBody', async () => {
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 500
+    x.responseText = ''
+    x.onload!()
+    // No JSON.parse throw may escape — a clean fallback message instead.
+    await expect(p).rejects.toThrow('upload failed: 500')
   })
 
-  it('RejectsWhenDisconnectDetectedMidStream', async () => {
-    // Flip connected=false after the first binary frame.
-    installFakeConn({ disconnectAfterBinary: 1 })
-    const totalBytes = 600 * 1024
-    const data = new Uint8Array(totalBytes)
-    const file = new File([data], 'big.bin')
-
-    await expect(sendAttachmentViaWS(file, 'id-mid')).rejects.toThrow(/disconnected mid-upload/)
-
-    const binaryCalls = sendCalls.filter((c) => c.kind === 'binary')
-    expect(binaryCalls.length).toBe(1) // only the first chunk got out before the re-check fired
-    // attachment_end must NOT have been sent (upload did not complete).
-    const textCalls = sendCalls.filter((c) => c.kind === 'text')
-    const hasEnd = textCalls.some(
-      (c) => (c as { payload: { type?: string } }).payload instanceof Object &&
-        (c as { payload: { type?: string } }).payload.type === 'attachment_end',
-    )
-    expect(hasEnd).toBe(false)
+  it('AbortSignalAbortsRequest', async () => {
+    const ac = new AbortController()
+    const p = uploadAttachment(pngFile(), { signal: ac.signal })
+    const x = XHRStub.instances[0]
+    expect(x.aborted).toBe(false)
+    ac.abort()
+    expect(x.aborted).toBe(true)
+    x.onabort!()
+    await expect(p).rejects.toThrow(/.+/) // non-empty message
   })
 
-  it('EmptyFile_SendsNoBinaryFrames', async () => {
-    const file = new File([], 'empty.bin', { type: 'application/octet-stream' })
-    await sendAttachmentViaWS(file, 'id-empty')
-    const binaryCalls = sendCalls.filter((c) => c.kind === 'binary')
-    expect(binaryCalls.length).toBe(0)
-    const textCalls = sendCalls.filter((c) => c.kind === 'text')
-    expect(textCalls.length).toBe(2) // start + end still bracket the empty body
-    expect((textCalls[0] as { payload: unknown }).payload).toMatchObject({
-      type: 'attachment_start',
-      id: 'id-empty',
-      size: 0,
-    })
+  it('AlreadyAbortedSignal_ConstructsNoXHR', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    await expect(uploadAttachment(pngFile(), { signal: ac.signal })).rejects.toThrow('upload aborted')
+    expect(XHRStub.instances.length).toBe(0)
   })
 
-  it('ExactChunkSize_SendsOneFullChunkAndStops', async () => {
-    const size = 256 * 1024
-    const data = new Uint8Array(size)
-    const file = new File([data], 'exact.bin', { type: 'application/octet-stream' })
-    await sendAttachmentViaWS(file, 'id-exact')
-    const binaryCalls = sendCalls.filter((c) => c.kind === 'binary')
-    expect(binaryCalls.length).toBe(1) // NOT 2 — no trailing empty chunk
+  it('NetworkError_OnerrorRejects', async () => {
+    const p = uploadAttachment(pngFile(), {})
+    XHRStub.instances[0].onerror!()
+    await expect(p).rejects.toThrow(/.+/) // non-empty message, no raw exception
   })
 })
 
 describe('attachmentMeta', () => {
-  it('PrefersFileTypeWhenPresent', () => {
+  it('KeepsMimeFallbackAndSizeOverride', () => {
     const file = new File([new Uint8Array([0x01])], 'photo.png', { type: 'image/png' })
-    const meta = attachmentMeta(file, 'id-1')
+    const meta = attachmentMeta(file, 'i:abc')
     expect(meta.mime).toBe('image/png')
     expect(meta.name).toBe('photo.png')
-    expect(meta.id).toBe('id-1')
+    expect(meta.id).toBe('i:abc')
     expect(meta.size).toBe(1)
-  })
 
-  it('FallsBackToExtensionWhenFileTypeEmpty', () => {
-    // Some browsers omit file.type for .pdf / .docx — must derive from name.
-    const file = new File([new Uint8Array([0x01])], 'report.pdf', { type: '' })
-    expect(attachmentMeta(file, 'id-pdf').mime).toBe('application/pdf')
-    const filePng = new File([new Uint8Array([0x01])], 'image.png', { type: '' })
-    expect(attachmentMeta(filePng, 'id-png').mime).toBe('image/png')
-    // Unknown extension falls back to octet-stream.
-    const fileUnknown = new File([new Uint8Array([0x01])], 'weird.xyz', { type: '' })
-    expect(attachmentMeta(fileUnknown, 'id-x').mime).toBe('application/octet-stream')
-  })
-})
+    // Restored chips carry a zero-byte stub File; sizeOverride carries the
+    // REAL byte count (the retry guard depends on this shape).
+    const stub = new File([], 'photo.png', { type: 'image/png' })
+    expect(attachmentMeta(stub, 'i:abc', 4321).size).toBe(4321)
 
-describe('newAttachmentID', () => {
-  // newAttachmentID uses crypto.getRandomValues directly (not crypto.randomUUID)
-  // because getRandomValues works in ALL browser contexts — including the
-  // non-secure HTTP-on-LAN-IP case where randomUUID is undefined. We still
-  // verify the output matches the RFC 4122 v4 shape so a future refactor
-  // can't silently drop the version/variant bits.
-  const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-
-  it('ReturnsValidUUIDv4Shape', () => {
-    expect(newAttachmentID()).toMatch(uuidV4)
-  })
-
-  it('ReturnsValidUUIDv4ShapeWhenRandomUUIDUnavailable', () => {
-    // Mirrors the HTTP-on-LAN-IP case: crypto.getRandomValues is still
-    // available but randomUUID is undefined. The helper must not rely on
-    // randomUUID; getRandomValues alone is enough.
-    const cryptoObj = (globalThis as { crypto: Crypto }).crypto
-    const orig = Object.getOwnPropertyDescriptor(cryptoObj, 'randomUUID')
-    Reflect.deleteProperty(cryptoObj, 'randomUUID')
-    try {
-      expect(newAttachmentID()).toMatch(uuidV4)
-    } finally {
-      if (orig) Object.defineProperty(cryptoObj, 'randomUUID', orig)
-    }
-  })
-
-  it('GeneratesUniqueIDs', () => {
-    const ids = new Set<string>()
-    for (let i = 0; i < 1000; i++) ids.add(newAttachmentID())
-    expect(ids.size).toBe(1000)
+    // Empty file.type falls back to the extension sniff.
+    const pdf = new File([new Uint8Array([0x01])], 'report.pdf', { type: '' })
+    expect(attachmentMeta(pdf, 'd:pdf').mime).toBe('application/pdf')
+    const unknown = new File([new Uint8Array([0x01])], 'weird.xyz', { type: '' })
+    expect(attachmentMeta(unknown, 'd:x').mime).toBe('application/octet-stream')
   })
 })

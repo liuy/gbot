@@ -70,7 +70,7 @@ import { notifyCapsule } from './capsule'
 import { TokenRate } from './token_rate'
 import { History } from './history'
 import { initTheme } from './theme'
-import { sendAttachmentViaWS, attachmentMeta, newAttachmentID } from './upload'
+import { uploadAttachment, attachmentMeta } from './upload'
 import {
   errorBox,
   compactDividerContainer,
@@ -630,6 +630,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     onTruncated: (block) => fireSubtreeFetch(block),
   }
   let queuedMsgs: QueuedMsg[] = []
+  // AbortControllers for uploads currently moving bytes (onSend + retry).
+  // Stop and connection-loss abort them: an upload whose commit socket is
+  // dying must not keep streaming — the chip turns red and retry is one tap.
+  const inflightUploads = new Set<AbortController>()
   // Local metas for the attachment blocks of the last abort-rewound user
   // message, awaiting the server's restore_result. Holds what only the
   // client knows (blob-URL thumbnails, original document names/sizes); the
@@ -929,6 +933,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       // metadata without any client-sent switch, so the reconnect window
       // itself is a takeover window: start here, the replayed metadata
       // frame finishes it. The same holds for the 1012 upgrading branch.
+      // The old connection's commit socket is going away: abort in-flight
+      // uploads so they stop streaming into a dead endpoint.
+      for (const ac of inflightUploads) ac.abort()
       takeoverBar.start()
       disconnectBanner.style.cursor = 'default'
       startDots()
@@ -936,6 +943,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       disconnectBanner.style.opacity = '1'
     } else if (cs === 'upgrading') {
       takeoverBar.start()
+      // Same reasoning as 'reconnecting': the socket under any in-flight
+      // upload is about to be replaced mid-restart.
+      for (const ac of inflightUploads) ac.abort()
       // Capsule owns the visuals; the banner must not appear for a planned
       // restart. Rollback bail-out: if the socket never actually dropped,
       // the server answered our reconnect with the old process (the
@@ -959,6 +969,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       // Give-up (the binary never came back within 90 s): retire the
       // upgrading visuals — a frozen capsule reads as a hang — and fall
       // back to the ordinary retry banner.
+      for (const ac of inflightUploads) ac.abort()
       if (capsuleUpgrading) {
         capsuleUpgrading = false
         capsule.dismiss()
@@ -2323,20 +2334,41 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
     // Two-phase commit path — upload files only (paste already inlined).
     // Paste MUST be filtered out before this loop: paste refs have no `file`,
-    // so sendAttachmentViaWS would crash dereferencing ref.file.
+    // so uploadAttachment would crash dereferencing ref.file. Uploads are
+    // serial per file (parallel uploads on a mobile uplink are a separate UX
+    // change) with a break on the first failure.
+    // The commit needs the socket anyway, so a doomed upload must not move
+    // bytes: an offline connection fails every chip up front.
+    if (!conn.connected) {
+      // Restore on a microtask: onSubmit clears the textarea synchronously
+      // right after this handler starts, so the draft restore (and the red
+      // chips) must land after that wipe — same timing as the post-upload
+      // failure path below.
+      await Promise.resolve()
+      inputBar.markAttachmentFailures(files)
+      inputBar.setUploading(false)
+      inputBar.setInputText(text)
+      return
+    }
     inputBar.setUploading(true)
     let anyFailed = false
     for (const ref of files) {
       if (ref.uploadedID) continue // bytes already staged server-side (retry path)
+      const ac = new AbortController()
+      inflightUploads.add(ac)
       try {
-        const id = newAttachmentID()
-        await sendAttachmentViaWS(ref.file, id, (frac) =>
-          inputBar.setAttachmentProgress(ref, frac))
-        ref.uploadedID = id
+        const res = await uploadAttachment(ref.file, {
+          signal: ac.signal,
+          onProgress: (p) => inputBar.setAttachmentProgress(ref, p),
+        })
+        inputBar.setAttachmentProgress(ref, 1) // clears the bar; upload is done
+        ref.uploadedID = res.id
       } catch {
         anyFailed = true
         inputBar.markAttachmentFailures([ref])
-        break // stop on first failure — server only accepts one upload at a time
+        break // stop on first failure — the commit must not run half-uploaded
+      } finally {
+        inflightUploads.delete(ac)
       }
     }
     inputBar.setUploading(false)
@@ -2383,6 +2415,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const onStop = () => {
     const t0 = performance.now()
     console.debug('[chat] onStop esc pressed at', t0)
+    // Stop also kills any in-flight uploads: the user abandoned the turn, so
+    // the bytes should stop moving and the chips turn red for retry.
+    for (const ac of inflightUploads) ac.abort()
     conn.send({ type: 'stop' })
     console.debug('[chat] onStop stop sent, ws_buffered=' + (performance.now() - t0) + 'ms')
   }
@@ -2403,22 +2438,34 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onSend(onSend)
   inputBar.onStop(onStop)
   inputBar.onCancelQueued(onCancelQueued)
-  // onRetryAttachment re-fires sendAttachmentViaWS for a failed chip with a
-  // fresh id. On success the ref's uploadedID is set so a subsequent onSend
-  // skips re-uploading it (only the failed chip needed bytes on the wire).
+  // onRetryAttachment re-runs uploadAttachment for a failed chip. On success
+  // the ref's uploadedID is set so a subsequent onSend skips re-uploading it
+  // (only the failed chip needed bytes on the wire).
+  // A cancelled-queue restore builds a chip whose `file` is a zero-byte stub
+  // (the real bytes live server-side under uploadedID, true length in
+  // restoredSize). Re-uploading the stub would POST zero bytes and overwrite
+  // a perfectly good id with the id of an empty document — retry's correct
+  // answer for such a chip is "success, no request".
   // Paste refs never reach here at runtime: the retry button only renders
   // on `ref.failed === true` chips, and paste is filtered out of the upload
   // loop in onSend before any failure can be marked.
   inputBar.onRetryAttachment(async (ref) => {
     if (ref.kind === 'paste') return false
-    const id = newAttachmentID()
+    if (ref.uploadedID) return true
+    const ac = new AbortController()
+    inflightUploads.add(ac)
     try {
-      await sendAttachmentViaWS(ref.file, id, (frac) =>
-        inputBar.setAttachmentProgress(ref, frac))
-      ref.uploadedID = id
+      const res = await uploadAttachment(ref.file, {
+        signal: ac.signal,
+        onProgress: (p) => inputBar.setAttachmentProgress(ref, p),
+      })
+      inputBar.setAttachmentProgress(ref, 1)
+      ref.uploadedID = res.id
       return true
     } catch {
       return false
+    } finally {
+      inflightUploads.delete(ac)
     }
   })
   inputBar.onHistoryUp((current) => {

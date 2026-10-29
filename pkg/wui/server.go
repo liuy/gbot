@@ -151,34 +151,31 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	slog.Info("wui:disconnect")
 }
 
+// wsReadLimit bounds a single inbound WS frame: JSON messages and
+// [channel id][payload] transport frames (VNC/CDP/plugin). Unrelated to the
+// HTTP upload caps in upload.go — attachments no longer ride this socket.
+// The 64 KiB headroom above 50 MiB is framing; without a limit Gorilla's
+// 64 MiB default buffers a rogue frame before the frame-boundary check.
+const wsReadLimit = 50<<20 + 64*1024
+
 // readLoop processes inbound JSON messages until the connection closes.
 func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
-	// Gorilla's default ReadLimit (64 MiB) would let a >50 MiB rogue single
-	// binary frame into memory before our handleStart size check can reject
-	// it; lower the limit explicitly so the read stops at the frame boundary.
-	ws.SetReadLimit(maxAttachmentSize + 64*1024)
-	// acc tracks the in-flight chunked-upload state for this WS connection.
-	// Lives on readLoop's stack so disconnect naturally GC's it; no
-	// connector-level cleanup is needed.
-	acc := &attachmentAccumulator{}
+	ws.SetReadLimit(wsReadLimit)
 	for {
 		msgType, data, err := ws.ReadMessage()
 		if err != nil {
 			slog.Info("wui:readLoop exit", "error", err)
 			return
 		}
-		// Binary frames are [1-byte channel id][payload]. 0x00 is the
-		// legacy attachment-chunk lane; any other byte routes the rest of
-		// the frame to the transport hub for that channel.
+		// Binary frames are [1-byte channel id][payload]; every non-empty
+		// frame routes to the transport hub for that channel (ids are
+		// allocated from 1, so a stray 0x00 byte simply has no binding and
+		// ChannelSend no-ops).
 		if msgType == websocket.BinaryMessage {
 			if len(data) == 0 {
 				continue
 			}
-			if data[0] == 0x00 {
-				if errMsg := acc.handleBinary(data[1:]); errMsg != "" {
-					c.sendWS(buildError(errors.New(errMsg)))
-				}
-			} else if c.transport != nil {
+			if c.transport != nil {
 				c.transport.ChannelSend(data[0], data[1:])
 			}
 			continue
@@ -200,47 +197,23 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				if len(msg.Attachments) > 0 {
-					// Two-phase commit: user_message is the commit frame. All
-					// attachment ids must already be staged — normally in
-					// acc.saved (uploaded beforehand via
-					// attachment_start/binary/end); cancel-restored ids resolve
-					// through the connector-level map in resolveContents. A
-					// missing id means the upload failed or never ran — reject
-					// the whole message so partial state never reaches the
-					// engine. An active upload (activeID != "") means the
-					// user tried to commit mid-stream — also reject; the
-					// frontend learns to wait for attachment_end.
-					if acc.activeID != "" {
-						c.sendWS(buildError(errors.New("attachment upload in progress; wait for current attachment to finish")))
-						continue
-					}
-					contents, missing := c.resolveContents(acc, msg.Attachments)
+					// The commit frame: every attachment id must resolve to a
+					// cached object. Ids are content-addressed and stateless,
+					// so resolution works on any connection at any time; a
+					// miss means the upload failed or the object aged out —
+					// reject the whole message so partial state never reaches
+					// the engine.
+					contents, missing := c.resolveAttachments(msg.Attachments)
 					if missing != "" {
-						c.sendWS(buildError(fmt.Errorf("missing attachment uploads: %s", missing)))
+						c.sendWS(buildError(fmt.Errorf("attachment not found: %s", missing)))
 						continue
 					}
-					text := msg.Text
-					acc.reset()
-					c.handleMessageInbound(text, contents)
+					c.handleMessageInbound(msg.Text, contents)
 					continue
 				}
 				// Legacy path: callers that pass content[] directly (existing
 				// inbound_test.go fixtures). The new frontend never sends it.
 				c.handleMessageInbound(msg.Text, msg.Content)
-			}
-		case "attachment_start":
-			var msg attachmentStartMsg
-			if json.Unmarshal(data, &msg) == nil {
-				if errMsg := acc.handleStart(msg); errMsg != "" {
-					c.sendWS(buildError(errors.New(errMsg)))
-				}
-			}
-		case "attachment_end":
-			var msg attachmentEndMsg
-			if json.Unmarshal(data, &msg) == nil {
-				if errMsg := acc.handleEnd(msg.ID, c.mediaCache); errMsg != "" {
-					c.sendWS(buildError(errors.New(errMsg)))
-				}
 			}
 		case "ask_response":
 			var msg struct {
@@ -471,7 +444,7 @@ var assembleGate func()
 
 // handleMessageInbound dispatches a user message (text + optional content
 // blocks) to the active engine. Content blocks reference files saved by the
-// WS chunked-upload path (or the legacy content[] field for tests); each is
+// HTTP upload path (or the legacy content[] field for tests); each is
 // converted to a types.ContentBlock before reaching the engine. If the
 // engine is busy, the assembled blocks are enqueued as a single QueuedItem
 // (Content field overrides Value).

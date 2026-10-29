@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -28,18 +30,6 @@ func writeWSText(t *testing.T, c *websocket.Conn, payload map[string]any) {
 	_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
 	if err := c.WriteMessage(websocket.TextMessage, out); err != nil {
 		t.Fatalf("ws.WriteMessage: %v", err)
-	}
-}
-
-// writeWSBinary sends an attachment chunk as a binary frame with a deadline.
-// Chunks ride the 0x00 lane of the channel-prefixed binary protocol.
-// Mirrors readWSMessage's 2s timeout so the test fails fast on a stalled write.
-func writeWSBinary(t *testing.T, c *websocket.Conn, data []byte) {
-	t.Helper()
-	frame := append([]byte{0x00}, data...)
-	_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
-	if err := c.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-		t.Fatalf("ws.WriteMessage(binary): %v", err)
 	}
 }
 
@@ -74,7 +64,7 @@ func readWSError(t *testing.T, c *websocket.Conn) string {
 }
 
 // setupAttachmentServer returns a connector with a real media store bound to
-// an httptest server exposing only /ws/chat (the /upload route is gone).
+// an httptest server exposing /ws/chat and POST /api/upload.
 func setupAttachmentServer(t *testing.T) (*WUIConnector, *httptest.Server) {
 	t.Helper()
 	// Sandbox the send-time parse cache (resolved from HOME).
@@ -92,54 +82,89 @@ func setupAttachmentServer(t *testing.T) (*WUIConnector, *httptest.Server) {
 	return c, srv
 }
 
-// attachChatMux mounts /ws/chat on a fresh mux. Kept inline (not added to
-// helpers_test.go) because the e2e tests in this file are the only callers.
+// attachChatMux mounts the chat WS and the upload route on a fresh mux. Kept
+// inline (not added to helpers_test.go) because the e2e tests in this file
+// are the only callers.
 func attachChatMux(c *WUIConnector) *http.ServeMux {
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
+	RegisterUploadRoute(mux, c)
 	return mux
 }
 
-// TestWSAttachment_RoundTrip_Image drives the two-phase commit flow:
-//
-//	attachment_start → binary chunks → attachment_end → user_message →
-//	mock.QueryWithContent fires with text + image block.
-//
-// All attachments must land in saved BEFORE the user_message commit frame
-// arrives — the server refuses dispatch otherwise.
-func TestWSAttachment_RoundTrip_Image(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
+// postUpload uploads body as the named file through the mounted /api/upload
+// route and decodes the 200 response; fatal on any other status.
+func postUpload(t *testing.T, srv *httptest.Server, name string, body []byte) uploadResponse {
+	t.Helper()
+	ct, buf := multipartFileBody(t, name, body)
+	resp, err := http.Post(srv.URL+"/api/upload", ct, buf)
+	if err != nil {
+		t.Fatalf("POST /api/upload: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/upload status = %d body = %s", resp.StatusCode, raw)
+	}
+	var out uploadResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	return out
+}
 
+var uploadImageID = regexp.MustCompile(`^i:[0-9a-f]{16}\.png$`)
+var uploadDocID = regexp.MustCompile(`^d:[0-9a-f]{16}\.txt$`)
+var uploadPDFID = regexp.MustCompile(`^d:[0-9a-f]{16}\.pdf$`)
+
+// TestUpload_Image_RoundTrip drives the full flow over the mounted route:
+// one multipart POST, then a WS commit frame referencing the returned id —
+// mock.QueryWithContent fires with text + a base64 image block whose decoded
+// bytes equal the fixture.
+func TestUpload_Image_RoundTrip(t *testing.T) {
+	c, srv := setupAttachmentServer(t)
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return false }
 	mock.systemPromptFn = func() string { return "" }
 
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "photo.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
+	resp := postUpload(t, srv, "photo.png", minimalPNGAttachment)
+	if !uploadImageID.MatchString(resp.ID) {
+		t.Fatalf("id = %q, want i:<16hex>.png", resp.ID)
+	}
+	if resp.Mime != "image/png" || resp.Kind != "image" || resp.Size != int64(len(minimalPNGAttachment)) {
+		t.Fatalf("resp = %+v, want {image/png image %d}", resp, len(minimalPNGAttachment))
+	}
+	// The cache object exists under images/ and byte-equals the fixture.
+	objPath := filepath.Join(c.mediaCache.RootDir, string(media.CategoryImage), strings.TrimPrefix(resp.ID, "i:"))
+	got, err := os.ReadFile(objPath)
+	if err != nil {
+		t.Fatalf("read cached object: %v", err)
+	}
+	if !bytes.Equal(got, minimalPNGAttachment) {
+		t.Errorf("cached object bytes diverge from the uploaded fixture")
+	}
+
+	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, ws)
 	writeWSText(t, ws, map[string]any{
 		"type": "message",
 		"text": "what is this",
 		"attachments": []map[string]any{
-			{"id": "a1", "name": "photo.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
+			{"id": resp.ID, "name": "photo.png", "mime": resp.Mime, "size": resp.Size},
 		},
 	})
-
-	if !waitFor(time.Second, func() bool {
+	if !waitFor(2*time.Second, func() bool {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
 		return len(mock.queryWithContentCalls) == 1
 	}) {
 		mock.mu.Lock()
+		defer mock.mu.Unlock()
 		t.Fatalf("queryWithContentCalls = %d, want 1", len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
 	}
-
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	call := mock.queryWithContentCalls[0]
@@ -166,374 +191,148 @@ func TestWSAttachment_RoundTrip_Image(t *testing.T) {
 	if !bytes.Equal(decoded, minimalPNGAttachment) {
 		t.Errorf("decoded bytes len = %d, want %d (roundtrip corrupted)", len(decoded), len(minimalPNGAttachment))
 	}
-	if len(mock.queryCalls) != 0 {
-		t.Errorf("queryCalls = %d, want 0 (QueryWithContent path)", len(mock.queryCalls))
+}
+
+// TestUpload_Document_RoundTrip covers both document shapes: plain text and
+// the pdf fixture. Documents save as reference blocks (no parse artifacts).
+func TestUpload_Document_RoundTrip(t *testing.T) {
+	c, srv := setupAttachmentServer(t)
+
+	txt := postUpload(t, srv, "notes.txt", []byte("hello notes"))
+	if !uploadDocID.MatchString(txt.ID) {
+		t.Fatalf("txt id = %q, want d:<16hex>.txt", txt.ID)
+	}
+	if txt.Kind != "document" || txt.Mime != "text/plain" || txt.Size != 11 {
+		t.Fatalf("txt resp = %+v, want {text/plain document 11}", txt)
+	}
+
+	pdf := postUpload(t, srv, "report.pdf", pdfFixture)
+	if !uploadPDFID.MatchString(pdf.ID) {
+		t.Fatalf("pdf id = %q, want d:<16hex>.pdf", pdf.ID)
+	}
+	if pdf.Mime != "application/pdf" || pdf.Kind != "document" {
+		t.Fatalf("pdf resp = %+v, want {application/pdf document}", pdf)
+	}
+
+	// Both objects live under documents/; documents/parse/ is untouched and
+	// no temp file survived.
+	for _, id := range []string{txt.ID, pdf.ID} {
+		objPath := filepath.Join(c.mediaCache.RootDir, string(media.CategoryDocument), strings.TrimPrefix(id, "d:"))
+		if _, err := os.Stat(objPath); err != nil {
+			t.Errorf("cached document %s missing: %v", objPath, err)
+		}
+	}
+	parseDir := filepath.Join(c.mediaCache.RootDir, string(media.CategoryParse))
+	if entries, err := os.ReadDir(parseDir); err != nil {
+		t.Fatalf("ReadDir parse: %v", err)
+	} else if len(entries) != 0 {
+		t.Errorf("documents/parse/ = %v, want empty (no parse artifacts at upload time)", entries)
+	}
+	for _, f := range walkRegularFiles(t, c.mediaCache.RootDir) {
+		if strings.HasPrefix(filepath.Base(f), "save-") {
+			t.Errorf("leftover temp %s after a clean upload", f)
+		}
 	}
 }
 
-// TestWSAttachment_RoundTrip_Document exercises the document branch: a
-// plain-text document is saved and the dispatched content carries a document
-// REFERENCE block (name/path/mime/size) — the parsed markdown is expanded
-// later at LLM-request time, never inlined at send.
-func TestWSAttachment_RoundTrip_Document(t *testing.T) {
+// TestUploadCommit_SurvivesReconnect is the incident regression: the upload
+// and the commit ride DIFFERENT WS connections. With content-addressed ids
+// there is no connection- or session-scoped state to lose — the commit
+// resolves purely from the cache.
+func TestUploadCommit_SurvivesReconnect(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return false }
 	mock.systemPromptFn = func() string { return "" }
 
-	body := []byte("the quick brown fox jumps over the lazy dog")
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "d1", "name": "story.txt", "mime": "text/plain", "size": len(body),
-	})
-	writeWSBinary(t, ws, body)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "d1"})
-	writeWSText(t, ws, map[string]any{
+	resp := postUpload(t, srv, "photo.png", minimalPNGAttachment)
+
+	wsA := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, wsA)
+	if err := wsA.Close(); err != nil {
+		t.Fatalf("close conn A: %v", err)
+	}
+	// Give the server a moment to retire conn A before dialing B.
+	time.Sleep(100 * time.Millisecond) // REAL-TIME
+
+	wsB := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
+	drainInitialFrames(t, wsB)
+	writeWSText(t, wsB, map[string]any{
 		"type": "message",
-		"text": "summarize this",
+		"text": "committed from a fresh connection",
 		"attachments": []map[string]any{
-			{"id": "d1", "name": "story.txt", "mime": "text/plain", "size": len(body)},
+			{"id": resp.ID, "name": "photo.png", "mime": resp.Mime, "size": resp.Size},
 		},
 	})
-
 	if !waitFor(2*time.Second, func() bool {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
 		return len(mock.queryWithContentCalls) == 1
 	}) {
 		mock.mu.Lock()
-		t.Fatalf("queryWithContentCalls = %d, want 1", len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
+		defer mock.mu.Unlock()
+		t.Fatalf("queryWithContentCalls = %d, want 1 (ids are connection-independent)", len(mock.queryWithContentCalls))
 	}
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	call := mock.queryWithContentCalls[0]
-	if len(call.content) != 2 {
-		t.Fatalf("content blocks = %d, want 2 (text + document)", len(call.content))
-	}
-	if call.content[0].Type != types.ContentTypeText || call.content[0].Text != "summarize this" {
-		t.Errorf("content[0] = %+v, want text 'summarize this'", call.content[0])
-	}
-	doc := call.content[1]
-	if doc.Type != types.ContentTypeDocument {
-		t.Fatalf("content[1].Type = %v, want document", doc.Type)
-	}
-	if doc.Name != "story.txt" {
-		t.Errorf("doc.Name = %q, want story.txt", doc.Name)
-	}
-	if doc.Path == "" || !strings.HasSuffix(doc.Path, ".txt") {
-		t.Errorf("doc.Path = %q, want the saved media-store .txt path", doc.Path)
-	}
-	if doc.Size != int64(len(body)) {
-		t.Errorf("doc.Size = %d, want %d (commit-time declared size)", doc.Size, len(body))
-	}
-	if doc.Text != "" {
-		t.Errorf("doc.Text = %q, want empty (reference block must not inline markdown)", doc.Text)
-	}
-}
-
-// TestWSAttachment_MultiChunk_256KiBBoundary drives a 300 KiB attachment so
-// the client must split it into a 256 KiB full chunk + a 44 KiB tail. The
-// accumulator should reconstruct the full file and dispatch a single image
-// block whose saved file size equals the sum of the chunks.
-func TestWSAttachment_MultiChunk_256KiBBoundary(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
-	mock := c.mock()
-	mock.isBusyFn = func() bool { return false }
-	mock.systemPromptFn = func() string { return "" }
-
-	totalSize := 300 * 1024
-	body := make([]byte, totalSize)
-	body[0] = 0xFF
-	body[1] = 0xD8
-	body[2] = 0xFF
-	for i := 3; i < totalSize; i++ {
-		body[i] = byte(i % 256)
-	}
-
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "big1", "name": "big.jpg", "mime": "image/jpeg", "size": totalSize,
-	})
-	chunkSize := 256 * 1024
-	for offset := 0; offset < totalSize; offset += chunkSize {
-		end := min(offset+chunkSize, totalSize)
-		writeWSBinary(t, ws, body[offset:end])
-	}
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "big1"})
-	writeWSText(t, ws, map[string]any{
-		"type": "message",
-		"text": "see this",
-		"attachments": []map[string]any{
-			{"id": "big1", "name": "big.jpg", "mime": "image/jpeg", "size": totalSize},
-		},
-	})
-
-	if !waitFor(time.Second, func() bool {
-		mock.mu.Lock()
-		defer mock.mu.Unlock()
-		return len(mock.queryWithContentCalls) == 1
-	}) {
-		mock.mu.Lock()
-		t.Fatalf("queryWithContentCalls = %d, want 1", len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
-	}
-
-	// Saved file exists and its size matches the declared total.
-	imagesDir := filepath.Join(c.mediaCache.RootDir, string(media.CategoryImage))
-	entries, err := os.ReadDir(imagesDir)
-	if err != nil {
-		t.Fatalf("ReadDir %s: %v", imagesDir, err)
-	}
 	found := false
-	for _, e := range entries {
-		if e.IsDir() {
+	for _, cb := range call.content {
+		if cb.Type != types.ContentTypeImage || cb.Source == nil {
 			continue
 		}
-		info, err := e.Info()
+		decoded, err := base64.StdEncoding.DecodeString(cb.Source.Data)
 		if err != nil {
-			continue
+			t.Fatalf("image data not base64: %v", err)
 		}
-		if info.Size() == int64(totalSize) {
+		if bytes.Equal(decoded, minimalPNGAttachment) {
 			found = true
-			break
 		}
 	}
 	if !found {
-		t.Errorf("expected one image file of size %d under %s/", totalSize, imagesDir)
+		t.Fatalf("dispatch missing an image block with the fixture bytes: %+v", call.content)
 	}
 }
 
-// TestWSAttachment_SizeMismatch_SendsError_NotSaved verifies the size-mismatch
-// branch: attachment_start declares size=N but client sends fewer bytes.
-// handleEnd returns a "size mismatch" error and the attachment never lands
-// in saved — so a subsequent user_message commit would also fail with
-// "missing attachment". The new model has no text-only fallback: a failed
-// upload means the user must retry the attachment before committing.
-func TestWSAttachment_SizeMismatch_SendsError_NotSaved(t *testing.T) {
+// TestUploadCommit_SameIDTwice pins idempotence: a repeated commit with the
+// same id dispatches again (the cache object outlives any single commit).
+func TestUploadCommit_SameIDTwice(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return false }
 	mock.systemPromptFn = func() string { return "" }
 
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "x.png", "mime": "image/png", "size": 100,
-	})
-	writeWSBinary(t, ws, []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-		0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
-		0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
-		0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-		0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32})
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
-
-	errMsg := readWSError(t, ws)
-	if !strings.Contains(errMsg, "size mismatch") {
-		t.Errorf("error = %q, want substring 'size mismatch'", errMsg)
-	}
-
-	// New model: no text-only fallback dispatch — engine receives nothing.
-	if waitFor(300*time.Millisecond, func() bool {
-		mock.mu.Lock()
-		defer mock.mu.Unlock()
-		return len(mock.queryCalls)+len(mock.queryWithContentCalls) != 0
-	}) {
-		mock.mu.Lock()
-		t.Fatalf("dispatched despite size mismatch: queryCalls=%d queryWithContentCalls=%d",
-			len(mock.queryCalls), len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
-	}
-}
-
-// TestWSAttachment_NestedStart_SendsError verifies a second attachment_start
-// arriving before the first attachment_end produces an "in progress" error
-// and preserves the first attachment's active state.
-func TestWSAttachment_NestedStart_SendsError(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
-	mock := c.mock()
-	mock.isBusyFn = func() bool { return false }
-	mock.systemPromptFn = func() string { return "" }
-
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	// Second start before a1 ends — must be rejected.
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a2", "name": "y.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	errMsg := readWSError(t, ws)
-	if !strings.Contains(errMsg, "in progress") {
-		t.Errorf("error = %q, want substring 'in progress'", errMsg)
-	}
-
-	// Complete both attachments then commit.
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a2", "name": "y.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a2"})
-	writeWSText(t, ws, map[string]any{
-		"type": "message",
-		"text": "two",
-		"attachments": []map[string]any{
-			{"id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
-			{"id": "a2", "name": "y.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
-		},
-	})
-
-	if !waitFor(time.Second, func() bool {
-		mock.mu.Lock()
-		defer mock.mu.Unlock()
-		return len(mock.queryWithContentCalls) == 1
-	}) {
-		mock.mu.Lock()
-		t.Fatalf("queryWithContentCalls = %d, want 1 after commit", len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
-	}
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	call := mock.queryWithContentCalls[0]
-	if len(call.content) != 3 {
-		t.Fatalf("content blocks = %d, want 3 (text + a1 + a2)", len(call.content))
-	}
-	if call.content[0].Type != types.ContentTypeText || call.content[0].Text != "two" {
-		t.Errorf("content[0] = %+v, want text 'two'", call.content[0])
-	}
-	if call.content[1].Type != types.ContentTypeImage {
-		t.Errorf("content[1] = %+v, want image", call.content[1])
-	}
-	if call.content[2].Type != types.ContentTypeImage {
-		t.Errorf("content[2] = %+v, want image", call.content[2])
-	}
-}
-
-// TestWSAttachment_UserMessageDuringUpload_SendsError verifies that a
-// user_message commit arriving while an attachment_start is still mid-stream
-// (binary/end not yet sent) is rejected with an "upload in progress" error.
-// The user must wait for attachment_end before committing.
-func TestWSAttachment_UserMessageDuringUpload_SendsError(t *testing.T) {
-	c, srv := setupAttachmentServer(t)
-	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
-	drainInitialFrames(t, ws)
-
-	mock := c.mock()
-	mock.isBusyFn = func() bool { return false }
-	mock.systemPromptFn = func() string { return "" }
-
-	// Start a1 upload (activeID=a1, no binary/end yet).
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	// Commit while upload is in flight — server must refuse.
-	writeWSText(t, ws, map[string]any{
-		"type": "message",
-		"text": "first attempt rejected",
-		"attachments": []map[string]any{
-			{"id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
-		},
-	})
-	errMsg := readWSError(t, ws)
-	if !strings.Contains(errMsg, "upload in progress") {
-		t.Errorf("error = %q, want substring 'upload in progress'", errMsg)
-	}
-
-	// Finish a1 then commit again — now it dispatches.
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
-	writeWSText(t, ws, map[string]any{
-		"type": "message",
-		"text": "second attempt commits",
-		"attachments": []map[string]any{
-			{"id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
-		},
-	})
-
-	if !waitFor(time.Second, func() bool {
-		mock.mu.Lock()
-		defer mock.mu.Unlock()
-		return len(mock.queryWithContentCalls) == 1
-	}) {
-		mock.mu.Lock()
-		t.Fatalf("queryWithContentCalls = %d, want 1 after commit", len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
-	}
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if got := mock.queryWithContentCalls[0].content[0].Text; got != "second attempt commits" {
-		t.Errorf("dispatched text = %q, want 'second attempt commits' (first user_message rejected)", got)
-	}
-	if len(mock.queryWithContentCalls[0].content) != 2 {
-		t.Errorf("content blocks = %d, want 2 (text + 1 image)", len(mock.queryWithContentCalls[0].content))
-	}
-}
-
-// TestWSAttachment_NoMediaCache_UploadFails_CommitFails verifies the nil-cache
-// branch produces two distinct error frames: handleEnd's "no media cache"
-// (upload phase), and the commit-time "missing attachment uploads" because
-// the failed id never landed in saved. The new model rejects the entire
-// user_message when any attachment is missing — no text-only fallback.
-func TestWSAttachment_NoMediaCache_UploadFails_CommitFails(t *testing.T) {
-	c := newTestConnector(t) // no SetMediaCache — mediaCache stays nil
-	mux := attachChatMux(c)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	mock := c.mock()
-	mock.isBusyFn = func() bool { return false }
-	mock.systemPromptFn = func() string { return "" }
+	resp := postUpload(t, srv, "notes.txt", []byte("hello notes"))
 
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
 	drainInitialFrames(t, ws)
-
-	writeWSText(t, ws, map[string]any{
-		"type": "attachment_start", "id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment),
-	})
-	writeWSBinary(t, ws, minimalPNGAttachment)
-	writeWSText(t, ws, map[string]any{"type": "attachment_end", "id": "a1"})
-
-	uploadErr := readWSError(t, ws)
-	if !strings.Contains(uploadErr, "no media cache") {
-		t.Errorf("first error = %q, want substring 'no media cache'", uploadErr)
+	for i := 0; i < 2; i++ {
+		writeWSText(t, ws, map[string]any{
+			"type": "message",
+			"text": "send",
+			"attachments": []map[string]any{
+				{"id": resp.ID, "name": "notes.txt", "mime": resp.Mime, "size": resp.Size},
+			},
+		})
 	}
-
-	writeWSText(t, ws, map[string]any{
-		"type": "message",
-		"text": "this text is also rejected",
-		"attachments": []map[string]any{
-			{"id": "a1", "name": "x.png", "mime": "image/png", "size": len(minimalPNGAttachment)},
-		},
-	})
-	commitErr := readWSError(t, ws)
-	if !strings.Contains(commitErr, "missing attachment uploads") || !strings.Contains(commitErr, "a1") {
-		t.Errorf("second error = %q, want 'missing attachment uploads' and 'a1'", commitErr)
-	}
-
-	// No dispatch — text is also rejected (atomic two-phase commit).
-	if waitFor(300*time.Millisecond, func() bool {
+	want := 0
+	if !waitFor(5*time.Second, func() bool {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
-		return len(mock.queryCalls)+len(mock.queryWithContentCalls) != 0
+		want = len(mock.queryWithContentCalls)
+		return want == 2
 	}) {
 		mock.mu.Lock()
-		t.Fatalf("dispatched despite upload+commit failure: queryCalls=%d queryWithContentCalls=%d",
-			len(mock.queryCalls), len(mock.queryWithContentCalls))
-		mock.mu.Unlock()
-		return
+		defer mock.mu.Unlock()
+		t.Fatalf("queryWithContentCalls = %d, want 2 (repeated ids dispatch again)", want)
+	}
+	// No error frame may appear between the two dispatches.
+	if raw, ok := readWSFrameDeadlineA3(t, ws, 300*time.Millisecond); ok {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &head) == nil && head.Type == "error" {
+			t.Fatalf("unexpected error frame between idempotent commits: %s", raw)
+		}
 	}
 }

@@ -4348,6 +4348,39 @@ describe('abort rewind attachment restore', () => {
   const origRevokeObjectURL = (URL as { revokeObjectURL?: (u: string) => void }).revokeObjectURL
   let blobSeq = 0
 
+  // The upload path POSTs /api/upload via XHR; jsdom's real XHR cannot make
+  // network requests, so this block installs a stub that completes every
+  // send with a 200 whose id derives from the uploaded filename.
+  class AutoXHR {
+    onload: (() => void) | null = null
+    onerror: (() => void) | null = null
+    onabort: (() => void) | null = null
+    upload: { onprogress: (() => void) | null } = { onprogress: null }
+    status = 0
+    responseText = ''
+    open() {}
+    setRequestHeader() {}
+    send(body: unknown) {
+      const entry = (body as FormData)?.get?.('file')
+      const name = entry instanceof File ? entry.name : 'stub'
+      this.status = 200
+      this.responseText = JSON.stringify({
+        id: `i:${name.replace(/\W/g, '')}`,
+        mime: 'image/png',
+        size: 0,
+        kind: 'image',
+      })
+      queueMicrotask(() => this.onload?.())
+    }
+    abort() {}
+  }
+  beforeEach(() => {
+    vi.stubGlobal('XMLHttpRequest', AutoXHR)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   beforeAll(() => {
     Object.defineProperty(URL, 'createObjectURL', {
       value: () => `blob:mock-${++blobSeq}`,

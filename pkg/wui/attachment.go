@@ -1,22 +1,20 @@
 package wui
 
 import (
-	"bytes"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/media"
 )
 
-// maxAttachmentSize caps a single attachment's declared size (50 MiB).
-// Checked at attachment_start so a huge declared size is rejected before any
-// bytes land in memory. Mirrors the prior upload.go HTTP limit.
-const maxAttachmentSize = 50 << 20
-
 // inboundAttachment is the wire shape of one entry in user_message.attachments[].
-// The path is assigned server-side after bytes land (the client only sends
-// id+name+mime+size).
+// ID is the content-addressed media-cache id the upload route minted (or a
+// cancel-restore re-staged); name/mime/size are the client's display metadata.
 type inboundAttachment struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -24,150 +22,11 @@ type inboundAttachment struct {
 	Size int64  `json:"size"`
 }
 
-// attachmentStartMsg is the wire shape of an attachment_start text frame.
-type attachmentStartMsg struct {
-	Type string `json:"type"` // "attachment_start"
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Mime string `json:"mime"`
-	Size int64  `json:"size"`
-}
-
-// attachmentEndMsg is the wire shape of an attachment_end text frame.
-type attachmentEndMsg struct {
-	Type string `json:"type"` // "attachment_end"
-	ID   string `json:"id"`
-}
-
-// savedAttachment records the post-save classification for one attachment.
-// Storing kind/mime/ext here means buildContents is a pure map lookup —
-// assembleContentBlocks downstream does its own re-sniff, but the
-// accumulator hands the readLoop a fully-resolved []inboundContent.
-type savedAttachment struct {
-	path string
-	mime string // sniffed mime (SniffImageMime result, or MimeFromExt fallback)
-	ext  string // extension preserved for documents (.pdf, .docx, ...)
-	kind string // "image" or "document"
-}
-
-// attachmentAccumulator is a stateless staging area for the two-phase commit
-// upload model. saved persists across user_message attempts so a failed
-// commit (missing id) does not lose already-uploaded bytes; reset only runs
-// after a successful dispatch. activeID/buf/activeMeta track one in-flight
-// stream upload (single activeUploadID constraint — uploads are serial).
-//
-// Owned by readLoop as a local variable; disconnect naturally GC's it. NOT a
-// connector field — the single-client takeover model means only one readLoop
-// is active at a time, but tying state to readLoop's stack frame is cleaner
-// than relying on that invariant.
-type attachmentAccumulator struct {
-	saved      map[string]savedAttachment // id → post-save classification; filled by handleEnd, cleared by reset
-	activeID   string                     // empty between attachments
-	buf        *bytes.Buffer              // nil between attachments
-	activeMeta inboundAttachment          // valid only while activeID != ""
-}
-
-// handleStart processes an attachment_start frame. Validates size and that no
-// other attachment is mid-stream. Returns an error string on validation
-// failure (caller sends WS error and continues); "" on success.
-//
-// Two-phase model: handleStart accepts ANY id (no pre-registration) — the
-// commit-time user_message.attachments is the source of truth for which ids
-// are expected, and missing ids are caught by buildContents.
-func (a *attachmentAccumulator) handleStart(msg attachmentStartMsg) string {
-	if a.activeID != "" {
-		return fmt.Sprintf("attachment %s upload already in progress", a.activeID)
-	}
-	if msg.Size > maxAttachmentSize {
-		return fmt.Sprintf("attachment %s too large: %d bytes (max %d)", msg.ID, msg.Size, maxAttachmentSize)
-	}
-	a.activeID = msg.ID
-	a.activeMeta = inboundAttachment{ID: msg.ID, Name: msg.Name, Mime: msg.Mime, Size: msg.Size}
-	a.buf = new(bytes.Buffer)
-	if a.saved == nil {
-		// saved persists across uploads within one WS connection and is
-		// cleared only by reset on successful commit. Lazy-init here so
-		// handleEnd can assign without a separate setup call.
-		a.saved = make(map[string]savedAttachment)
-	}
-	return ""
-}
-
-// handleBinary appends a chunk to the active attachment's buffer. Returns an
-// error string if no active attachment or chunk overflow; "" on success.
-// On overflow the active attachment is cleared (does NOT land in saved — the
-// frontend learns this at commit time when buildContents reports it missing).
-func (a *attachmentAccumulator) handleBinary(data []byte) string {
-	if a.activeID == "" {
-		return "no active attachment"
-	}
-	a.buf.Write(data)
-	got := int64(a.buf.Len())
-	if got > a.activeMeta.Size {
-		id := a.activeID
-		a.clearActive()
-		return fmt.Sprintf("attachment %s size overflow (buffer %d > declared %d)", id, got, a.activeMeta.Size)
-	}
-	return ""
-}
-
-// clearActive clears the in-flight upload state without touching saved.
-// Used by handleBinary overflow and handleEnd failures — the attachment
-// simply doesn't land in saved, and the frontend learns this at commit time.
-func (a *attachmentAccumulator) clearActive() {
-	a.activeID = ""
-	a.buf = nil
-}
-
-// handleEnd processes an attachment_end frame. Validates id == activeID
-// (rejects out-of-order end-frames without clearing the active attachment —
-// the correct end-frame can still complete it), validates accumulated size,
-// classifies mime (SniffImageMime → image vs MimeFromExt → document), saves
-// via mediaCache.Save, and records the classification in acc.saved[id] for
-// buildContents. Returns "" on success or an error message otherwise.
-func (a *attachmentAccumulator) handleEnd(id string, store *media.Store) string {
-	if a.activeID == "" {
-		return "no active attachment"
-	}
-	if id != a.activeID {
-		return fmt.Sprintf("attachment_end for inactive id %s (active %s)", id, a.activeID)
-	}
-	declared := a.activeMeta.Size
-	if int64(a.buf.Len()) != declared {
-		errMsg := fmt.Sprintf("attachment %s size mismatch (got %d bytes, declared %d)", id, a.buf.Len(), declared)
-		a.clearActive()
-		return errMsg
-	}
-	if store == nil {
-		errMsg := fmt.Sprintf("attachment %s cannot be saved: no media cache", id)
-		a.clearActive()
-		return errMsg
-	}
-	data := a.buf.Bytes()
-	mime, ext, kind := classifyAttachment(data, a.activeMeta.Name, a.activeMeta.Mime)
-	var cat media.Category
-	switch kind {
-	case "image":
-		cat = media.CategoryImage
-	case "document":
-		cat = media.CategoryDocument
-	}
-	path, err := store.Save(cat, data, ext)
-	if err != nil {
-		errMsg := fmt.Sprintf("attachment %s save failed: %v", id, err)
-		a.clearActive()
-		return errMsg
-	}
-	a.saved[id] = savedAttachment{path: path, mime: mime, ext: ext, kind: kind}
-	a.clearActive()
-	return ""
-}
-
-// classifyAttachment mirrors the prior upload.go classification: sniff image
-// magic bytes first; fall back to filename extension and treat as a document.
-// For images, ext is derived from the sniffed mime (so a .png named "x.bin"
-// still saves as .png); for documents, the filename extension is preserved
-// (round-tripping through mime maps loses types like .pptx/.docx).
+// classifyAttachment sniffs image magic bytes first; falls back to filename
+// extension and treats the bytes as a document. For images, ext is derived
+// from the sniffed mime (so a .png named "x.bin" still saves as .png); for
+// documents, the filename extension is preserved (round-tripping through mime
+// maps loses types like .pptx/.docx).
 func classifyAttachment(data []byte, name, _ string) (mime, ext, kind string) {
 	if sniffed := media.SniffImageMime(data); sniffed != "" {
 		return sniffed, media.ExtFromMime(sniffed), "image"
@@ -185,34 +44,93 @@ func preserveDocExt(name string) string {
 	return ".bin"
 }
 
-// buildContents looks up each commit-time attachment in saved and assembles
-// []inboundContent. Returns missingIDs (comma-joined) if any id is absent —
-// caller sends an error and does NOT dispatch. Name comes from the commit
-// metadata (att.Name); path/mime/kind come from the upload-time classification
-// (saved[id]).
-func (a *attachmentAccumulator) buildContents(atts []inboundAttachment) ([]inboundContent, string) {
-	out := make([]inboundContent, 0, len(atts))
+// attachmentIDRe is the grammar every minted id satisfies. Kept strict on the
+// read side (no separators, lowercase hex, bounded ext) so hostile ids from
+// the network can never walk the filesystem; the write side
+// (sanitizeUploadExt) is what guarantees the server's own names round-trip.
+var attachmentIDRe = regexp.MustCompile(`^([id]):([0-9a-f]{16}(\.[A-Za-z0-9]{1,10})?)$`)
+
+// attachmentID tags a cache path with its category: "i:" → images/,
+// "d:" → documents/. Resolution is then one joined path + one stat, with no
+// ambiguity between the category dirs and no directory probing.
+func attachmentID(cat media.Category, path string) string {
+	prefix := "d:"
+	if cat == media.CategoryImage {
+		prefix = "i:"
+	}
+	return prefix + filepath.Base(path)
+}
+
+// parseAttachmentID validates an attachment id and returns its category and
+// cache basename. ok=false for anything else — including documents/parse/
+// names (they share the <sha16> naming but are derived data, never resolvable
+// through an id).
+func parseAttachmentID(id string) (cat media.Category, name string, ok bool) {
+	m := attachmentIDRe.FindStringSubmatch(id)
+	if m == nil {
+		return "", "", false
+	}
+	if m[1] == "i" {
+		return media.CategoryImage, m[2], true
+	}
+	return media.CategoryDocument, m[2], true
+}
+
+// asciiAlnum is the exact alphabet a sanitized extension may contain.
+const asciiAlnum = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+// sanitizeUploadExt keeps cache names inside the grammar parseAttachmentID
+// accepts: the store writes names as <sha16><ext>, and resolveAttachments
+// later re-parses them. Non-ASCII, dotted, over-long or separator-bearing
+// client extensions fall back to the store's ".bin".
+func sanitizeUploadExt(ext string) string {
+	if len(ext) < 2 || len(ext) > 11 { // "." plus 1..10 characters
+		return ""
+	}
+	if ext[0] != '.' {
+		return ""
+	}
+	lowered := strings.ToLower(ext[1:])
+	for _, r := range lowered {
+		if !strings.ContainsRune(asciiAlnum, r) {
+			return ""
+		}
+	}
+	return "." + lowered
+}
+
+// resolveAttachments maps the commit frame's attachment ids to content items
+// by re-deriving everything from the cache: the id names the object, a stat
+// proves it exists, and a bounded head read re-classifies it (the trustworthy
+// extension is the one the store baked into the object name — the client's
+// att.Name is free text that could claim .zip on a .pdf object). Size comes
+// from the stat, not the client's declared number.
+//
+// Malformed or missing ids accumulate comma-joined so readLoop can answer
+// "attachment not found: <ids>" without dispatching. A nil mediaCache makes
+// every id a miss.
+func (c *WUIConnector) resolveAttachments(atts []inboundAttachment) ([]inboundContent, string) {
+	if c.mediaCache == nil {
+		ids := make([]string, 0, len(atts))
+		for _, att := range atts {
+			ids = append(ids, att.ID)
+		}
+		return nil, strings.Join(ids, ", ")
+	}
+	var out []inboundContent
 	var missing []string
 	for _, att := range atts {
-		saved, ok := a.saved[att.ID]
-		if !ok {
-			missing = append(missing, att.ID)
-			continue
+		cat, name, ok := parseAttachmentID(att.ID)
+		if ok {
+			path := filepath.Join(c.mediaCache.RootDir, string(cat), name)
+			if st, err := os.Stat(path); err == nil && !st.IsDir() {
+				if content, ok := classifyCachedObject(path, name, st.Size(), att.Name); ok {
+					out = append(out, content)
+					continue
+				}
+			}
 		}
-		typ := "document"
-		if saved.kind == "image" {
-			typ = "image"
-		}
-		out = append(out, inboundContent{
-			Type: typ,
-			Source: inboundSource{
-				Type: "file",
-				Path: saved.path,
-				Mime: saved.mime,
-				Name: att.Name,
-				Size: att.Size,
-			},
-		})
+		missing = append(missing, att.ID)
 	}
 	if len(missing) > 0 {
 		return nil, strings.Join(missing, ", ")
@@ -220,20 +138,91 @@ func (a *attachmentAccumulator) buildContents(atts []inboundAttachment) ([]inbou
 	return out, ""
 }
 
-// reset clears all state (called after a successful commit/dispatch).
-// bindSaved registers an already-persisted file under a fresh upload id so
-// a client re-send referencing the id resolves through the normal
-// two-phase commit path. Used by cancel-restore to make queued attachments
-// re-sendable without re-uploading bytes.
-func (a *attachmentAccumulator) bindSaved(id string, att savedAttachment) {
-	if a.saved == nil {
-		a.saved = make(map[string]savedAttachment)
+// classifyCachedObject reads a bounded head from the cached object and builds
+// the inbound content item. The name handed to classifyAttachment is the cache
+// basename (document mime derives from its extension); the display Name still
+// comes from the commit metadata.
+func classifyCachedObject(path, name string, size int64, displayName string) (inboundContent, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return inboundContent{}, false
 	}
-	a.saved[id] = att
+	head := make([]byte, uploadSniffHead)
+	n, err := io.ReadFull(f, head)
+	// Close immediately: the read is bounded, but holding the fd through a
+	// 500 MiB object's lifetime would leak handles under load.
+	_ = f.Close()
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return inboundContent{}, false
+	}
+	m, _, kind := classifyAttachment(head[:n], name, "")
+	typ := "document"
+	if kind == "image" {
+		typ = "image"
+	}
+	return inboundContent{
+		Type: typ,
+		Source: inboundSource{
+			Type: "file",
+			Path: path,
+			Mime: m,
+			Name: displayName,
+			Size: size,
+		},
+	}, true
 }
 
-func (a *attachmentAccumulator) reset() {
-	a.saved = nil
-	a.activeID = ""
-	a.buf = nil
+// cachedID mints an attachment id for a path the cancel-restore path wants to
+// re-stage. Bytes already inside the cache (images/ or documents/, named per
+// the id grammar) bind directly with no IO; anything else — the common case
+// for restored blocks over t.TempDir() paths — is copied in under the same
+// per-kind cap the upload route enforces, so a restore cannot smuggle past
+// it. Returns "" (and logs) when the bytes cannot be materialized; the caller
+// drops the attachment.
+func cachedID(store *media.Store, path, kind string) string {
+	if store == nil {
+		return ""
+	}
+	if rel, err := filepath.Rel(store.RootDir, path); err == nil {
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) == 2 && (parts[0] == string(media.CategoryImage) || parts[0] == string(media.CategoryDocument)) {
+			prefix := "d:"
+			if parts[0] == string(media.CategoryImage) {
+				prefix = "i:"
+			}
+			if _, _, ok := parseAttachmentID(prefix + parts[1]); ok {
+				return prefix + parts[1]
+			}
+		}
+	}
+	cat := media.CategoryDocument
+	if kind == "image" {
+		cat = media.CategoryImage
+	}
+	kindCap := uploadCapForKind(kind)
+	st, err := os.Stat(path)
+	if err != nil {
+		slog.Warn("wui:restore attachment copy failed, dropping attachment", "error", err)
+		return ""
+	}
+	if st.IsDir() || st.Size() > kindCap {
+		slog.Warn("wui:restore attachment copy failed, dropping attachment",
+			"error", fmt.Errorf("path %s is not a cacheable file (dir=%v size=%d cap=%d)", path, st.IsDir(), st.Size(), kindCap))
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		slog.Warn("wui:restore attachment copy failed, dropping attachment", "error", err)
+		return ""
+	}
+	defer f.Close()
+	// sanitizeUploadExt is load-bearing here too: cachedID mints ids, and an
+	// unsanitized ext would produce an id parseAttachmentID rejects — a
+	// restored chip that can never be committed.
+	newPath, _, err := store.SaveReader(cat, sanitizeUploadExt(preserveDocExt(path)), f, kindCap)
+	if err != nil {
+		slog.Warn("wui:restore attachment copy failed, dropping attachment", "error", err)
+		return ""
+	}
+	return attachmentID(cat, newPath)
 }

@@ -4654,17 +4654,6 @@ func b64ImageBlockA3(mediaType, data string) types.ContentBlock {
 	return types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "base64", MediaType: mediaType, Data: data}}
 }
 
-func savedOfA3(t *testing.T, c *WUIConnector, id string) savedAttachment {
-	t.Helper()
-	c.restoreMu.Lock()
-	defer c.restoreMu.Unlock()
-	saved, ok := c.restoredUploads[id]
-	if !ok {
-		t.Fatalf("no restoredUploads entry for %q", id)
-	}
-	return saved
-}
-
 // withTimeoutA3 runs fn in a goroutine and fatals instead of hanging when a
 // mutant strands a mutex (hub.Dispatch recovers panics, so a mutant can leave
 // a production lock held forever — the kill must still be fast).
@@ -5833,21 +5822,8 @@ func TestHandleThinkingSwitch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// rememberUpload / takeRewindStash (lines 3134-3294)
+// takeRewindStash (lines 3134-3294)
 // ---------------------------------------------------------------------------
-
-func TestRememberUploadMutexRelease(t *testing.T) {
-	c, _ := bareConnectorA3(t, nil)
-	c.rememberUpload("id1", savedAttachment{path: "p", mime: "m", kind: "image"})
-	if !c.restoreMu.TryLock() {
-		t.Fatal("rememberUpload() did not release restoreMu")
-	}
-	c.restoreMu.Unlock()
-	saved := savedOfA3(t, c, "id1")
-	if saved.path != "p" || saved.mime != "m" || saved.kind != "image" {
-		t.Fatalf("saved = %+v, want {p m image}", saved)
-	}
-}
 
 func TestTakeRewindStash(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
@@ -5897,8 +5873,32 @@ func TestTakeRewindStash(t *testing.T) {
 // buildRestoredMsg (lines 3174-3242)
 // ---------------------------------------------------------------------------
 
+// resolveRestoredBytesA3 resolves id through the connector's cache and
+// returns the bytes at the resolved path — restored ids are only as good as
+// their resolution.
+func resolveRestoredBytesA3(t *testing.T, c *WUIConnector, id string) []byte {
+	t.Helper()
+	contents, missing := c.resolveAttachments([]inboundAttachment{{ID: id, Name: "x"}})
+	if missing != "" {
+		t.Fatalf("resolveAttachments(%q) missing = %q", id, missing)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("contents = %d, want 1", len(contents))
+	}
+	got, err := os.ReadFile(contents[0].Source.Path)
+	if err != nil {
+		t.Fatalf("read %s: %v", contents[0].Source.Path, err)
+	}
+	return got
+}
+
 func TestBuildRestoredMsgTextAndDocs(t *testing.T) {
+	store, err := media.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	c, _ := bareConnectorA3(t, nil)
+	c.mediaCache = store
 
 	msg := buildRestoredMsgA3(t, c, types.QueuedItem{UUID: "u1", Value: "v", Content: []types.ContentBlock{types.NewTextBlock("c")}})
 	if msg.UUID != "u1" {
@@ -5920,9 +5920,15 @@ func TestBuildRestoredMsgTextAndDocs(t *testing.T) {
 		t.Fatalf("Text = %q, want v (Value fallback)", msg.Text)
 	}
 
-	// Document happy path: attachment metadata + connector-level id binding.
+	// Document over an outside path: copied into the cache, the id resolves,
+	// and the resolved bytes equal the input.
+	docBody := []byte("real doc bytes")
+	docPath := filepath.Join(t.TempDir(), "n.pdf")
+	if err := os.WriteFile(docPath, docBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{UUID: "u4", Content: []types.ContentBlock{
-		{Type: types.ContentTypeDocument, Name: "n.pdf", Path: "/tmp/n.pdf", Mime: "application/pdf", Size: 123},
+		{Type: types.ContentTypeDocument, Name: "n.pdf", Path: docPath, Mime: "application/pdf", Size: int64(len(docBody))},
 		types.NewTextBlock("hello"),
 	}})
 	if msg.Text != "hello" {
@@ -5932,11 +5938,34 @@ func TestBuildRestoredMsgTextAndDocs(t *testing.T) {
 		t.Fatalf("attachments = %d, want 1", len(msg.Attachments))
 	}
 	att := msg.Attachments[0]
-	if att.ID == "" || att.Name != "n.pdf" || att.Mime != "application/pdf" || att.Size != 123 {
+	if !regexp.MustCompile(`^d:[0-9a-f]{16}\.pdf$`).MatchString(att.ID) {
+		t.Fatalf("doc id = %q, want d:<16hex>.pdf", att.ID)
+	}
+	if att.Name != "n.pdf" || att.Mime != "application/pdf" || att.Size != len(docBody) {
 		t.Fatalf("doc attachment = %+v", att)
 	}
-	if saved := savedOfA3(t, c, att.ID); saved.path != "/tmp/n.pdf" || saved.mime != "application/pdf" || saved.kind != "document" {
-		t.Fatalf("saved doc = %+v", saved)
+	if got := resolveRestoredBytesA3(t, c, att.ID); !bytes.Equal(got, docBody) {
+		t.Fatalf("resolved doc bytes = %q, want %q", got, docBody)
+	}
+
+	// Document already IN the cache: binds without writing anything new.
+	inCache := []byte("already cached")
+	cacheDoc, err := store.Save(media.CategoryDocument, inCache, ".txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(walkRegularFiles(t, store.RootDir))
+	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
+		{Type: types.ContentTypeDocument, Name: "cached.txt", Path: cacheDoc, Mime: "text/plain", Size: int64(len(inCache))},
+	}})
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(msg.Attachments))
+	}
+	if msg.Attachments[0].ID != "d:"+filepath.Base(cacheDoc) {
+		t.Fatalf("in-cache doc id = %q, want d:%s (direct bind, no copy)", msg.Attachments[0].ID, filepath.Base(cacheDoc))
+	}
+	if after := len(walkRegularFiles(t, store.RootDir)); after != before {
+		t.Fatalf("file count %d → %d, want unchanged (in-cache binds do no IO)", before, after)
 	}
 
 	// Empty-path document is skipped; later text still collected.
@@ -5952,42 +5981,85 @@ func TestBuildRestoredMsgTextAndDocs(t *testing.T) {
 	}
 
 	// Nil-source image is skipped; the document after it is still processed.
+	d1Path := filepath.Join(t.TempDir(), "d1.pdf")
+	if err := os.WriteFile(d1Path, []byte("d1 bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
 		{Type: types.ContentTypeImage, Source: nil},
-		docBlockA3("/d1.pdf"),
+		docBlockA3(d1Path),
 	}})
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %d, want 1 (doc only)", len(msg.Attachments))
 	}
-	if saved := savedOfA3(t, c, msg.Attachments[0].ID); saved.path != "/d1.pdf" {
-		t.Fatalf("saved = %+v, want the doc path", saved)
+	if got := resolveRestoredBytesA3(t, c, msg.Attachments[0].ID); string(got) != "d1 bytes" {
+		t.Fatalf("resolved d1 bytes = %q", got)
 	}
 
 	// File-sourced image with empty path is skipped; doc still processed.
+	d2Path := filepath.Join(t.TempDir(), "d2.pdf")
+	if err := os.WriteFile(d2Path, []byte("d2 bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
 		{Type: types.ContentTypeImage, Source: &types.ImageSource{MediaType: "image/png"}},
-		docBlockA3("/d2.pdf"),
+		docBlockA3(d2Path),
 	}})
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %d, want 1 (empty-path image skipped)", len(msg.Attachments))
 	}
 
-	// File-sourced image happy path + continue keeps later blocks.
+	// File-sourced image over a real file + a later doc: both re-staged,
+	// both resolvable, image bytes byte-equal the fixture.
+	imgPath := filepath.Join(t.TempDir(), "p.png")
+	if err := os.WriteFile(imgPath, minimalPNGAttachment, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d3Path := filepath.Join(t.TempDir(), "d3.pdf")
+	if err := os.WriteFile(d3Path, []byte("d3 bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
-		fileImageBlockA3("/img/p.png", "image/png"),
-		docBlockA3("/d3.pdf"),
+		fileImageBlockA3(imgPath, "image/png"),
+		docBlockA3(d3Path),
 	}})
 	if len(msg.Attachments) != 2 {
 		t.Fatalf("attachments = %d, want 2", len(msg.Attachments))
 	}
-	if att := msg.Attachments[0]; att.ID == "" || att.Mime != "image/png" {
+	if att := msg.Attachments[0]; !regexp.MustCompile(`^i:[0-9a-f]{16}\.png$`).MatchString(att.ID) || att.Mime != "image/png" {
 		t.Fatalf("file image attachment = %+v", att)
 	}
-	if saved := savedOfA3(t, c, msg.Attachments[0].ID); saved.path != "/img/p.png" || saved.mime != "image/png" || saved.kind != "image" {
-		t.Fatalf("saved file image = %+v", saved)
+	if got := resolveRestoredBytesA3(t, c, msg.Attachments[0].ID); !bytes.Equal(got, minimalPNGAttachment) {
+		t.Fatalf("restored image bytes diverge from the fixture")
 	}
-	if saved := savedOfA3(t, c, msg.Attachments[1].ID); saved.path != "/d3.pdf" {
-		t.Fatalf("saved second = %+v, want the doc path", saved)
+	if got := resolveRestoredBytesA3(t, c, msg.Attachments[1].ID); string(got) != "d3 bytes" {
+		t.Fatalf("resolved d3 bytes = %q", got)
+	}
+}
+
+// A block with no path is skipped before any IO. The skip must stay silent:
+// "attachment copy failed" is the drop signal for a real failure, so a guard
+// that lets an empty path reach cachedID shows up as a spurious warn.
+func TestBuildRestoredMsg_SkippedBlocksDoNotWarn(t *testing.T) {
+	rec := swapMsgRecorderA3(t)
+	store, err := media.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := bareConnectorA3(t, nil)
+	c.mediaCache = store
+	msg := buildRestoredMsgA3(t, c, types.QueuedItem{UUID: "u", Value: "v", Content: []types.ContentBlock{
+		{Type: types.ContentTypeDocument, Path: ""},
+		{Type: types.ContentTypeImage, Source: &types.ImageSource{MediaType: "image/png"}},
+	}})
+	if len(msg.Attachments) != 0 {
+		t.Fatalf("attachments = %d, want 0 (empty paths are skipped)", len(msg.Attachments))
+	}
+	if msg.Text != "v" {
+		t.Errorf("Text = %q, want the Value fallback", msg.Text)
+	}
+	if n := rec.count("wui:restore attachment copy failed, dropping attachment"); n != 0 {
+		t.Errorf("copy-failed warns = %d, want 0 (a skipped block does no IO)", n)
 	}
 }
 
@@ -6011,43 +6083,44 @@ func TestBuildRestoredMsgBase64Images(t *testing.T) {
 	if att.ID == "" || att.Mime != "video/mp4" || att.Size != len(raw) {
 		t.Fatalf("b64 attachment = %+v", att)
 	}
-	saved := savedOfA3(t, c, att.ID)
-	if !strings.HasSuffix(saved.path, ".mp4") {
-		t.Fatalf("cached path = %q, want .mp4 suffix", saved.path)
+	if !regexp.MustCompile(`^i:[0-9a-f]{16}\.mp4$`).MatchString(att.ID) {
+		t.Fatalf("b64 id = %q, want i:<16hex>.mp4", att.ID)
 	}
-	if saved.mime != "video/mp4" || saved.kind != "image" {
-		t.Fatalf("saved = %+v", saved)
+	if got := resolveRestoredBytesA3(t, c, att.ID); !bytes.Equal(got, raw) {
+		t.Fatalf("materialized bytes = %q, want %q", got, raw)
 	}
 
 	// No-slash media type falls back to .png.
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
 		b64ImageBlockA3("noslash", base64.StdEncoding.EncodeToString(raw)),
 	}})
-	saved = savedOfA3(t, c, msg.Attachments[0].ID)
-	if !strings.HasSuffix(saved.path, ".png") {
-		t.Fatalf("cached path = %q, want .png default", saved.path)
+	if !regexp.MustCompile(`^i:[0-9a-f]{16}\.png$`).MatchString(msg.Attachments[0].ID) {
+		t.Fatalf("noslash id = %q, want .png default", msg.Attachments[0].ID)
 	}
 
 	// Slash at index 0 uses the whole rest as the extension.
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
 		b64ImageBlockA3("/webm", base64.StdEncoding.EncodeToString(raw)),
 	}})
-	saved = savedOfA3(t, c, msg.Attachments[0].ID)
-	if !strings.HasSuffix(saved.path, ".webm") {
-		t.Fatalf("cached path = %q, want .webm suffix", saved.path)
+	if !regexp.MustCompile(`^i:[0-9a-f]{16}\.webm$`).MatchString(msg.Attachments[0].ID) {
+		t.Fatalf("leading-slash id = %q, want .webm suffix", msg.Attachments[0].ID)
 	}
 
 	// Invalid base64 is dropped without panic; later blocks still processed.
 	rec := swapMsgRecorderA3(t)
+	d4Path := filepath.Join(t.TempDir(), "d4.pdf")
+	if err := os.WriteFile(d4Path, []byte("d4 bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	msg = buildRestoredMsgA3(t, c, types.QueuedItem{Content: []types.ContentBlock{
 		b64ImageBlockA3("image/png", "!!!not-base64!!!"),
-		docBlockA3("/d4.pdf"),
+		docBlockA3(d4Path),
 	}})
 	if len(msg.Attachments) != 1 {
 		t.Fatalf("attachments = %d, want 1 (bad b64 dropped, doc kept)", len(msg.Attachments))
 	}
-	if saved := savedOfA3(t, c, msg.Attachments[0].ID); saved.path != "/d4.pdf" {
-		t.Fatalf("saved = %+v, want the doc path", saved)
+	if got := resolveRestoredBytesA3(t, c, msg.Attachments[0].ID); string(got) != "d4 bytes" {
+		t.Fatalf("resolved d4 bytes = %q", got)
 	}
 	if got := rec.count("wui:restore image decode failed, dropping attachment"); got != 1 {
 		t.Fatalf("decode-failure warn = %d, want 1", got)
@@ -6073,14 +6146,14 @@ func TestBuildRestoredMsgCacheSaveFailure(t *testing.T) {
 		b64ImageBlockA3("image/png", base64.StdEncoding.EncodeToString(raw)),
 		docBlockA3("/d5.pdf"),
 	}})
-	if len(msg.Attachments) != 1 {
-		t.Fatalf("attachments = %d, want 1 (image dropped on Save error, doc kept)", len(msg.Attachments))
-	}
-	if saved := savedOfA3(t, c, msg.Attachments[0].ID); saved.path != "/d5.pdf" {
-		t.Fatalf("saved = %+v, want the doc path", saved)
+	if len(msg.Attachments) != 0 {
+		t.Fatalf("attachments = %d, want 0 (both branches fail against the broken store)", len(msg.Attachments))
 	}
 	if got := rec.count("wui:restore image re-materialize failed"); got != 1 {
 		t.Fatalf("Save-failure warn = %d, want 1", got)
+	}
+	if got := rec.count("wui:restore attachment copy failed, dropping attachment"); got != 1 {
+		t.Fatalf("doc copy-failure warn = %d, want 1 (stat on the nonexistent /d5.pdf)", got)
 	}
 }
 
@@ -6177,10 +6250,21 @@ func TestHandleRestoreAttachments(t *testing.T) {
 	c2.slots["main"].engine = nil
 	withTimeoutA3(t, "handleRestoreAttachments", c2.handleRestoreAttachments)
 
-	// Stash path: one attachment re-staged under a fresh id.
+	// Stash path: one attachment re-staged as a resolvable cache id. The
+	// stashed block's bytes must be a real file — under a nil mediaCache the
+	// restore emits no attachment entries at all.
 	c3, _ := bareConnectorA3(t, nil)
+	c3Store, err := media.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c3.mediaCache = c3Store
+	realImg := filepath.Join(t.TempDir(), "r.png")
+	if err := os.WriteFile(realImg, minimalPNGAttachment, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	c3.restoreMu.Lock()
-	c3.rewindStash = &rewindStash{engineID: "main", blocks: []types.ContentBlock{fileImageBlockA3("/img/r.png", "image/png")}}
+	c3.rewindStash = &rewindStash{engineID: "main", blocks: []types.ContentBlock{fileImageBlockA3(realImg, "image/png")}}
 	c3.restoreMu.Unlock()
 	withTimeoutA3(t, "handleRestoreAttachments", c3.handleRestoreAttachments)
 	frames3 := takeAllFramesA3(c3)
@@ -6190,8 +6274,14 @@ func TestHandleRestoreAttachments(t *testing.T) {
 	if err := json.Unmarshal([]byte(frames3[0]), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(resp.Attachments) != 1 || resp.Attachments[0].ID == "" {
+	if len(resp.Attachments) != 1 {
 		t.Fatalf("attachments = %+v, want one re-staged id", resp.Attachments)
+	}
+	if !regexp.MustCompile(`^i:[0-9a-f]{16}\.png$`).MatchString(resp.Attachments[0].ID) {
+		t.Fatalf("re-staged id = %q, want i:<16hex>.png", resp.Attachments[0].ID)
+	}
+	if got := resolveRestoredBytesA3(t, c3, resp.Attachments[0].ID); !bytes.Equal(got, minimalPNGAttachment) {
+		t.Fatalf("re-staged bytes = %q, want the fixture", got)
 	}
 }
 

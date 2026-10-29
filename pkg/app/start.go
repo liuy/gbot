@@ -653,7 +653,7 @@ func Start(opts Options) (*Instance, error) {
 			}
 			return createEngineForWUI(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
 		})
-		// Dedicated media cache for WS chunked uploads — do NOT reuse the
+		// Dedicated media cache for HTTP attachment uploads — do NOT reuse the
 		// wechat cache (it is only constructed when wechat is enabled). The
 		// cleanup goroutine is stopped via the shared mediaStores slice at
 		// shutdown (this slice is later assigned to Instance.MediaStores in
@@ -668,6 +668,7 @@ func Start(opts Options) (*Instance, error) {
 		}
 		wui.RegisterStaticRoutes(wsMux)
 		wui.RegisterChatWS(wsMux, wc)
+		wui.RegisterUploadRoute(wsMux, wc)
 		if transportHub != nil {
 			wc.SetTransport(transportHub)
 		}

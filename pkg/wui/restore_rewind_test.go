@@ -1,11 +1,13 @@
 package wui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -51,12 +54,16 @@ func sendRestoreAndRead(t *testing.T, ws *websocket.Conn) (restoreResult, json.R
 	return rr, raw
 }
 
+// docCacheName matches the content-addressed object name the restore copy
+// lands under: <16 hex>.txt.
+var docCacheName = regexp.MustCompile(`^[0-9a-f]{16}\.txt$`)
+
 // TestRestoreAttachments_FileSourcedImageAndDocument pins the rewind-restore
 // contract for engine-bound prompts: restore_attachments must re-stage the
-// last user prompt's attachments under fresh upload ids (documents re-bind
-// their cache path; file-sourced images re-bind Source.Path — engine-bound
-// image blocks carry no base64), and those ids must round-trip through a
-// commit re-send that reaches the engine as image + document contents.
+// last user prompt's attachments under content-addressed ids (bytes outside
+// the cache are copied INTO it — ids never encode arbitrary FS paths), and
+// those ids must round-trip through a commit re-send that reaches the engine
+// as image + document contents.
 func TestRestoreAttachments_FileSourcedImageAndDocument(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mock := c.mock()
@@ -98,8 +105,8 @@ func TestRestoreAttachments_FileSourcedImageAndDocument(t *testing.T) {
 		t.Errorf("document attachment = %+v, want {notes.txt text/plain %d}", doc, len(docBody))
 	}
 
-	// The fresh ids must round-trip: a commit re-send while idle dispatches
-	// both contents without any new byte upload.
+	// The ids must round-trip: a commit re-send while idle dispatches both
+	// contents without any new byte upload.
 	writeWSText(t, ws, map[string]any{
 		"type": "message", "text": "retry",
 		"attachments": []map[string]any{
@@ -118,6 +125,7 @@ func TestRestoreAttachments_FileSourcedImageAndDocument(t *testing.T) {
 	defer mock.mu.Unlock()
 	call := mock.queryWithContentCalls[0]
 	hasImage, hasDoc := false, false
+	docsPrefix := filepath.Join(c.mediaCache.RootDir, string(media.CategoryDocument)) + string(os.PathSeparator)
 	for _, cb := range call.content {
 		switch cb.Type {
 		case types.ContentTypeImage:
@@ -127,8 +135,24 @@ func TestRestoreAttachments_FileSourcedImageAndDocument(t *testing.T) {
 			}
 		case types.ContentTypeDocument:
 			hasDoc = true
-			if cb.Name != "notes.txt" || cb.Path != docPath || cb.Size != int64(len(docBody)) {
-				t.Errorf("document block = %+v, want {notes.txt %s %d}", cb, docPath, len(docBody))
+			// The re-sent block carries the CACHE path (the restore copied
+			// the outside bytes in), never the original temp path.
+			if cb.Name != "notes.txt" || cb.Size != int64(len(docBody)) {
+				t.Errorf("document block = %+v, want {notes.txt %d}", cb, len(docBody))
+			}
+			if !strings.HasPrefix(cb.Path, docsPrefix) {
+				t.Errorf("document path = %q, want it under %s", cb.Path, docsPrefix)
+				continue
+			}
+			rel := strings.TrimPrefix(cb.Path, docsPrefix)
+			if !docCacheName.MatchString(rel) {
+				t.Errorf("document cache name = %q, want <16hex>.txt", rel)
+			}
+			gotDoc, err := os.ReadFile(cb.Path)
+			if err != nil {
+				t.Errorf("read restored doc: %v", err)
+			} else if !bytes.Equal(gotDoc, docBody) {
+				t.Errorf("restored doc bytes = %q, want %q", gotDoc, docBody)
 			}
 		}
 	}
