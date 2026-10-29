@@ -12,7 +12,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -769,70 +768,6 @@ func TestExecutePTYAutoBg_NoAskAfterBudgetSpent(t *testing.T) {
 	cancel()
 	waitJobDone(t, reg, out.BackgroundJobID)
 	reg.Remove(out.BackgroundJobID)
-}
-
-// ---------------------------------------------------------------------------
-// tmux env overrides
-// ---------------------------------------------------------------------------
-
-func mockTmuxSocket(t *testing.T) {
-	t.Helper()
-	resetSocketState()
-	markTmuxToolUsed()
-	origOverride := execTmuxOverride
-	execTmuxOverride = func(args []string) (tmuxResult, bool) {
-		if slices.Contains(args, "display-message") {
-			return tmuxResult{Code: 0, Stdout: "/tmp/gbot-mut-tsocket,12345"}, true
-		}
-		return tmuxResult{Code: 0}, true
-	}
-	t.Cleanup(func() {
-		execTmuxOverride = origOverride
-		resetSocketState()
-	})
-}
-
-// The PTY spawn must apply the TMUX socket override so children see the
-// isolated socket, not an inherited TMUX value.
-func TestExecutePTY_TmuxOverrideAppliedToChild(t *testing.T) {
-	if !ptySupported {
-		t.Skip("PTY not available")
-	}
-	mockTmuxSocket(t)
-	res, err := Execute(context.Background(), json.RawMessage(`{"command":"echo \"TMUX=[$TMUX]\""}`), nil)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	out := res.Data.(*Output)
-	want := "TMUX=[/tmp/gbot-mut-tsocket,12345,0]"
-	if !strings.Contains(out.Stdout, want) {
-		t.Errorf("Stdout = %q, want %q (env override not applied)", out.Stdout, want)
-	}
-}
-
-func TestSpawnBackground_TmuxOverrideAppliedToChild(t *testing.T) {
-	if !ptySupported {
-		t.Skip("PTY not available")
-	}
-	mockTmuxSocket(t)
-	reg := withFreshRegistry(t)
-	res, err := Execute(context.Background(),
-		json.RawMessage(`{"command":"echo \"TMUX=[$TMUX]\"","run_in_background":true}`), nil)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	out := res.Data.(*Output)
-	id := extractBgID(out.Stdout)
-	if id == "" {
-		t.Fatalf("no job id in %q", out.Stdout)
-	}
-	waitJobDone(t, reg, id)
-	job, _ := reg.Get(id)
-	want := "TMUX=[/tmp/gbot-mut-tsocket,12345,0]"
-	if jobOut := job.Output.String(); !strings.Contains(jobOut, want) {
-		t.Errorf("job output = %q, want %q (env override not applied)", jobOut, want)
-	}
-	reg.Remove(id)
 }
 
 // ---------------------------------------------------------------------------

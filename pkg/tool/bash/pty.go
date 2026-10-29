@@ -1,10 +1,8 @@
 package bash
 
 import (
-	"fmt"
 	"log/slog"
 	"os/exec"
-	"strings"
 	"syscall"
 
 	"github.com/aymanbagabas/go-pty"
@@ -49,33 +47,6 @@ func exitCodeFromWait(waitErr error) int {
 	default:
 		return 128 + int(sig)
 	}
-}
-
-// applyEnvOverrides applies the given overrides to the environment slice.
-// Source: bashProvider.ts:228-253 — env overrides for TMUX isolation
-func applyEnvOverrides(env []string, overrides map[string]string) []string {
-	result := make([]string, 0, len(env))
-	overrideKeys := make(map[string]bool)
-	for k := range overrides {
-		overrideKeys[k] = true
-	}
-	// Copy env vars that are NOT overridden
-	for _, e := range env {
-		before, _, ok := strings.Cut(e, "=")
-		if !ok {
-			result = append(result, e)
-			continue
-		}
-		key := before
-		if !overrideKeys[key] {
-			result = append(result, e)
-		}
-	}
-	// Add overrides
-	for k, v := range overrides {
-		result = append(result, fmt.Sprintf("%s=%s", k, v))
-	}
-	return result
 }
 
 // ptyNew is a test hook wrapping go-pty's pty.New so tests can inject a fake.

@@ -401,9 +401,6 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 	wrappedCmd, cwdFile := buildCommand(in.Command, nil, true)
 
 	baseEnv := os.Environ()
-	if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
-		baseEnv = applyEnvOverrides(baseEnv, overrides)
-	}
 
 	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
 		switch ev.Kind {
@@ -944,9 +941,6 @@ func spawnBackground(in Input, cwd string, timeout time.Duration, registry *Bash
 			// (Shell.ts:395 skips backgroundTaskId results).
 			wrappedCmd, _ := buildCommand(in.Command, nil, false)
 			baseEnv := os.Environ()
-			if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
-				baseEnv = applyEnvOverrides(baseEnv, overrides)
-			}
 
 			// Start PTY in a goroutine so we can get the PID.
 			// Use a channel to synchronize: must wait for ptyCommand to finish

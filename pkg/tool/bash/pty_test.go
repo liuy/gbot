@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -465,70 +464,7 @@ func TestPtyCommand_SigkillExit(t *testing.T) {
 	}
 }
 
-// --- ensureSocketInitialized concurrent path ---
-
-func TestEnsureSocketInitialized_ConcurrentInit(t *testing.T) {
-	resetSocketState()
-
-	done := make(chan struct{})
-	var initErr error
-	go func() {
-		initErr = ensureSocketInitialized()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// OK — error is expected when tmux is not available
-		if initErr != nil {
-			t.Logf("ensureSocketInitialized() error (expected without tmux): %v", initErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ensureSocketInitializer hung")
-	}
-
-	select {
-	case <-done:
-		// OK
-	case <-time.After(5 * time.Second):
-		t.Fatal("ensureSocketInitializer hung")
-	}
-}
-
 // --- makeRaw / restoreTerminal removed: go-pty sets raw mode internally. ---
-
-// --- applyEnvOverrides (PTY context) ---
-
-func TestPtyApplyEnvOverrides(t *testing.T) {
-	t.Parallel()
-
-	base := []string{"A=1", "B=2", "C=3"}
-	overrides := map[string]string{"B": "override", "D": "4"}
-
-	result := applyEnvOverrides(base, overrides)
-
-	foundB := slices.Contains(result, "B=override")
-	if !foundB {
-		t.Errorf("result = %v, want B=override", result)
-	}
-
-	for _, want := range []string{"A=1", "C=3", "D=4"} {
-		found := slices.Contains(result, want)
-		if !found {
-			t.Errorf("result = %v, want %s", result, want)
-		}
-	}
-}
-
-func TestPtyApplyEnvOverrides_NoOverrides(t *testing.T) {
-	t.Parallel()
-
-	base := []string{"A=1", "B=2"}
-	result := applyEnvOverrides(base, nil)
-	if len(result) != len(base) {
-		t.Errorf("len(result) = %d, want %d", len(result), len(base))
-	}
-}
 
 // --- Test hook coverage ---
 

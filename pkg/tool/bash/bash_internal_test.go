@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1266,81 +1265,4 @@ func TestIsAutobackgroundingAllowed_TabOnly(t *testing.T) {
 	if !got {
 		t.Error("isAutobackgroundingAllowed(tab-only) = false, want true")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// executePTY — tmux environment overrides (bash.go:300-302)
-// ---------------------------------------------------------------------------
-
-func TestExecutePTY_TmuxOverrides(t *testing.T) {
-	if !ptySupported {
-		t.Skip("PTY not available")
-	}
-
-	// Reset socket state and mark tmux as used so getEnvironmentOverrides returns non-nil
-	resetSocketState()
-	markTmuxToolUsed()
-	// Use execTmuxOverride to make tmux operations succeed
-	origOverride := execTmuxOverride
-	execTmuxOverride = func(args []string) (tmuxResult, bool) {
-		if slices.Contains(args, "display-message") {
-			return tmuxResult{Code: 0, Stdout: "/tmp/test-socket,12345"}, true
-		}
-		return tmuxResult{Code: 0}, true
-	}
-	defer func() { execTmuxOverride = origOverride }()
-
-	// Call through executePTY which sets up all the internal params for executePTYSync
-	s := NewStreamingOutput(nil)
-	in := Input{Command: "echo tmux-test", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil, MaxOutputSize, nil, nil)
-	if err != nil {
-		t.Fatalf("executePTY() error: %v", err)
-	}
-	output := result.Data.(*Output)
-	if !strings.Contains(output.Stdout, "tmux-test") {
-		t.Errorf("Stdout = %q, want to contain 'tmux-test'", output.Stdout)
-	}
-	resetSocketState()
-}
-
-// ---------------------------------------------------------------------------
-// executePTY — auto-bg path with tmux environment overrides (bash.go:341-343)
-// ---------------------------------------------------------------------------
-
-func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
-	if !ptySupported {
-		t.Skip("PTY not available")
-	}
-
-	resetSocketState()
-	markTmuxToolUsed()
-	origOverride := execTmuxOverride
-	execTmuxOverride = func(args []string) (tmuxResult, bool) {
-		if slices.Contains(args, "display-message") {
-			return tmuxResult{Code: 0, Stdout: "/tmp/test-socket,12345"}, true
-		}
-		return tmuxResult{Code: 0}, true
-	}
-	defer func() { execTmuxOverride = origOverride }()
-
-	// Fresh registry for isolation
-	origReg := defaultRegistry
-	freshReg := NewBashRegistry()
-	defaultRegistry = freshReg
-	defer func() { defaultRegistry = origReg }()
-
-	// Call through executePTY with shouldAutoBg=true and a fresh registry.
-	// The command completes before timeout, so it follows the sync path within executePTY.
-	s := NewStreamingOutput(nil)
-	in := Input{Command: "echo tmux-autobg", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg, MaxOutputSize, nil, nil)
-	if err != nil {
-		t.Fatalf("executePTY() error: %v", err)
-	}
-	output := result.Data.(*Output)
-	if !strings.Contains(output.Stdout, "tmux-autobg") {
-		t.Errorf("Stdout = %q, want to contain 'tmux-autobg'", output.Stdout)
-	}
-	resetSocketState()
 }
