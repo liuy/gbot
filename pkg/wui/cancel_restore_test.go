@@ -18,9 +18,9 @@ func readUntilType(t *testing.T, ws *websocket.Conn, wantType string) json.RawMe
 	t.Helper()
 	// 15s, not 5s: under make check's parallel load the server read loop can
 	// lag past 5s and this read is a functional assertion, not a timing one
-	// (flaky seen 10-29 on TestMutC_ReadLimitBoundary).
+	// (flaky seen 10-29 on TestReadLimitBoundary).
 	deadline := time.Now().Add(15 * time.Second) // REAL-TIME
-	for time.Now().Before(deadline) {           // REAL-TIME
+	for time.Now().Before(deadline) {            // REAL-TIME
 		data := readWSMessage(t, ws)
 		var head struct {
 			Type string `json:"type"`

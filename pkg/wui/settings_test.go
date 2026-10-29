@@ -852,13 +852,13 @@ func TestSettingsDefaultPut(t *testing.T) {
 // settings.go
 // ---------------------------------------------------------------------------
 
-func TestMutB_SettingsTimeoutDefault(t *testing.T) {
+func TestSettingsTimeoutDefault(t *testing.T) {
 	if settingsHTTPTimeout != 10*time.Second {
 		mbFatalf(t, "settingsHTTPTimeout = %v, want 10s (probe budget is a UX contract)", settingsHTTPTimeout)
 	}
 }
 
-func TestMutB_GetProvidersBrokenFile(t *testing.T) {
+func TestGetProvidersBrokenFile(t *testing.T) {
 	srv := newSettingsServer(t)
 	seedSettings(t, "{\n")
 
@@ -875,7 +875,7 @@ func TestMutB_GetProvidersBrokenFile(t *testing.T) {
 	}
 }
 
-func TestMutB_GetProvidersNoStoreHeader(t *testing.T) {
+func TestGetProvidersNoStoreHeader(t *testing.T) {
 	srv := newSettingsServer(t)
 	seedSettings(t, settingsFixture)
 
@@ -889,7 +889,7 @@ func TestMutB_GetProvidersNoStoreHeader(t *testing.T) {
 	}
 }
 
-func TestMutB_PutProvidersDecodeError(t *testing.T) {
+func TestPutProvidersDecodeError(t *testing.T) {
 	srv := newSettingsServer(t)
 	path, old := seedSettings(t, settingsFixture)
 
@@ -923,7 +923,7 @@ func TestMutB_PutProvidersDecodeError(t *testing.T) {
 	}
 }
 
-func TestMutB_PutProvidersSaveFails(t *testing.T) {
+func TestPutProvidersSaveFails(t *testing.T) {
 	srv := newSettingsServer(t)
 	path, old := seedSettings(t, settingsFixture)
 	// A directory where the .bak must land makes the backup write fail, so
@@ -963,7 +963,7 @@ func TestMutB_PutProvidersSaveFails(t *testing.T) {
 	}
 }
 
-func TestMutB_ValidateKnownTypes(t *testing.T) {
+func TestValidateKnownTypes(t *testing.T) {
 	for _, typ := range []string{"", "auto", "openai", "anthropic", "responses"} {
 		body := `[{"name":"p","url":"https://a","keys":["k"],"models":{"m":{}}}]`
 		if typ != "" {
@@ -979,7 +979,7 @@ func TestMutB_ValidateKnownTypes(t *testing.T) {
 	}
 }
 
-func TestMutB_TestProviderDecodeError(t *testing.T) {
+func TestTestProviderDecodeError(t *testing.T) {
 	srv := newSettingsServer(t)
 
 	var e struct {
@@ -994,7 +994,7 @@ func TestMutB_TestProviderDecodeError(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeAnthropicWire(t *testing.T) {
+func TestProbeAnthropicWire(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"msg_1","content":[]}`))
@@ -1044,7 +1044,7 @@ func TestMutB_ProbeAnthropicWire(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeResponsesWire(t *testing.T) {
+func TestProbeResponsesWire(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{}`))
@@ -1087,7 +1087,7 @@ func TestMutB_ProbeResponsesWire(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeResponsesNoModels(t *testing.T) {
+func TestProbeResponsesNoModels(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("the responses probe needs a model name; no call is expected without one")
@@ -1108,7 +1108,7 @@ func TestMutB_ProbeResponsesNoModels(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeBadURLGuards(t *testing.T) {
+func TestProbeBadURLGuards(t *testing.T) {
 	srv := newSettingsServer(t)
 	_, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("an unparseable URL must fail before any request goes out")
@@ -1134,7 +1134,7 @@ func TestMutB_ProbeBadURLGuards(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeStatusClassification(t *testing.T) {
+func TestProbeStatusClassification(t *testing.T) {
 	srv := newSettingsServer(t)
 
 	t.Run("299 is success", func(t *testing.T) {
@@ -1170,7 +1170,7 @@ func TestMutB_ProbeStatusClassification(t *testing.T) {
 	})
 }
 
-func TestMutB_ProbeLatencyMeasured(t *testing.T) {
+func TestProbeLatencyMeasured(t *testing.T) {
 	srv := newSettingsServer(t)
 	// The upstream stalls on a channel until the test releases it, so the
 	// probe's measured window provably spans the release delay — a constant
@@ -1230,7 +1230,7 @@ func TestMutB_ProbeLatencyMeasured(t *testing.T) {
 	}
 }
 
-func TestMutB_ProbeOutboundContext(t *testing.T) {
+func TestProbeOutboundContext(t *testing.T) {
 	srv := newSettingsServer(t)
 	started := make(chan struct{}, 1)
 	sawCancel := make(chan struct{}, 1)
@@ -1278,7 +1278,7 @@ func TestMutB_ProbeOutboundContext(t *testing.T) {
 	}
 }
 
-func TestMutB_FetchModelsFree(t *testing.T) {
+func TestFetchModelsFree(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "max_price=0&sort=most-popular" {
@@ -1318,7 +1318,7 @@ func TestMutB_FetchModelsFree(t *testing.T) {
 	}
 }
 
-func TestMutB_FetchModelsInputGuards(t *testing.T) {
+func TestFetchModelsInputGuards(t *testing.T) {
 	srv := newSettingsServer(t)
 
 	t.Run("decode error", func(t *testing.T) {
@@ -1407,7 +1407,7 @@ func TestMutB_FetchModelsInputGuards(t *testing.T) {
 	})
 }
 
-func TestMutB_FetchModelsAuthHeader(t *testing.T) {
+func TestFetchModelsAuthHeader(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, calls := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[]}`))
@@ -1439,7 +1439,7 @@ func TestMutB_FetchModelsAuthHeader(t *testing.T) {
 	}
 }
 
-func TestMutB_FetchModelsUpstreamFailures(t *testing.T) {
+func TestFetchModelsUpstreamFailures(t *testing.T) {
 	srv := newSettingsServer(t)
 
 	t.Run("unreachable upstream", func(t *testing.T) {
@@ -1507,7 +1507,7 @@ func TestMutB_FetchModelsUpstreamFailures(t *testing.T) {
 	})
 }
 
-func TestMutB_FetchModelsMergeDedupe(t *testing.T) {
+func TestFetchModelsMergeDedupe(t *testing.T) {
 	srv := newSettingsServer(t)
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
@@ -1556,7 +1556,7 @@ func TestMutB_FetchModelsMergeDedupe(t *testing.T) {
 	}
 }
 
-func TestMutB_FetchModelsClientTimeout(t *testing.T) {
+func TestFetchModelsClientTimeout(t *testing.T) {
 	srv := newSettingsServer(t)
 	sawTimeout := make(chan struct{}, 1)
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1607,7 +1607,7 @@ func TestMutB_FetchModelsClientTimeout(t *testing.T) {
 	}
 }
 
-func TestMutB_DefaultPut(t *testing.T) {
+func TestDefaultPut(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".gbot"), 0755); err != nil {

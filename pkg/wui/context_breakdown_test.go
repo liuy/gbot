@@ -376,7 +376,7 @@ func TestContextRequest_NoEngine(t *testing.T) {
 // Kills the composite/field-clear mutants on every converter line (110, 112,
 // 121, 129, 137, 145 x2, 153 x2, 165, 168, 181, 183, 188, 193, 194, 195,
 // 207, 208, 209): each converter must copy every field.
-func TestMutD_ConvertersCopyEveryField(t *testing.T) {
+func TestConvertersCopyEveryField(t *testing.T) {
 	mcp := convertMCPTools([]engine.MCPToolDetail{{Name: "search", ServerName: "brave", Tokens: 800, IsLoaded: true}})
 	if len(mcp) != 1 {
 		t.Fatalf("mcp len = %d, want 1", len(mcp))
@@ -466,7 +466,7 @@ func TestMutD_ConvertersCopyEveryField(t *testing.T) {
 
 // Kills context_breakdown.go:176 (branch/if): nil must map to nil without a
 // panic (a non-nil breakdown with nil MessageBreakdown is a legal state).
-func TestMutD_ConvertMessageBreakdown_NilIsNil(t *testing.T) {
+func TestConvertMessageBreakdown_NilIsNil(t *testing.T) {
 	if got := convertMessageBreakdown(nil); got != nil {
 		t.Fatalf("convertMessageBreakdown(nil) = %+v, want nil", got)
 	}
@@ -475,7 +475,7 @@ func TestMutD_ConvertMessageBreakdown_NilIsNil(t *testing.T) {
 // Kills context_breakdown.go:214 (expression/remove x2, numbers x2): nil and
 // zero-token breakdowns must serialize as the minimal early-return shape, so
 // the wire never carries an empty full frame.
-func TestMutD_BuildContextBreakdown_ZeroShapes(t *testing.T) {
+func TestBuildContextBreakdown_ZeroShapes(t *testing.T) {
 	want := `{"type":"context_breakdown","totalTokens":0}`
 	if got := string(buildContextBreakdown(nil)); got != want {
 		t.Errorf("nil breakdown = %s, want %s", got, want)
@@ -488,7 +488,7 @@ func TestMutD_BuildContextBreakdown_ZeroShapes(t *testing.T) {
 
 // Kills context_breakdown.go:225 (composite/field-clear: ContextWindow) and
 // :228 (composite/field-clear: IsAutoCompact).
-func TestMutD_BuildContextBreakdown_TopLevelFields(t *testing.T) {
+func TestBuildContextBreakdown_TopLevelFields(t *testing.T) {
 	bd := &engine.ContextBreakdown{
 		Model:         "glm-5.2",
 		ContextWindow: 131072,
@@ -518,7 +518,7 @@ func TestMutD_BuildContextBreakdown_TopLevelFields(t *testing.T) {
 // Kills context_breakdown.go:243 (expression/error-guard) and :244
 // (statement/remove): a NaN percentage is the one input json.Marshal rejects;
 // the failure must be logged.
-func TestMutD_BuildContextBreakdown_MarshalFailureWarns(t *testing.T) {
+func TestBuildContextBreakdown_MarshalFailureWarns(t *testing.T) {
 	rec := mutDCaptureSlog(t)
 	bd := &engine.ContextBreakdown{TotalTokens: 10, Percentage: math.NaN()}
 	if payload := buildContextBreakdown(bd); payload != nil {
@@ -531,7 +531,7 @@ func TestMutD_BuildContextBreakdown_MarshalFailureWarns(t *testing.T) {
 
 // Kills context_breakdown.go:253 (branch/if) and :265 (branch/if): a missing
 // active engine must be a silent no-op, not a nil-interface panic.
-func TestMutD_ContextHandlers_NilEngineNoPanic(t *testing.T) {
+func TestContextHandlers_NilEngineNoPanic(t *testing.T) {
 	c := newTestConnector(t)
 	unknown := "no-such-engine"
 	c.active.Store(&unknown)
@@ -542,7 +542,7 @@ func TestMutD_ContextHandlers_NilEngineNoPanic(t *testing.T) {
 // Kills context_breakdown.go:268 (expression/error-guard), :268
 // (conditional/negated, with the success test below) and :269
 // (statement/remove): compact failures must warn exactly once.
-func TestMutD_HandleCompactRequest_FailureWarns(t *testing.T) {
+func TestHandleCompactRequest_FailureWarns(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().manualCompactFn = func(context.Context, types.Message, string) (*short.CompactResult, error) {
 		return nil, errors.New("compact: engine busy")
@@ -555,7 +555,7 @@ func TestMutD_HandleCompactRequest_FailureWarns(t *testing.T) {
 }
 
 // Kills the conditional/negated flavor of context_breakdown.go:268.
-func TestMutD_HandleCompactRequest_SuccessSilent(t *testing.T) {
+func TestHandleCompactRequest_SuccessSilent(t *testing.T) {
 	c := newTestConnector(t)
 	c.mock().manualCompactFn = func(context.Context, types.Message, string) (*short.CompactResult, error) {
 		return nil, nil

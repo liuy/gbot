@@ -1767,7 +1767,7 @@ func mutDSlot() *engineSlot {
 
 // Kills jobs_panel.go:142 (expression/remove x2, expression/string-literal
 // x2): all three terminal statuses must be recognized.
-func TestMutD_IsTerminalJobStatus_AllThree(t *testing.T) {
+func TestIsTerminalJobStatus_AllThree(t *testing.T) {
 	for _, s := range []string{"completed", "failed", "killed"} {
 		if !isTerminalJobStatus(s) {
 			t.Errorf("isTerminalJobStatus(%q) = false, want true", s)
@@ -1786,7 +1786,7 @@ func TestMutD_IsTerminalJobStatus_AllThree(t *testing.T) {
 // order, which Go randomizes per range as a rotation of insertion order.
 // Each round uses freshly built maps, so a surviving mutant must draw the
 // identity rotation in both paths across every round.
-func TestMutD_JobSort_TiebreakOrdersBothOutputs(t *testing.T) {
+func TestJobSort_TiebreakOrdersBothOutputs(t *testing.T) {
 	c := &WUIConnector{done: make(chan struct{})}
 	c.outQ.Store(newOutQueue(outQueueCapacity))
 	c.activeWS.Store(&websocket.Conn{})
@@ -1851,7 +1851,7 @@ func mutDStringSlicesEqual(a, b []string) bool {
 
 // Kills the pushJobsSnapshot Unlock mutant: the forced snapshot must release
 // ssMu or every later event/beat deadlocks.
-func TestMutD_PushJobsSnapshot_ReleasesLock(t *testing.T) {
+func TestPushJobsSnapshot_ReleasesLock(t *testing.T) {
 	c := &WUIConnector{}
 	slot := mutDSlot()
 	c.pushJobsSnapshot(slot)
@@ -1938,7 +1938,7 @@ func TestStreams_UnifiedLockDomain_ConcurrentRegionWriteVsRootRead(t *testing.T)
 // goroutines to overlap, and the outer rounds rebuild the scenario per
 // attempt — make mutate runs without -race, so the kill relies on
 // statistical loss/concurrent-map-write detection.
-func TestMutD_ApplyJobStreamEvent_HoldsLockDuringAppend(t *testing.T) {
+func TestApplyJobStreamEvent_HoldsLockDuringAppend(t *testing.T) {
 	h := hub.NewHub()
 	c := newTestConnectorWithHub(t, h)
 
@@ -1987,7 +1987,7 @@ func TestMutD_ApplyJobStreamEvent_HoldsLockDuringAppend(t *testing.T) {
 // Kills the applyJobStreamEvent guard mutants: nil Agent, empty JobID, and
 // non-feed event types must all return before folding any block — and none
 // may create a region.
-func TestMutD_ApplyJobStreamEvent_Guards(t *testing.T) {
+func TestApplyJobStreamEvent_InputGuards(t *testing.T) {
 	c := &WUIConnector{}
 	// nil Agent: the guard must return before touching event.Agent.
 	c.applyJobStreamEvent(mutDSlot(), types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
@@ -2020,7 +2020,7 @@ func TestMutD_ApplyJobStreamEvent_Guards(t *testing.T) {
 // call — with job-id keying, that means never touching any foreign job's
 // region (a region dies only with its own row's deleteJobEntryLocked, not
 // this call).
-func TestMutD_DeleteJobEntry_BashKeepsForeignFeed(t *testing.T) {
+func TestDeleteJobEntry_BashKeepsForeignFeed(t *testing.T) {
 	slot := mutDSlot()
 	slot.jobView["bashjob"] = &jobViewEntry{item: jobWireItem{ID: "bashjob", Kind: "bash", Status: "completed", ParentToolUseID: "toolu_live"}}
 	slot.streams["agent-live"] = &streamState{}

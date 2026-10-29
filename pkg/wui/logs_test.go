@@ -200,7 +200,7 @@ func mutCGetLogLines(t *testing.T, srv *httptest.Server, query string) []string 
 // logs.go
 // ---------------------------------------------------------------------------
 
-func TestMutC_LogsResponseHeaders(t *testing.T) {
+func TestLogsResponseHeaders(t *testing.T) {
 	path := mutCLogFile(t, "line-a\nline-b\n")
 	srv := newLogTestServer(t, path)
 
@@ -224,7 +224,7 @@ func TestMutC_LogsResponseHeaders(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsTailOne(t *testing.T) {
+func TestLogsTailOne(t *testing.T) {
 	path := mutCLogLines(t, 10, 16)
 	srv := newLogTestServer(t, path)
 
@@ -234,11 +234,11 @@ func TestMutC_LogsTailOne(t *testing.T) {
 	}
 }
 
-// TestMutC_LogsReadWindowBoundary pins the 256KiB window arithmetic: 300
+// TestLogsReadWindowBoundary pins the 256KiB window arithmetic: 300
 // lines of 1024B put the window start exactly at line 44's boundary, so the
 // first (complete) line is dropped and 255 remain. Any shift of the window
 // size or of the drop offset changes the count or first line.
-func TestMutC_LogsReadWindowBoundary(t *testing.T) {
+func TestLogsReadWindowBoundary(t *testing.T) {
 	path := mutCLogLines(t, 300, 1024)
 	srv := newLogTestServer(t, path)
 
@@ -251,7 +251,7 @@ func TestMutC_LogsReadWindowBoundary(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsSmallFileKeepsFirstLine(t *testing.T) {
+func TestLogsSmallFileKeepsFirstLine(t *testing.T) {
 	path := mutCLogLines(t, 10, 16)
 	srv := newLogTestServer(t, path)
 
@@ -261,7 +261,7 @@ func TestMutC_LogsSmallFileKeepsFirstLine(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsOneByteIntoWindow(t *testing.T) {
+func TestLogsOneByteIntoWindow(t *testing.T) {
 	// One stray byte pushes the window start to offset 1: the first element
 	// after split is a complete line, but offset>0 still drops it.
 	content := "A" + strings.Repeat(strings.Repeat("y", 1023)+"\n", 256)
@@ -278,7 +278,7 @@ func TestMutC_LogsOneByteIntoWindow(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsSingleOversizedLineDropped(t *testing.T) {
+func TestLogsSingleOversizedLineDropped(t *testing.T) {
 	// A single line larger than the window: the whole buffer is one partial
 	// line, so the tail is empty — dropping vs keeping it is observable.
 	path := mutCLogFile(t, strings.Repeat("z", 300*1024))
@@ -293,7 +293,7 @@ func TestMutC_LogsSingleOversizedLineDropped(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsBlankLinesFileIsEmpty(t *testing.T) {
+func TestLogsBlankLinesFileIsEmpty(t *testing.T) {
 	path := mutCLogFile(t, "\n\n\n")
 	srv := newLogTestServer(t, path)
 
@@ -306,7 +306,7 @@ func TestMutC_LogsBlankLinesFileIsEmpty(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsTrailingNewlineTrimmed(t *testing.T) {
+func TestLogsTrailingNewlineTrimmed(t *testing.T) {
 	path := mutCLogFile(t, "a\nb\n")
 	srv := newLogTestServer(t, path)
 
@@ -319,7 +319,7 @@ func TestMutC_LogsTrailingNewlineTrimmed(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsWindowMinusOneReadFromStart(t *testing.T) {
+func TestLogsWindowMinusOneReadFromStart(t *testing.T) {
 	// size = window-1 keeps offset clamped to 0 and returns every line; a
 	// mutant comparing offset < -1 leaves offset negative and ReadAt fails.
 	var b strings.Builder
@@ -336,7 +336,7 @@ func TestMutC_LogsWindowMinusOneReadFromStart(t *testing.T) {
 	}
 }
 
-func TestMutC_LogsOneByteFile(t *testing.T) {
+func TestLogsOneByteFile(t *testing.T) {
 	path := mutCLogFile(t, "x")
 	srv := newLogTestServer(t, path)
 

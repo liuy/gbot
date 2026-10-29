@@ -147,7 +147,7 @@ func TestReloadRoute_PassesContext(t *testing.T) {
 // Kills reload.go:13 (arithmetic/base, numbers/decrementer, numbers/
 // incrementer): the request context deadline must be the full 120s window
 // (the MCP drain alone can legally take tens of seconds).
-func TestMutD_ReloadRoute_TimeoutWindow(t *testing.T) {
+func TestReloadRoute_TimeoutWindow(t *testing.T) {
 	mux := http.NewServeMux()
 	var remain time.Duration
 	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report {
@@ -173,7 +173,7 @@ func TestMutD_ReloadRoute_TimeoutWindow(t *testing.T) {
 
 // Kills reload.go:28 (statement/defer-remove): cancel becomes an immediate
 // call, so the reload fn observes an already-canceled context.
-func TestMutD_ReloadRoute_ContextLiveInsideFn(t *testing.T) {
+func TestReloadRoute_ContextLiveInsideFn(t *testing.T) {
 	mux := http.NewServeMux()
 	var innerErr error
 	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report {
@@ -190,7 +190,7 @@ func TestMutD_ReloadRoute_ContextLiveInsideFn(t *testing.T) {
 }
 
 // Kills reload.go:30 (statement/remove: Cache-Control header).
-func TestMutD_ReloadRoute_NoStoreHeader(t *testing.T) {
+func TestReloadRoute_NoStoreHeader(t *testing.T) {
 	mux := http.NewServeMux()
 	RegisterReloadRoute(mux, func(ctx context.Context) *reload.Report { return fixtureReport(true) })
 	rec := postReload(t, mux.ServeHTTP)

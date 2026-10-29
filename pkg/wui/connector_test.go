@@ -1742,13 +1742,8 @@ func a1AssistantMsg(text string) types.Message {
 }
 
 // ---- resetQueryStats ----
-// Naming note for the TestMut* family (also in settings/artifacts/attachment/
-// context_breakdown/games/jobs_panel/logs tests): MutA..MutD are mutation-class
-// ids from the 10-27 mutate campaign — each test pins one escaped mutant. The
-// names are labels, not semantics; read the comment above each test for what
-// it actually pins.
 
-func TestMutA1_ResetQueryStatsZeroesAllFields(t *testing.T) {
+func TestResetQueryStatsZeroesAllFields(t *testing.T) {
 	qs := &queryStats{}
 	qs.inputTokens.Store(7)
 	qs.outputTokens.Store(8)
@@ -1776,7 +1771,7 @@ func TestMutA1_ResetQueryStatsZeroesAllFields(t *testing.T) {
 
 // ---- accumulateStats ----
 
-func TestMutA1_AccumulateStatsUsage(t *testing.T) {
+func TestAccumulateStatsUsage(t *testing.T) {
 	qs := &queryStats{}
 	accumulateStats(qs, types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{
 		InputTokens: 10, OutputTokens: 20, CacheReadInputTokens: 30, CacheCreationInputTokens: 40,
@@ -1812,7 +1807,7 @@ func TestMutA1_AccumulateStatsUsage(t *testing.T) {
 	}
 }
 
-func TestMutA1_AccumulateStatsQueryStart(t *testing.T) {
+func TestAccumulateStatsQueryStart(t *testing.T) {
 	// In a synctest bubble the clock is frozen while the goroutine runs, so
 	// the stored startMs is comparable for equality against a captured
 	// reading instead of a wall-clock bound.
@@ -1840,7 +1835,7 @@ func TestMutA1_AccumulateStatsQueryStart(t *testing.T) {
 	})
 }
 
-func TestMutA1_AccumulateStatsToolStart(t *testing.T) {
+func TestAccumulateStatsToolStart(t *testing.T) {
 	// ToolStart with nil ToolUse must neither panic nor count.
 	qsNil := &queryStats{}
 	accumulateStats(qsNil, types.QueryEvent{Type: types.EventToolStart})
@@ -1862,7 +1857,7 @@ func TestMutA1_AccumulateStatsToolStart(t *testing.T) {
 	}
 }
 
-func TestMutA1_AccumulateStatsThinkingEnd(t *testing.T) {
+func TestAccumulateStatsThinkingEnd(t *testing.T) {
 	// ThinkingEnd with nil Thinking must neither panic nor accumulate.
 	qsNil := &queryStats{}
 	accumulateStats(qsNil, types.QueryEvent{Type: types.EventThinkingEnd})
@@ -1937,7 +1932,7 @@ func TestAccumulateStats_TurnStartAnchorsEpoch(t *testing.T) {
 
 // ---- findBlock / targetList ----
 
-func TestMutA1_FindBlock(t *testing.T) {
+func TestConnectorFindBlock(t *testing.T) {
 	blocks := []streamBlock{
 		{Kind: "text", ID: "txt", Text: "hello"},
 		{Kind: "tool", ID: "outer", Name: "Bash", Children: []streamBlock{
@@ -1965,7 +1960,7 @@ func TestMutA1_FindBlock(t *testing.T) {
 	}
 }
 
-func TestMutA1_TargetList(t *testing.T) {
+func TestTargetList(t *testing.T) {
 	ss := &streamState{blocks: []streamBlock{{Kind: "tool", ID: "p1", Name: "Agent"}}}
 	if got := targetList(ss, types.QueryEvent{Type: types.EventTextDelta}); got != &ss.blocks {
 		t.Errorf("targetList(top-level) = %p, want root blocks %p", got, &ss.blocks)
@@ -1988,7 +1983,7 @@ func TestMutA1_TargetList(t *testing.T) {
 
 // ---- updateStreamState ----
 
-func TestMutA1_UpdateStreamStateToolStartFields(t *testing.T) {
+func TestUpdateStreamStateToolStartFields(t *testing.T) {
 	// Bubble-frozen clock: StartedAt must equal the captured reading exactly.
 	inBubble(t, func(t *testing.T) {
 		before := time.Now().UnixMilli()
@@ -2028,7 +2023,7 @@ func TestMutA1_UpdateStreamStateToolStartFields(t *testing.T) {
 	})
 }
 
-func TestMutA1_UpdateStreamStateTurnStart(t *testing.T) {
+func TestUpdateStreamStateTurnStart(t *testing.T) {
 	// Top-level turn_start must not panic on the nil-Agent rename guard.
 	ss := &streamState{}
 	updateStreamState(ss, types.QueryEvent{Type: types.EventTurnStart})
@@ -2051,7 +2046,7 @@ func TestMutA1_UpdateStreamStateTurnStart(t *testing.T) {
 	}
 }
 
-func TestMutA1_UpdateStreamStateToolParamDelta(t *testing.T) {
+func TestUpdateStreamStateToolParamDelta(t *testing.T) {
 	ss := &streamState{}
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Bash"}})
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolParamDelta, PartialInput: &types.PartialInputEvent{
@@ -2075,7 +2070,7 @@ func TestMutA1_UpdateStreamStateToolParamDelta(t *testing.T) {
 	}
 }
 
-func TestMutA1_UpdateStreamStateAttachmentEcho(t *testing.T) {
+func TestUpdateStreamStateAttachmentEcho(t *testing.T) {
 	mkSS := func() *streamState {
 		ss := &streamState{}
 		updateStreamState(ss, types.QueryEvent{Type: types.EventTurnStart})
@@ -2121,7 +2116,7 @@ func TestMutA1_UpdateStreamStateAttachmentEcho(t *testing.T) {
 	}
 }
 
-func TestMutA1_UpdateStreamStateToolEnd(t *testing.T) {
+func TestUpdateStreamStateToolEnd(t *testing.T) {
 	ss := &streamState{}
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Bash"}})
 	// Sub-agent activity to verify the completion clear.
@@ -2165,7 +2160,7 @@ func TestMutA1_UpdateStreamStateToolEnd(t *testing.T) {
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolEnd})
 }
 
-func TestMutA1_UpdateStreamStateToolOutputDelta(t *testing.T) {
+func TestUpdateStreamStateToolOutputDelta(t *testing.T) {
 	ss := &streamState{}
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "tu1", Name: "Bash"}})
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{ToolUseID: "tu1", DisplayOutput: "partial"}})
@@ -2176,7 +2171,7 @@ func TestMutA1_UpdateStreamStateToolOutputDelta(t *testing.T) {
 	updateStreamState(ss, types.QueryEvent{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{ToolUseID: "absent", DisplayOutput: "x"}})
 }
 
-func TestMutA1_UpdateStreamStateThinkingDelta(t *testing.T) {
+func TestUpdateStreamStateThinkingDelta(t *testing.T) {
 	// Sub-agent delta whose parent tool is gone: nil target list is dropped.
 	ssOrphan := &streamState{}
 	updateStreamState(ssOrphan, types.QueryEvent{
@@ -2215,7 +2210,7 @@ func TestMutA1_UpdateStreamStateThinkingDelta(t *testing.T) {
 	}
 }
 
-func TestMutA1_UpdateStreamStateThinkingEnd(t *testing.T) {
+func TestUpdateStreamStateThinkingEnd(t *testing.T) {
 	// Empty list: no panic, no append.
 	ssEmpty := &streamState{}
 	updateStreamState(ssEmpty, types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: time.Second}})
@@ -2254,7 +2249,7 @@ func TestMutA1_UpdateStreamStateThinkingEnd(t *testing.T) {
 
 // ---- onEngineEvent ----
 
-func TestMutA1_OnEngineEventQueryEndReset(t *testing.T) {
+func TestOnEngineEventQueryEndReset(t *testing.T) {
 	c := newTestConnector(t)
 	slot := c.activeSlotTest(t)
 
@@ -2307,7 +2302,7 @@ func TestMutA1_OnEngineEventQueryEndReset(t *testing.T) {
 	}
 }
 
-func TestMutA1_OnEngineEventFrameNoAbortFlag(t *testing.T) {
+func TestOnEngineEventFrameNoAbortFlag(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
 	// A rewound-able message so a wrongly-triggered auto-rewind would leave
@@ -2351,7 +2346,7 @@ func TestMutA1_OnEngineEventFrameNoAbortFlag(t *testing.T) {
 	}
 }
 
-func TestMutA1_OnEngineEventTaskTrackingAndDebugTrace(t *testing.T) {
+func TestOnEngineEventTaskTrackingAndDebugTrace(t *testing.T) {
 	sink := a1SwapDefaultLogger(t)
 	c := newTestConnector(t)
 	slot := c.activeSlotTest(t)
@@ -2379,7 +2374,7 @@ func TestMutA1_OnEngineEventTaskTrackingAndDebugTrace(t *testing.T) {
 
 // ---- shouldAutoRewindFor / autoRewindOnAbortFor ----
 
-func TestMutA1_ShouldAutoRewindFor(t *testing.T) {
+func TestShouldAutoRewindFor(t *testing.T) {
 	c := newTestConnector(t)
 	mock := c.mock()
 
@@ -2411,7 +2406,7 @@ func TestMutA1_ShouldAutoRewindFor(t *testing.T) {
 	}
 }
 
-func TestMutA1_AutoRewindOnAbortFor(t *testing.T) {
+func TestAutoRewindOnAbortFor(t *testing.T) {
 	sink := a1SwapDefaultLogger(t)
 	c := newTestConnector(t)
 	mock := c.mock()
@@ -2445,7 +2440,7 @@ func TestMutA1_AutoRewindOnAbortFor(t *testing.T) {
 
 // ---- input history ----
 
-func TestMutA1_InputHistoryPath(t *testing.T) {
+func TestInputHistoryPath(t *testing.T) {
 	// Connector with no bound engine: empty path, no nil-interface panic.
 	bare := &WUIConnector{}
 	if got := bare.inputHistoryPath(); got != "" {
@@ -2471,7 +2466,7 @@ func TestMutA1_InputHistoryPath(t *testing.T) {
 	}
 }
 
-func TestMutA1_LoadInputHistoryFromFile(t *testing.T) {
+func TestLoadInputHistoryFromFile(t *testing.T) {
 	if got := loadInputHistoryFromFile(""); got != nil {
 		t.Errorf("empty path = %v, want nil", got)
 	}
@@ -2518,7 +2513,7 @@ func TestMutA1_LoadInputHistoryFromFile(t *testing.T) {
 	}
 }
 
-func TestMutA1_AppendInputHistory(t *testing.T) {
+func TestAppendInputHistory(t *testing.T) {
 	inBubble(t, func(t *testing.T) {
 		c := newTestConnector(t)
 		defer c.Stop()
@@ -2573,7 +2568,7 @@ func TestMutA1_AppendInputHistory(t *testing.T) {
 
 // ---- handleAsk ----
 
-func TestMutA1_HandleAskOutboundFrame(t *testing.T) {
+func TestHandleAskOutboundFrame(t *testing.T) {
 	c := newTestConnector(t)
 	ws := dialAndStore(t, c)
 
@@ -2648,7 +2643,7 @@ func TestMutA1_HandleAskOutboundFrame(t *testing.T) {
 
 // ---- engineAdapter ----
 
-func TestMutA1_EngineAdapterRewindToErrorPropagates(t *testing.T) {
+func TestEngineAdapterRewindToErrorPropagates(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "main", Model: "m"})
 	eng.SetDispatcher(hub.NewHub())
 	t.Cleanup(eng.Close)
@@ -2663,7 +2658,7 @@ func TestMutA1_EngineAdapterRewindToErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestMutA1_EngineAdapterRewindToPartialRestoreWarn(t *testing.T) {
+func TestEngineAdapterRewindToPartialRestoreWarn(t *testing.T) {
 	sink := a1SwapDefaultLogger(t)
 	eng := engine.New(&engine.Params{EngineID: "main"})
 	eng.SetDispatcher(hub.NewHub())
@@ -2725,7 +2720,7 @@ func TestMutA1_EngineAdapterRewindToPartialRestoreWarn(t *testing.T) {
 	}
 }
 
-func TestMutA1_EngineAdapterDelegation(t *testing.T) {
+func TestEngineAdapterDelegation(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "main", Model: "test-model"})
 	eng.SetDispatcher(hub.NewHub())
 	t.Cleanup(eng.Close)
@@ -2960,7 +2955,7 @@ func mutA2BareConnector() *WUIConnector {
 // engineAdapter delegation (connector.go:173-221)
 // ---------------------------------------------------------------------------
 
-func TestMutA2EngineAdapterNewSession(t *testing.T) {
+func TestEngineAdapterNewSession(t *testing.T) {
 	// No store: the underlying engine errors; the adapter must surface it.
 	noStore := engine.New(&engine.Params{EngineID: "ea-nos", Model: "m"})
 	noStore.SetDispatcher(hub.NewHub())
@@ -2991,7 +2986,7 @@ func TestMutA2EngineAdapterNewSession(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterTitleNoStore(t *testing.T) {
+func TestEngineAdapterTitleNoStore(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "ea-t", Model: "m"})
 	eng.SetDispatcher(hub.NewHub())
 	a := &engineAdapter{eng: eng}
@@ -3001,7 +2996,7 @@ func TestMutA2EngineAdapterTitleNoStore(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterTitleError(t *testing.T) {
+func TestEngineAdapterTitleError(t *testing.T) {
 	store, err := short.NewStore(t.TempDir() + "/ea.db")
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -3019,7 +3014,7 @@ func TestMutA2EngineAdapterTitleError(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterGetters(t *testing.T) {
+func TestEngineAdapterGetters(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "ea-g", Model: "m"})
 	eng.SetDispatcher(hub.NewHub())
 	a := &engineAdapter{eng: eng}
@@ -3043,7 +3038,7 @@ func TestMutA2EngineAdapterGetters(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterSetters(t *testing.T) {
+func TestEngineAdapterSetters(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "ea-s", Model: "m0"})
 	eng.SetDispatcher(hub.NewHub())
 	a := &engineAdapter{eng: eng}
@@ -3080,7 +3075,7 @@ func TestMutA2EngineAdapterSetters(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterPreCompactNoStore(t *testing.T) {
+func TestEngineAdapterPreCompactNoStore(t *testing.T) {
 	eng := engine.New(&engine.Params{EngineID: "ea-pc", Model: "m"})
 	eng.SetDispatcher(hub.NewHub())
 	a := &engineAdapter{eng: eng}
@@ -3090,7 +3085,7 @@ func TestMutA2EngineAdapterPreCompactNoStore(t *testing.T) {
 	}
 }
 
-func TestMutA2EngineAdapterManualCompactCtx(t *testing.T) {
+func TestEngineAdapterManualCompactCtx(t *testing.T) {
 	store, err := short.NewStore(t.TempDir() + "/ea.db")
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -3146,7 +3141,7 @@ func TestMutA2EngineAdapterManualCompactCtx(t *testing.T) {
 // handleAsk marshal failure (connector.go:1700)
 // ---------------------------------------------------------------------------
 
-func TestMutA2HandleAskMarshalFailure(t *testing.T) {
+func TestHandleAskMarshalFailure(t *testing.T) {
 	c := mutA2BareConnector()
 	h := swapMutA2WarnHandler(t)
 	// Invalid RawMessage JSON makes json.Marshal(askOutbound) fail; nothing
@@ -3177,7 +3172,7 @@ func TestMutA2HandleAskMarshalFailure(t *testing.T) {
 // preCompactMessages (connector.go:1748-1778)
 // ---------------------------------------------------------------------------
 
-func TestMutA2PreCompactLoadError(t *testing.T) {
+func TestPreCompactLoadError(t *testing.T) {
 	store := seedPreCompactStore(t, "s1", 3, false, 0)
 	// NULL parent_uuid breaks row scanning only for the non-boundary rows,
 	// so GetLastBoundary still succeeds while LoadMessagesBeforeSeq fails.
@@ -3235,7 +3230,7 @@ func mutA2UUIDs(page []*short.TranscriptMessage) []string {
 	return out
 }
 
-func TestMutA2PreCompactAttachmentDropped(t *testing.T) {
+func TestPreCompactAttachmentDropped(t *testing.T) {
 	store, sid := mutA2StoreSession(t)
 	mutA2RawRow(t, store, sid, "u0", "user", "", `[{"type":"text","text":"a"}]`, "")
 	mutA2RawRow(t, store, sid, "att", "attachment", "", `[{"type":"text","text":"skip"}]`, "")
@@ -3251,7 +3246,7 @@ func TestMutA2PreCompactAttachmentDropped(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactSystemInfoDropped(t *testing.T) {
+func TestPreCompactSystemInfoDropped(t *testing.T) {
 	store, sid := mutA2StoreSession(t)
 	mutA2RawRow(t, store, sid, "sys0", "system", "informational", `[{"type":"text","text":"sys"}]`, "")
 	mutA2RawRow(t, store, sid, "u0", "user", "", `[{"type":"text","text":"keep"}]`, "")
@@ -3266,7 +3261,7 @@ func TestMutA2PreCompactSystemInfoDropped(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactMetaFlagDropped(t *testing.T) {
+func TestPreCompactMetaFlagDropped(t *testing.T) {
 	store, sid := mutA2StoreSession(t)
 	metaMsg := types.Message{
 		ID:      "meta-u",
@@ -3292,7 +3287,7 @@ func TestMutA2PreCompactMetaFlagDropped(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactDeliveredEqualsTotal(t *testing.T) {
+func TestPreCompactDeliveredEqualsTotal(t *testing.T) {
 	store := seedPreCompactStore(t, "s1", 3, false, 0)
 	page, total, hasBoundary := preCompactMessages(store, "s1", 3, 10)
 	if !hasBoundary || total != 3 {
@@ -3307,7 +3302,7 @@ func TestMutA2PreCompactDeliveredEqualsTotal(t *testing.T) {
 // buildHistoryChatMsg (connector.go:1804-1917)
 // ---------------------------------------------------------------------------
 
-func TestMutA2HistoryChatMsgBasics(t *testing.T) {
+func TestHistoryChatMsgBasics(t *testing.T) {
 	c := mutA2BareConnector()
 	ts := time.Date(2026, 3, 4, 9, 30, 0, 0, time.UTC)
 	m := types.Message{
@@ -3342,7 +3337,7 @@ func TestMutA2HistoryChatMsgBasics(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgAPIError(t *testing.T) {
+func TestHistoryChatMsgAPIError(t *testing.T) {
 	c := mutA2BareConnector()
 	doc := types.ContentBlock{Type: types.ContentTypeDocument, Name: "d.md", Mime: "text/markdown", Size: 12}
 	m := types.Message{
@@ -3363,7 +3358,7 @@ func TestMutA2HistoryChatMsgAPIError(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgWhitespaceText(t *testing.T) {
+func TestHistoryChatMsgWhitespaceText(t *testing.T) {
 	c := mutA2BareConnector()
 	m := types.Message{
 		ID:   "w1",
@@ -3382,7 +3377,7 @@ func TestMutA2HistoryChatMsgWhitespaceText(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgImagePlaceholder(t *testing.T) {
+func TestHistoryChatMsgImagePlaceholder(t *testing.T) {
 	c := mutA2BareConnector()
 	m := types.Message{
 		ID:   "i1",
@@ -3429,7 +3424,7 @@ func TestMutA2HistoryChatMsgImagePlaceholder(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgThinking(t *testing.T) {
+func TestHistoryChatMsgThinking(t *testing.T) {
 	c := mutA2BareConnector()
 	blank := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "   "}
 	deep := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "deep thought", ThinkingDurationNs: 77}
@@ -3445,7 +3440,7 @@ func TestMutA2HistoryChatMsgThinking(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgToolUse(t *testing.T) {
+func TestHistoryChatMsgToolUse(t *testing.T) {
 	c := mutA2BareConnector()
 	tools := map[string]tool.Tool{
 		"X": &mutA2FullTool{
@@ -3508,7 +3503,7 @@ func TestMutA2HistoryChatMsgToolUse(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryChatMsgUsage(t *testing.T) {
+func TestHistoryChatMsgUsage(t *testing.T) {
 	c := mutA2BareConnector()
 	m := types.Message{
 		ID:    "us1",
@@ -3550,7 +3545,7 @@ type mutBufWriter struct{ b *strings.Builder }
 
 func (w *mutBufWriter) Write(p []byte) (int, error) { return w.b.Write(p) }
 
-func TestMutA2ImageDataURLNilSource(t *testing.T) {
+func TestImageDataURLNilSource(t *testing.T) {
 	c := mutA2BareConnector()
 	url, ok := c.historyImageDataURL(types.ContentBlock{Type: types.ContentTypeImage})
 	if ok || url != "" {
@@ -3584,7 +3579,7 @@ func TestMutA2ImageDataURLNilSource(t *testing.T) {
 	}
 }
 
-func TestMutA2ImageDataURLFileCache(t *testing.T) {
+func TestImageDataURLFileCache(t *testing.T) {
 	c := mutA2BareConnector()
 	path := filepath.Join(t.TempDir(), "img.png")
 	if err := os.WriteFile(path, mutA2PNG(t, 800, 600, color.RGBA{R: 255, A: 255}), 0o644); err != nil {
@@ -3631,7 +3626,7 @@ func TestMutA2ImageDataURLFileCache(t *testing.T) {
 	}
 }
 
-func TestMutA2ImageDataURLThumbSize(t *testing.T) {
+func TestImageDataURLThumbSize(t *testing.T) {
 	c := mutA2BareConnector()
 	path := filepath.Join(t.TempDir(), "big.png")
 	if err := os.WriteFile(path, mutA2PNG(t, 1026, 1026, color.RGBA{G: 255, A: 255}), 0o644); err != nil {
@@ -3666,7 +3661,7 @@ func TestMutA2ImageDataURLThumbSize(t *testing.T) {
 // isCompactBoundaryMarker (connector.go:1985-1992)
 // ---------------------------------------------------------------------------
 
-func TestMutA2IsCompactBoundaryMarker(t *testing.T) {
+func TestIsCompactBoundaryMarker(t *testing.T) {
 	marker := types.Message{Role: types.RoleSystem, Content: []types.ContentBlock{
 		types.NewTextBlock(`{"subtype":"compact_boundary"}`),
 	}}
@@ -3709,14 +3704,14 @@ func mutA2ParseHistory(t *testing.T, payload []byte) mutA2HistPayload {
 	return out
 }
 
-func TestMutA2BuildHistoryNilSlot(t *testing.T) {
+func TestBuildHistoryNilSlot(t *testing.T) {
 	c := mutA2BareConnector()
 	if got := c.buildHistory(nil, "", 30); got != nil {
 		t.Errorf("buildHistory(nil) = %.40s, want nil", got)
 	}
 }
 
-func TestMutA2BuildHistoryQueryStart(t *testing.T) {
+func TestBuildHistoryQueryStart(t *testing.T) {
 	c := mutA2BareConnector()
 	msgs := []types.Message{mutA2UserMsg("m0", "q"), mutA2UserMsg("m1", "a"), mutA2UserMsg("m2", "q2")}
 	mock := &mockEngine{}
@@ -3737,7 +3732,7 @@ func TestMutA2BuildHistoryQueryStart(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryEmptyAfterFilter(t *testing.T) {
+func TestBuildHistoryEmptyAfterFilter(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	sys := types.Message{
@@ -3764,7 +3759,7 @@ func TestMutA2BuildHistoryEmptyAfterFilter(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryFilters(t *testing.T) {
+func TestBuildHistoryFilters(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	sys := types.Message{ID: "sys", Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("sysinfo")}}
@@ -3780,7 +3775,7 @@ func TestMutA2BuildHistoryFilters(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryBoundaryDivider(t *testing.T) {
+func TestBuildHistoryBoundaryDivider(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	ts := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
@@ -3824,7 +3819,7 @@ func mutA2NMessages(n int) []types.Message {
 	return msgs
 }
 
-func TestMutA2BuildHistoryDefaultLimit(t *testing.T) {
+func TestBuildHistoryDefaultLimit(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	msgs := mutA2NMessages(35)
@@ -3841,7 +3836,7 @@ func TestMutA2BuildHistoryDefaultLimit(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryCursorPaging(t *testing.T) {
+func TestBuildHistoryCursorPaging(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	msgs := mutA2NMessages(35)
@@ -3866,7 +3861,7 @@ func TestMutA2BuildHistoryCursorPaging(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryPreCompactProbe(t *testing.T) {
+func TestBuildHistoryPreCompactProbe(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	mock.SetMessagesFn(func() []types.Message { return mutA2NMessages(3) })
@@ -3884,7 +3879,7 @@ func TestMutA2BuildHistoryPreCompactProbe(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryToolResultKey(t *testing.T) {
+func TestBuildHistoryToolResultKey(t *testing.T) {
 	c := mutA2BareConnector()
 	// A text block carrying a tool_use_id must NOT satisfy a pending tool_use.
 	m0 := types.Message{
@@ -3933,7 +3928,7 @@ func TestMutA2BuildHistoryToolResultKey(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildHistoryRichResult(t *testing.T) {
+func TestBuildHistoryRichResult(t *testing.T) {
 	c := mutA2BareConnector()
 	tools := map[string]tool.Tool{
 		"X": &mutA2FullTool{mutA2Tool: mutA2Tool{name: "X"}},
@@ -3971,14 +3966,14 @@ func TestMutA2BuildHistoryRichResult(t *testing.T) {
 // buildPreCompactHistory (connector.go:2110-2185)
 // ---------------------------------------------------------------------------
 
-func TestMutA2PreCompactHistNilSlot(t *testing.T) {
+func TestPreCompactHistNilSlot(t *testing.T) {
 	c := mutA2BareConnector()
 	if got := c.buildPreCompactHistory(nil, "precompact:0", 30); got != nil {
 		t.Errorf("buildPreCompactHistory(nil) = %.40s, want nil", got)
 	}
 }
 
-func TestMutA2PreCompactHistLimitArgs(t *testing.T) {
+func TestPreCompactHistLimitArgs(t *testing.T) {
 	c := mutA2BareConnector()
 	cases := []struct {
 		cursor        string
@@ -4008,7 +4003,7 @@ func TestMutA2PreCompactHistLimitArgs(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactHistCursorWarn(t *testing.T) {
+func TestPreCompactHistCursorWarn(t *testing.T) {
 	c := mutA2BareConnector()
 	h := swapMutA2WarnHandler(t)
 
@@ -4048,7 +4043,7 @@ func TestMutA2PreCompactHistCursorWarn(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactHistVanished(t *testing.T) {
+func TestPreCompactHistVanished(t *testing.T) {
 	c := mutA2BareConnector()
 	mock := &mockEngine{}
 	mock.preCompactFn = func(delivered, limit int) ([]*short.TranscriptMessage, int, bool) {
@@ -4073,7 +4068,7 @@ func TestMutA2PreCompactHistVanished(t *testing.T) {
 	}
 }
 
-func TestMutA2PreCompactHistRendering(t *testing.T) {
+func TestPreCompactHistRendering(t *testing.T) {
 	c := mutA2BareConnector()
 	tools := map[string]tool.Tool{
 		"X": &mutA2FullTool{mutA2Tool: mutA2Tool{name: "X", desc: "SUM-X"}},
@@ -4143,7 +4138,7 @@ func TestMutA2PreCompactHistRendering(t *testing.T) {
 // formatToolDisplayName / historyAgentToolName (connector.go:2188-2216)
 // ---------------------------------------------------------------------------
 
-func TestMutA2FormatToolDisplayName(t *testing.T) {
+func TestConnectorFormatToolDisplayName(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Grep", "Grep"},
 		{"a__b__c", "a__b__c"},
@@ -4158,7 +4153,7 @@ func TestMutA2FormatToolDisplayName(t *testing.T) {
 	}
 }
 
-func TestMutA2HistoryAgentToolName(t *testing.T) {
+func TestHistoryAgentToolName(t *testing.T) {
 	cases := []struct {
 		name  string
 		input string
@@ -4186,7 +4181,7 @@ func TestMutA2HistoryAgentToolName(t *testing.T) {
 // (connector.go:2219-2347)
 // ---------------------------------------------------------------------------
 
-func TestMutA2ComputeToolSummary(t *testing.T) {
+func TestConnectorComputeToolSummary(t *testing.T) {
 	if got := computeToolSummary("NoSuchTool", json.RawMessage(`{}`), nil); got != "" {
 		t.Errorf("summary for unknown tool = %q, want empty", got)
 	}
@@ -4200,7 +4195,7 @@ func TestMutA2ComputeToolSummary(t *testing.T) {
 	}
 }
 
-func TestMutA2RenderToolOutputEmptyRaw(t *testing.T) {
+func TestRenderToolOutputEmptyRaw(t *testing.T) {
 	if got := renderToolOutput("X", nil, nil); got != "" {
 		t.Errorf("renderToolOutput(nil) = %q, want empty", got)
 	}
@@ -4216,7 +4211,7 @@ func TestMutA2RenderToolOutputEmptyRaw(t *testing.T) {
 	}
 }
 
-func TestMutA2RenderToolOutputTextExtraction(t *testing.T) {
+func TestRenderToolOutputTextExtraction(t *testing.T) {
 	cases := []struct {
 		raw  string
 		want string
@@ -4237,7 +4232,7 @@ func TestMutA2RenderToolOutputTextExtraction(t *testing.T) {
 	}
 }
 
-func TestMutA2RenderViaToolStringForm(t *testing.T) {
+func TestRenderViaToolStringForm(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"X": &mutA2Tool{name: "X", render: func(data any) string { return "R:" + data.(string) }},
 	}
@@ -4251,7 +4246,7 @@ func TestMutA2RenderViaToolStringForm(t *testing.T) {
 	}
 }
 
-func TestMutA2ReadPersistedFile(t *testing.T) {
+func TestConnectorReadPersistedFile(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "out.txt")
 	if err := os.WriteFile(filePath, []byte("FILECONTENT"), 0o644); err != nil {
@@ -4272,7 +4267,7 @@ func TestMutA2ReadPersistedFile(t *testing.T) {
 	}
 }
 
-func TestMutA2ExtractPersistedPreview(t *testing.T) {
+func TestConnectorExtractPersistedPreview(t *testing.T) {
 	// Exactly 5 lines: no ellipsis is appended.
 	five := "Preview (first 5 lines):\nl1\nl2\nl3\nl4\nl5"
 	if got := extractPersistedPreview(five); got != "l1\nl2\nl3\nl4\nl5" {
@@ -4289,7 +4284,7 @@ func TestMutA2ExtractPersistedPreview(t *testing.T) {
 // agentTypeLog / parentIDLog (connector.go:2439-2451)
 // ---------------------------------------------------------------------------
 
-func TestMutA2AgentMetaLogs(t *testing.T) {
+func TestAgentMetaLogs(t *testing.T) {
 	if got := agentTypeLog(nil); got != "" {
 		t.Errorf("agentTypeLog(nil) = %q, want empty", got)
 	}
@@ -4308,14 +4303,14 @@ func TestMutA2AgentMetaLogs(t *testing.T) {
 // buildTaskList (connector.go:2475-2537)
 // ---------------------------------------------------------------------------
 
-func TestMutA2BuildTaskListNilSlot(t *testing.T) {
+func TestBuildTaskListNilSlot(t *testing.T) {
 	c := mutA2BareConnector()
 	if got := c.buildTaskList(nil); got != nil {
 		t.Errorf("buildTaskList(nil) = %.40s, want nil", got)
 	}
 }
 
-func TestMutA2BuildTaskListListError(t *testing.T) {
+func TestBuildTaskListListError(t *testing.T) {
 	c := mutA2BareConnector()
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
@@ -4330,7 +4325,7 @@ func TestMutA2BuildTaskListListError(t *testing.T) {
 	}
 }
 
-func TestMutA2BuildTaskListFilters(t *testing.T) {
+func TestBuildTaskListFilters(t *testing.T) {
 	c := mutA2BareConnector()
 	tl := task.NewList(t.TempDir())
 	if err := tl.Init(); err != nil {
@@ -4429,7 +4424,7 @@ func TestMutA2BuildTaskListFilters(t *testing.T) {
 // buildConfig (connector.go:2560-2585)
 // ---------------------------------------------------------------------------
 
-func TestMutA2BuildConfig(t *testing.T) {
+func TestBuildConfig(t *testing.T) {
 	var provCfg config.Provider
 	raw := `{"name":"zhipu","url":"https://z.example","keys":["k"],"models":{"glm-4.6":{},"glm-4.5":{}}}`
 	if err := json.Unmarshal([]byte(raw), &provCfg); err != nil {
@@ -4503,7 +4498,7 @@ func TestMutA2BuildConfig(t *testing.T) {
 // buildQuota (connector.go:2590-2620)
 // ---------------------------------------------------------------------------
 
-func TestMutA2BuildQuotaNoWS(t *testing.T) {
+func TestBuildQuotaNoWS(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/monitor/usage/quota/limit" {
 			http.NotFound(w, r)
@@ -4701,7 +4696,7 @@ func buildRestoredMsgA3(t *testing.T, c *WUIConnector, item types.QueuedItem) qu
 // thumbCache (lines 291-326)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_ThumbCacheCapEviction(t *testing.T) {
+func TestThumbCacheCapEviction(t *testing.T) {
 	tc := newThumbCache()
 	for i := 0; i < 101; i++ {
 		tc.put(fmt.Sprintf("k%d", i), "v")
@@ -4729,7 +4724,7 @@ func TestMutA3_ThumbCacheCapEviction(t *testing.T) {
 	}
 }
 
-func TestMutA3_ThumbCacheMutexRelease(t *testing.T) {
+func TestThumbCacheMutexRelease(t *testing.T) {
 	tc := newThumbCache()
 	if v, ok := tc.get("a"); ok || v != "" {
 		t.Fatalf("get on empty cache = (%q,%v), want (\"\",false)", v, ok)
@@ -4750,7 +4745,7 @@ func TestMutA3_ThumbCacheMutexRelease(t *testing.T) {
 // outQueue (lines 431-527)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_OutQueueCloseIdempotent(t *testing.T) {
+func TestOutQueueCloseIdempotent(t *testing.T) {
 	q := newOutQueue(2)
 	q.push(wsMsg{data: []byte("x")}, nil)
 	q.close()
@@ -4765,7 +4760,7 @@ func TestMutA3_OutQueueCloseIdempotent(t *testing.T) {
 	}
 }
 
-func TestMutA3_OutQueueMutexRelease(t *testing.T) {
+func TestOutQueueMutexRelease(t *testing.T) {
 	q := newOutQueue(2)
 	q.push(wsMsg{data: []byte("x")}, nil)
 	if !q.mu.TryLock() {
@@ -4798,7 +4793,7 @@ func TestMutA3_OutQueueMutexRelease(t *testing.T) {
 	q.mu.Unlock()
 }
 
-func TestMutA3_OutQueueWarnsOncePerBlockingEpisode(t *testing.T) {
+func TestOutQueueWarnsOncePerBlockingEpisode(t *testing.T) {
 	load, restore := swapWarnHandler(t)
 	defer restore()
 
@@ -4828,7 +4823,7 @@ func TestMutA3_OutQueueWarnsOncePerBlockingEpisode(t *testing.T) {
 // New() constructor (lines 633-651)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_NewConstructorFields(t *testing.T) {
+func TestNewConstructorFields(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	h := hub.NewHub()
 	eng := engine.New(&engine.Params{EngineID: "main"})
@@ -4889,12 +4884,12 @@ func TestMutA3_NewConstructorFields(t *testing.T) {
 // wsWriter (lines 667-713)
 // ---------------------------------------------------------------------------
 
-// TestMutA3_WsWriterEraCheckDropsStaleBatch pins the per-frame era check: a
+// TestWsWriterEraCheckDropsStaleBatch pins the per-frame era check: a
 // batch taken from the old queue must stop writing once the era flips, even
 // mid-batch. The writer is stalled on a huge frame (client never reads), the
 // era is flipped underneath it, then the client drains: only the in-flight
 // big frame may arrive — the queued-behind marker must be dropped.
-func TestMutA3_WsWriterEraCheckDropsStaleBatch(t *testing.T) {
+func TestWsWriterEraCheckDropsStaleBatch(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 
 	connCh := make(chan *websocket.Conn, 1)
@@ -4942,10 +4937,10 @@ func TestMutA3_WsWriterEraCheckDropsStaleBatch(t *testing.T) {
 	close(c.done)
 }
 
-// TestMutA3_WsWriterWriteFailureWarns pins the warn on WS write failure: the
+// TestWsWriterWriteFailureWarns pins the warn on WS write failure: the
 // writer must log when WriteMessage errors (closed conn installed as the
 // active WS).
-func TestMutA3_WsWriterWriteFailureWarns(t *testing.T) {
+func TestWsWriterWriteFailureWarns(t *testing.T) {
 	load, restore := swapWarnHandler(t)
 	defer restore()
 
@@ -4978,7 +4973,7 @@ func TestMutA3_WsWriterWriteFailureWarns(t *testing.T) {
 // activeSlot / registerEngine (lines 741-835)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_ActiveSlotMutexRelease(t *testing.T) {
+func TestActiveSlotMutexRelease(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	if c.activeSlot() == nil {
 		t.Fatal("activeSlot returned nil for main")
@@ -4989,7 +4984,7 @@ func TestMutA3_ActiveSlotMutexRelease(t *testing.T) {
 	c.slotsMu.Unlock()
 }
 
-func TestMutA3_RegisterEngineNilEnginePanics(t *testing.T) {
+func TestRegisterEngineNilEnginePanics(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	panicked, msg := false, ""
 	func() {
@@ -5011,7 +5006,7 @@ func TestMutA3_RegisterEngineNilEnginePanics(t *testing.T) {
 	}
 }
 
-func TestMutA3_RegisterEngineTwiceIgnored(t *testing.T) {
+func TestRegisterEngineTwiceIgnored(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	h := hub.NewHub()
 	eng := engine.New(&engine.Params{EngineID: "e1"})
@@ -5041,7 +5036,7 @@ func TestMutA3_RegisterEngineTwiceIgnored(t *testing.T) {
 	withTimeoutA3(t, "Stop", c.Stop)
 }
 
-func TestMutA3_RegisterEngineNonHubDispatcherSkipped(t *testing.T) {
+func TestRegisterEngineNonHubDispatcherSkipped(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	eng := engine.New(&engine.Params{EngineID: "e2"})
 	eng.SetDispatcher(nonHubDispatcherA3{})
@@ -5059,7 +5054,7 @@ func TestMutA3_RegisterEngineNonHubDispatcherSkipped(t *testing.T) {
 	}
 }
 
-func TestMutA3_ActiveSessionTitle(t *testing.T) {
+func TestActiveSessionTitle(t *testing.T) {
 	var limits []int
 	m := &mockEngine{}
 	m.sessionIDFn = func() string { return "" }
@@ -5097,7 +5092,7 @@ func TestMutA3_ActiveSessionTitle(t *testing.T) {
 	}
 }
 
-func TestMutA3_InFlightPromptExcerpt(t *testing.T) {
+func TestInFlightPromptExcerpt(t *testing.T) {
 	mk := func(start int, msgs ...types.Message) *mockEngine {
 		return &mockEngine{
 			messagesFn:         func() []types.Message { return msgs },
@@ -5129,7 +5124,7 @@ func TestMutA3_InFlightPromptExcerpt(t *testing.T) {
 	}
 }
 
-func TestMutA3_TruncateRunesBoundary(t *testing.T) {
+func TestTruncateRunesBoundary(t *testing.T) {
 	s80 := strings.Repeat("a", 80)
 	if got := truncateRunes(s80, 80); got != s80 {
 		t.Fatalf("exact-length string was modified: %q", got)
@@ -5148,7 +5143,7 @@ func TestMutA3_TruncateRunesBoundary(t *testing.T) {
 // buildQuota / formatQuota (lines 2590-2643)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_FormatQuota(t *testing.T) {
+func TestFormatQuota(t *testing.T) {
 	now := time.Now() // REAL-TIME
 	cases := []struct {
 		name string
@@ -5177,7 +5172,7 @@ func TestMutA3_FormatQuota(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildQuotaSendsResult(t *testing.T) {
+func TestBuildQuotaSendsResult(t *testing.T) {
 	endAt := time.Now().Add(49 * time.Hour).UnixMilli() // REAL-TIME
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/token_plan/remains", func(w http.ResponseWriter, r *http.Request) {
@@ -5224,7 +5219,7 @@ func TestMutA3_BuildQuotaSendsResult(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildQuotaFetchErrorSilent(t *testing.T) {
+func TestBuildQuotaFetchErrorSilent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -5242,7 +5237,7 @@ func TestMutA3_BuildQuotaFetchErrorSilent(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildQuotaMixedProviders(t *testing.T) {
+func TestBuildQuotaMixedProviders(t *testing.T) {
 	endAt := time.Now().Add(49 * time.Hour).UnixMilli() // REAL-TIME
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"base_resp":{"status_code":0},"model_remains":[{"model_name":"general","end_time":%d,"current_interval_remaining_percent":40}]}`, endAt)
@@ -5288,7 +5283,7 @@ func TestMutA3_BuildQuotaMixedProviders(t *testing.T) {
 // (lines 2654-2780)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_SendMetadataComposite(t *testing.T) {
+func TestSendMetadataComposite(t *testing.T) {
 	dir := t.TempDir()
 	m := &mockEngine{projectDir: dir}
 	msgs := make([]types.Message, 31)
@@ -5397,7 +5392,7 @@ func TestMutA3_SendMetadataComposite(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildStats(t *testing.T) {
+func TestBuildStats(t *testing.T) {
 	msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("context prompt tokens")}}}
 	m := &mockEngine{projectDir: t.TempDir()}
 	m.messagesFn = func() []types.Message { return msgs }
@@ -5450,7 +5445,7 @@ func TestMutA3_BuildStats(t *testing.T) {
 	}
 }
 
-func TestMutA3_EngineNameForSlot(t *testing.T) {
+func TestEngineNameForSlot(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	mgr.Add(&engine.EngineViewState{ID: "main", Name: "Mgr-Name"})
 	if err := mgr.SetActive("main"); err != nil {
@@ -5470,7 +5465,7 @@ func TestMutA3_EngineNameForSlot(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildEngineList(t *testing.T) {
+func TestBuildEngineList(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	mgr.Add(&engine.EngineViewState{ID: "main", Name: "Main-Name", Model: "m-1"})
 	mgr.Add(&engine.EngineViewState{ID: "aux", Name: "Aux-Name", Model: "m-2"})
@@ -5530,7 +5525,7 @@ func TestMutA3_BuildEngineList(t *testing.T) {
 // the next line with or without the guard, so no serial test can observe
 // the branch.
 
-func TestMutA3_HandleSessionSwitchPersist(t *testing.T) {
+func TestHandleSessionSwitchPersist(t *testing.T) {
 	dir := t.TempDir()
 	m := &mockEngine{projectDir: dir}
 	c, _ := bareConnectorA3(t, m)
@@ -5567,7 +5562,7 @@ func TestMutA3_HandleSessionSwitchPersist(t *testing.T) {
 	}
 }
 
-func TestMutA3_HandleSessionNew(t *testing.T) {
+func TestHandleSessionNew(t *testing.T) {
 	// No active engine: quiet return, not a nil-deref panic.
 	cNoEng, _ := bareConnectorA3(t, nil)
 	ghost := "ghost"
@@ -5643,7 +5638,7 @@ func modelSwitchFixtureA3() (map[string]llm.Provider, map[string]*config.Provide
 		map[string]*config.Provider{"zhipu": cfg}
 }
 
-func TestMutA3_HandleModelSwitch(t *testing.T) {
+func TestHandleModelSwitch(t *testing.T) {
 	providers, configs := modelSwitchFixtureA3()
 
 	// Provider missing from configs: error frame, engine untouched.
@@ -5768,7 +5763,7 @@ func TestMutA3_HandleModelSwitch(t *testing.T) {
 // handleThinkingSwitch (lines 2946-2974)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_HandleThinkingSwitch(t *testing.T) {
+func TestHandleThinkingSwitch(t *testing.T) {
 	// No active engine: quiet return, not a nil-deref panic.
 	cNoEng, _ := bareConnectorA3(t, nil)
 	ghost := "ghost"
@@ -5841,7 +5836,7 @@ func TestMutA3_HandleThinkingSwitch(t *testing.T) {
 // rememberUpload / takeRewindStash (lines 3134-3294)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_RememberUploadMutexRelease(t *testing.T) {
+func TestRememberUploadMutexRelease(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	c.rememberUpload("id1", savedAttachment{path: "p", mime: "m", kind: "image"})
 	if !c.restoreMu.TryLock() {
@@ -5854,7 +5849,7 @@ func TestMutA3_RememberUploadMutexRelease(t *testing.T) {
 	}
 }
 
-func TestMutA3_TakeRewindStash(t *testing.T) {
+func TestTakeRewindStash(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	if got := c.takeRewindStash("main"); got != nil {
 		t.Fatalf("nil stash: got %#v, want nil (and no panic)", got)
@@ -5902,7 +5897,7 @@ func TestMutA3_TakeRewindStash(t *testing.T) {
 // buildRestoredMsg (lines 3174-3242)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_BuildRestoredMsgTextAndDocs(t *testing.T) {
+func TestBuildRestoredMsgTextAndDocs(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 
 	msg := buildRestoredMsgA3(t, c, types.QueuedItem{UUID: "u1", Value: "v", Content: []types.ContentBlock{types.NewTextBlock("c")}})
@@ -5996,7 +5991,7 @@ func TestMutA3_BuildRestoredMsgTextAndDocs(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildRestoredMsgBase64Images(t *testing.T) {
+func TestBuildRestoredMsgBase64Images(t *testing.T) {
 	store, err := media.NewAt(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -6059,7 +6054,7 @@ func TestMutA3_BuildRestoredMsgBase64Images(t *testing.T) {
 	}
 }
 
-func TestMutA3_BuildRestoredMsgCacheSaveFailure(t *testing.T) {
+func TestBuildRestoredMsgCacheSaveFailure(t *testing.T) {
 	root := t.TempDir()
 	store, err := media.NewAt(root)
 	if err != nil {
@@ -6093,7 +6088,7 @@ func TestMutA3_BuildRestoredMsgCacheSaveFailure(t *testing.T) {
 // buildQueuedMsgs (lines 3251-3280)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_BuildQueuedMsgs(t *testing.T) {
+func TestBuildQueuedMsgs(t *testing.T) {
 	items := []types.QueuedItem{
 		{Mode: types.ItemModePrompt, UUID: "a", Value: "v", Content: []types.ContentBlock{types.NewTextBlock("x")}},
 		{Mode: types.ItemModeJob, UUID: "b", Value: "job"},
@@ -6124,7 +6119,7 @@ func TestMutA3_BuildQueuedMsgs(t *testing.T) {
 // lastPromptAttachmentBlocks / handleRestoreAttachments (lines 3301-3350)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_LastPromptAttachmentBlocks(t *testing.T) {
+func TestLastPromptAttachmentBlocks(t *testing.T) {
 	img := func(tag string) types.ContentBlock {
 		return types.ContentBlock{Type: types.ContentTypeImage, Source: &types.ImageSource{MediaType: "image/png", Data: tag}}
 	}
@@ -6156,7 +6151,7 @@ func TestMutA3_LastPromptAttachmentBlocks(t *testing.T) {
 	}
 }
 
-func TestMutA3_HandleRestoreAttachments(t *testing.T) {
+func TestHandleRestoreAttachments(t *testing.T) {
 	// No active slot: empty restore_result, no panic.
 	c, _ := bareConnectorA3(t, nil)
 	ghost := "ghost"
@@ -6204,7 +6199,7 @@ func TestMutA3_HandleRestoreAttachments(t *testing.T) {
 // switchEngine (lines 3359-3393)
 // ---------------------------------------------------------------------------
 
-func TestMutA3_SwitchEngineUnknown(t *testing.T) {
+func TestSwitchEngineUnknown(t *testing.T) {
 	c, _ := bareConnectorA3(t, nil)
 	c.switchEngine("nope")
 	frames := takeAllFramesA3(c)
@@ -6226,7 +6221,7 @@ func TestMutA3_SwitchEngineUnknown(t *testing.T) {
 	}
 }
 
-func TestMutA3_SwitchEngineManagerSync(t *testing.T) {
+func TestSwitchEngineManagerSync(t *testing.T) {
 	// SetActive fails (engine missing from the manager): warn once, no
 	// PersistMeta run.
 	c, _ := bareConnectorA3(t, nil)

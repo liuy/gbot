@@ -712,7 +712,7 @@ func mbLine(lines []map[string]any, typ string) map[string]any {
 // games.go
 // ---------------------------------------------------------------------------
 
-func TestMutB_GamesBodyLimit(t *testing.T) {
+func TestGamesBodyLimit(t *testing.T) {
 	bodyOf := func(pad int) string {
 		return `{"prompt":"你是黑方棋手","state":"` + strings.Repeat("a", pad) + `\nlegal-moves:\n马8进7"}`
 	}
@@ -741,7 +741,7 @@ func TestMutB_GamesBodyLimit(t *testing.T) {
 	}
 }
 
-func TestMutB_GamesLogTrail(t *testing.T) {
+func TestGamesLogTrail(t *testing.T) {
 	run := func(name string, fn func(t *testing.T, find func(string) []map[string]any)) {
 		t.Run(name, func(t *testing.T) {
 			find := mbCaptureLogs(t)
@@ -940,7 +940,7 @@ func TestMutB_GamesLogTrail(t *testing.T) {
 	})
 }
 
-func TestMutB_GamesStreamExactLines(t *testing.T) {
+func TestGamesStreamExactLines(t *testing.T) {
 	t.Run("resign", func(t *testing.T) {
 		sp := &stubProvider{script: []stubScript{{text: "认输\n这局你赢了，学到了。"}}}
 		status, _, body := postObserve(t, observeStubFn(sp, "m1", true), "chess", observeBody(t, "p", observeTestState))
@@ -1039,7 +1039,7 @@ func TestMutB_GamesStreamExactLines(t *testing.T) {
 	})
 }
 
-func TestMutB_GamesProviderGuard(t *testing.T) {
+func TestGamesProviderGuard(t *testing.T) {
 	t.Run("nil provider with ok", func(t *testing.T) {
 		status, _, body := postObserve(t, observeStubFn(nil, "m1", true), "chess", observeBody(t, "p", observeTestState))
 		if status != http.StatusServiceUnavailable {
@@ -1055,7 +1055,7 @@ func TestMutB_GamesProviderGuard(t *testing.T) {
 	})
 }
 
-func TestMutB_GamesContextPropagation(t *testing.T) {
+func TestGamesContextPropagation(t *testing.T) {
 	p := &mbEventProvider{script: []mbEventScript{
 		{events: []llm.StreamEvent{mbTextEv("错一\n")}},
 		{events: []llm.StreamEvent{mbTextEv("车9平8\n")}},
@@ -1082,7 +1082,7 @@ func TestMutB_GamesContextPropagation(t *testing.T) {
 	}
 }
 
-func TestMutB_GamesStreamEventFolding(t *testing.T) {
+func TestGamesStreamEventFolding(t *testing.T) {
 	t.Run("stream error event", func(t *testing.T) {
 		p := &mbEventProvider{script: []mbEventScript{{events: []llm.StreamEvent{
 			{Error: &llm.APIError{Type: "overloaded_error", Message: "dead"}},
@@ -1127,7 +1127,7 @@ func TestMutB_GamesStreamEventFolding(t *testing.T) {
 	})
 }
 
-func TestMutB_ObserveEvalDigest(t *testing.T) {
+func TestObserveEvalDigest(t *testing.T) {
 	t.Run("every digest prefix kept", func(t *testing.T) {
 		state := "对局\n受威胁 中卒\n- 攻\n步法评估 高\n局面要素 好\n要点情报 多\n你当前的计划 出车\nlegal-moves:\nmv"
 		want := "受威胁 中卒 | - 攻 | 步法评估 高 | 局面要素 好 | 要点情报 多 | 你当前的计划 出车"
@@ -1180,7 +1180,7 @@ func mbTextResp(texts ...string) *llm.Response {
 	return &llm.Response{Content: blocks}
 }
 
-func TestMutB_SplitCandidateNote(t *testing.T) {
+func TestSplitCandidateNote(t *testing.T) {
 	t.Run("first non-empty text block wins", func(t *testing.T) {
 		resp := &llm.Response{Content: []types.ContentBlock{
 			types.NewTextBlock(""),
@@ -1248,7 +1248,7 @@ func TestMutB_SplitCandidateNote(t *testing.T) {
 	})
 }
 
-func TestMutB_ParseLegalMovesStartSentinel(t *testing.T) {
+func TestParseLegalMovesStartSentinel(t *testing.T) {
 	_, err := parseLegalMoves("马8进7\n车9平8")
 	if err == nil {
 		mbFatalf(t, "parseLegalMoves without a marker must fail")
@@ -1258,7 +1258,7 @@ func TestMutB_ParseLegalMovesStartSentinel(t *testing.T) {
 	}
 }
 
-func TestMutB_UsageField(t *testing.T) {
+func TestUsageField(t *testing.T) {
 	if got := usageField(nil, func(u *types.Usage) int { return u.OutputTokens }); got != -1 {
 		mbFatalf(t, "usageField(nil) = %d, want -1", got)
 	}

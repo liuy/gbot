@@ -1019,8 +1019,10 @@ func mutCBarrier(t *testing.T, ws *websocket.Conn, banned ...string) []string {
 	t.Helper()
 	writeWSText(t, ws, map[string]any{"type": "session_list_request"})
 	var saw []string
-	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
-	for time.Now().Before(deadline) {           // REAL-TIME
+	// 15s, matching readUntilType: the barrier waits on the server read
+	// loop under full-suite parallel load, it does not measure anything.
+	deadline := time.Now().Add(15 * time.Second) // REAL-TIME
+	for time.Now().Before(deadline) {            // REAL-TIME
 		data := readWSMessage(t, ws)
 		var head struct {
 			Type string `json:"type"`
@@ -1080,7 +1082,7 @@ func mutCPNG(t *testing.T) []byte {
 // server.go — WS endpoint
 // ---------------------------------------------------------------------------
 
-func TestMutC_WSUpgradeAllowsCrossOrigin(t *testing.T) {
+func TestWSUpgradeAllowsCrossOrigin(t *testing.T) {
 	c := newTestConnector(t)
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -1103,10 +1105,10 @@ func TestMutC_WSUpgradeAllowsCrossOrigin(t *testing.T) {
 	drainInitialFrames(t, ws)
 }
 
-// TestMutC_TakeoverCloseFrame pins the takeover close frame: the old client
+// TestTakeoverCloseFrame pins the takeover close frame: the old client
 // receives code 1000 + reason "taken_over" (the React onclose handler
 // matches both to suppress auto-reconnect).
-func TestMutC_TakeoverCloseFrame(t *testing.T) {
+func TestTakeoverCloseFrame(t *testing.T) {
 	c := newTestConnector(t)
 	ws1 := mutCDialChat(t, c)
 	drainInitialFrames(t, ws1)
@@ -1133,13 +1135,13 @@ func TestMutC_TakeoverCloseFrame(t *testing.T) {
 	}
 }
 
-// TestMutC_WSFrameCompressed asserts the negotiated permessage-deflate
+// TestWSFrameCompressed asserts the negotiated permessage-deflate
 // stream actually compresses (compression level >= 1). Level 0 stores bytes
 // and inflates the frame past the decompressed size, which this catches.
 // The compression-level incrementer (1 -> 2) is not tested on purpose:
 // level 1 vs 2 output sizes are not a stable ratio across stdlib versions,
 // so any bound is brittle across stdlib versions, exempted.
-func TestMutC_WSFrameCompressed(t *testing.T) {
+func TestWSFrameCompressed(t *testing.T) {
 	c := newTestConnector(t)
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -1219,10 +1221,10 @@ func TestMutC_WSFrameCompressed(t *testing.T) {
 	}
 }
 
-// TestMutC_ReadLimitBoundary pins the read limit at exactly
+// TestReadLimitBoundary pins the read limit at exactly
 // maxAttachmentSize+64KiB: a frame at the limit is accepted, and one past it
 // kills the read loop.
-func TestMutC_ReadLimitBoundary(t *testing.T) {
+func TestReadLimitBoundary(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1238,7 +1240,11 @@ func TestMutC_ReadLimitBoundary(t *testing.T) {
 	// so the frame is delivered and answered with the no-active-upload
 	// error. The 0x00 attachment prefix is part of the wire frame, so the
 	// payload is one byte shorter to keep the boundary property.
-	if err := ws.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil { // REAL-TIME
+	// 60s is infrastructure patience (1MB under full-suite parallel load),
+	// not a timing assertion; refreshed before every write because one
+	// deadline spanning the response wait + barrier round trips went stale
+	// past 30s and killed the second write with i/o timeout (flaky 10-29).
+	if err := ws.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil { // REAL-TIME
 		t.Fatal(err)
 	}
 	if err := ws.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, buf[:limit-1]...)); err != nil {
@@ -1259,6 +1265,9 @@ func TestMutC_ReadLimitBoundary(t *testing.T) {
 
 	// One KiB past the limit: the read fails and the loop exits, so nothing
 	// answers afterwards.
+	if err := ws.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil { // REAL-TIME
+		t.Fatal(err)
+	}
 	if err := ws.WriteMessage(websocket.BinaryMessage, buf); err != nil {
 		t.Fatal(err)
 	}
@@ -1270,9 +1279,9 @@ func TestMutC_ReadLimitBoundary(t *testing.T) {
 	}
 }
 
-// TestMutC_ReadLimitPlus64Rejected probes one KiB granularity below the
+// TestReadLimitPlus64Rejected probes one KiB granularity below the
 // +1024 frame: a limit raised by only 64 bytes must still reject it.
-func TestMutC_ReadLimitPlus64Rejected(t *testing.T) {
+func TestReadLimitPlus64Rejected(t *testing.T) {
 	c := newTestConnector(t)
 	ws := mutCDialChat(t, c)
 	drainInitialFrames(t, ws)
@@ -1282,7 +1291,9 @@ func TestMutC_ReadLimitPlus64Rejected(t *testing.T) {
 	for i := range buf {
 		buf[i] = byte('A' + i%26)
 	}
-	if err := ws.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil { // REAL-TIME
+	// 60s: 1MB write under full-suite parallel load — infrastructure
+	// patience, not a timing assertion (see TestReadLimitBoundary).
+	if err := ws.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil { // REAL-TIME
 		t.Fatal(err)
 	}
 	if err := ws.WriteMessage(websocket.BinaryMessage, buf); err != nil {
@@ -1295,7 +1306,7 @@ func TestMutC_ReadLimitPlus64Rejected(t *testing.T) {
 	}
 }
 
-func TestMutC_ReadLoopInvalidJSONIgnored(t *testing.T) {
+func TestReadLoopInvalidJSONIgnored(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1308,7 +1319,7 @@ func TestMutC_ReadLoopInvalidJSONIgnored(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestMutC_BinaryWithoutUploadErrors(t *testing.T) {
+func TestBinaryWithoutUploadErrors(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1330,7 +1341,7 @@ func TestMutC_BinaryWithoutUploadErrors(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestMutC_CommitDuringUploadRejectedAndAlive(t *testing.T) {
+func TestCommitDuringUploadRejectedAndAlive(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mutCEnableSessions(c)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
@@ -1361,7 +1372,7 @@ func TestMutC_CommitDuringUploadRejectedAndAlive(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestMutC_CommitMissingIDRejectedAndAlive(t *testing.T) {
+func TestCommitMissingIDRejectedAndAlive(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mutCEnableSessions(c)
 	ws := dialChatWS(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/chat")
@@ -1384,7 +1395,7 @@ func TestMutC_CommitMissingIDRejectedAndAlive(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestMutC_AttachmentCommitDispatches(t *testing.T) {
+func TestAttachmentCommitDispatches(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -1458,7 +1469,7 @@ func TestMutC_AttachmentCommitDispatches(t *testing.T) {
 	mutCBarrier(t, ws)
 }
 
-func TestMutC_StopCallsAbort(t *testing.T) {
+func TestStopCallsAbort(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1477,7 +1488,7 @@ func TestMutC_StopCallsAbort(t *testing.T) {
 	}
 }
 
-func TestMutC_CancelQueuedMalformedSkipped(t *testing.T) {
+func TestCancelQueuedMalformedSkipped(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -1523,11 +1534,11 @@ func TestMutC_CancelQueuedMalformedSkipped(t *testing.T) {
 	}
 }
 
-// TestMutC_CancelEpochViaFrameBumps drives the mid-parse cancel through the
+// TestCancelEpochViaFrameBumps drives the mid-parse cancel through the
 // real cancel_queued frame: the epoch bump there must make the in-flight
 // assemble goroutine restore instead of enqueue. The message carries a
 // document so the restore must also re-stage the attachment chip.
-func TestMutC_CancelEpochViaFrameBumps(t *testing.T) {
+func TestCancelEpochViaFrameBumps(t *testing.T) {
 	c, srv := setupAttachmentServer(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -1585,11 +1596,11 @@ func TestMutC_CancelEpochViaFrameBumps(t *testing.T) {
 	}
 }
 
-// TestMutC_CancelQueuedSelective pins the cancel filters with two rounds:
+// TestCancelQueuedSelective pins the cancel filters with two rounds:
 // (a) cancelling [job, meta, wanted] must remove only the wanted prompt —
 // the mode/meta filter must reject the wanted-but-wrong-kind ids; (b) a
 // single-uuid cancel must still filter, not pop everything.
-func TestMutC_CancelQueuedSelective(t *testing.T) {
+func TestCancelQueuedSelective(t *testing.T) {
 	pending := func() []types.QueuedItem {
 		return []types.QueuedItem{
 			{UUID: "u-job", Value: "job", Mode: types.ItemModeJob},
@@ -1638,7 +1649,7 @@ func TestMutC_CancelQueuedSelective(t *testing.T) {
 	}
 }
 
-func TestMutC_SessionSwitchGuards(t *testing.T) {
+func TestSessionSwitchGuards(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1658,7 +1669,7 @@ func TestMutC_SessionSwitchGuards(t *testing.T) {
 	}
 }
 
-func TestMutC_EngineSwitchGuards(t *testing.T) {
+func TestEngineSwitchGuards(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1671,7 +1682,7 @@ func TestMutC_EngineSwitchGuards(t *testing.T) {
 	mutCBarrier(t, ws, "error")
 }
 
-func TestMutC_EngineNewGuards(t *testing.T) {
+func TestEngineNewGuards(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1696,7 +1707,7 @@ func TestMutC_EngineNewGuards(t *testing.T) {
 	mutCBarrier(t, ws, "error")
 }
 
-func TestMutC_ContextRequestFrame(t *testing.T) {
+func TestContextRequestFrame(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	ws := mutCDialChat(t, c)
@@ -1715,9 +1726,9 @@ func TestMutC_ContextRequestFrame(t *testing.T) {
 	}
 }
 
-// TestMutC_CompactRequestDoesNotBlockReadLoop pins that compact handling is
+// TestCompactRequestDoesNotBlockReadLoop pins that compact handling is
 // asynchronous: a slow ManualCompact must not stall subsequent frames.
-func TestMutC_CompactRequestDoesNotBlockReadLoop(t *testing.T) {
+func TestCompactRequestDoesNotBlockReadLoop(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -1763,9 +1774,9 @@ func mutCZhipuConfig(url string) map[string]*config.Provider {
 	}
 }
 
-// TestMutC_QuotaRequestFrame pins the quota_request frame branch: the read
+// TestQuotaRequestFrame pins the quota_request frame branch: the read
 // loop must answer it with a quota_result frame carrying the fetched entry.
-func TestMutC_QuotaRequestFrame(t *testing.T) {
+func TestQuotaRequestFrame(t *testing.T) {
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":200,"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":40,"nextResetTime":4102444800000}]},"msg":""}`))
 	})
@@ -1799,9 +1810,9 @@ func TestMutC_QuotaRequestFrame(t *testing.T) {
 	}
 }
 
-// TestMutC_QuotaRequestDoesNotBlockReadLoop pins that quota fetching is
+// TestQuotaRequestDoesNotBlockReadLoop pins that quota fetching is
 // asynchronous: a slow upstream quota response must not stall the read loop.
-func TestMutC_QuotaRequestDoesNotBlockReadLoop(t *testing.T) {
+func TestQuotaRequestDoesNotBlockReadLoop(t *testing.T) {
 	blockQuota := make(chan struct{})
 	up, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		<-blockQuota
@@ -1832,7 +1843,7 @@ func TestMutC_QuotaRequestDoesNotBlockReadLoop(t *testing.T) {
 	close(blockQuota)
 }
 
-func TestMutC_NilEngineSlotNoPanic(t *testing.T) {
+func TestNilEngineSlotNoPanic(t *testing.T) {
 	c := &WUIConnector{
 		slots:  make(map[string]*engineSlot),
 		done:   make(chan struct{}),
@@ -1858,9 +1869,9 @@ func TestMutC_NilEngineSlotNoPanic(t *testing.T) {
 	noSlots.handleMessageInbound("hello", nil)
 }
 
-// TestMutC_CancelQueuedWithoutSlotsSurvives pins the cancel-path nil guard:
+// TestCancelQueuedWithoutSlotsSurvives pins the cancel-path nil guard:
 // a connector with no slots at all answers cancel_queued normally.
-func TestMutC_CancelQueuedWithoutSlotsSurvives(t *testing.T) {
+func TestCancelQueuedWithoutSlotsSurvives(t *testing.T) {
 	c := &WUIConnector{
 		slots:       make(map[string]*engineSlot),
 		pendingAsks: make(map[string]*types.AskEvent),
@@ -1887,7 +1898,7 @@ func TestMutC_CancelQueuedWithoutSlotsSurvives(t *testing.T) {
 	}
 }
 
-func TestMutC_HandleStopLogsAndAbort(t *testing.T) {
+func TestHandleStopLogsAndAbort(t *testing.T) {
 	t.Run("active engine", func(t *testing.T) {
 		c := newTestConnector(t)
 		mock := c.mock()
@@ -1927,7 +1938,7 @@ func TestMutC_HandleStopLogsAndAbort(t *testing.T) {
 	})
 }
 
-func TestMutC_DisconnectLogs(t *testing.T) {
+func TestDisconnectLogs(t *testing.T) {
 	c := newTestConnector(t)
 	rec := mutCCaptureSlog(t)
 	ws := mutCDialChat(t, c)
@@ -1943,7 +1954,7 @@ func TestMutC_DisconnectLogs(t *testing.T) {
 	}
 }
 
-func TestMutC_CleanupConnClearsActiveWS(t *testing.T) {
+func TestCleanupConnClearsActiveWS(t *testing.T) {
 	c := newTestConnector(t)
 	fake := &websocket.Conn{}
 	c.activeWS.Store(fake)
@@ -1955,7 +1966,7 @@ func TestMutC_CleanupConnClearsActiveWS(t *testing.T) {
 	}
 }
 
-func TestMutC_AbortAsksClearsMapDeliversAndLogs(t *testing.T) {
+func TestAbortAsksClearsMapDeliversAndLogs(t *testing.T) {
 	c := newTestConnector(t)
 	deliverable := make(chan types.AskResponse, 1)
 	stuck := make(chan types.AskResponse) // unbuffered, nobody reading
@@ -1981,7 +1992,7 @@ func TestMutC_AbortAsksClearsMapDeliversAndLogs(t *testing.T) {
 	}
 }
 
-func TestMutC_AskResponseNonblockingWhenFull(t *testing.T) {
+func TestAskResponseNonblockingWhenFull(t *testing.T) {
 	c := newTestConnector(t)
 	full := make(chan types.AskResponse, 1)
 	full <- types.AskResponse{Text: "occupied"}
@@ -1998,9 +2009,9 @@ func TestMutC_AskResponseNonblockingWhenFull(t *testing.T) {
 	}
 }
 
-// TestMutC_AssembleRunsAfterReadLoop pins that block assembly runs on its
+// TestAssembleRunsAfterReadLoop pins that block assembly runs on its
 // own goroutine: a slow parse must not stop the loop from draining frames.
-func TestMutC_AssembleRunsAfterReadLoop(t *testing.T) {
+func TestAssembleRunsAfterReadLoop(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -2030,7 +2041,7 @@ func TestMutC_AssembleRunsAfterReadLoop(t *testing.T) {
 	close(release)
 }
 
-func TestMutC_EmptyMessageNoErrorFrame(t *testing.T) {
+func TestEmptyMessageNoErrorFrame(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -2088,9 +2099,9 @@ func TestMutC_EmptyMessageNoErrorFrame(t *testing.T) {
 	}
 }
 
-// TestMutC_BusyEnqueueItemFields pins the queued item's wire contract:
+// TestBusyEnqueueItemFields pins the queued item's wire contract:
 // every field the client depends on must survive the enqueue.
-func TestMutC_BusyEnqueueItemFields(t *testing.T) {
+func TestBusyEnqueueItemFields(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -2138,11 +2149,11 @@ func TestMutC_BusyEnqueueItemFields(t *testing.T) {
 	}
 }
 
-// TestMutC_QuerySourceTaggedWUI pins that dispatched queries carry the "wui"
+// TestQuerySourceTaggedWUI pins that dispatched queries carry the "wui"
 // source tag. WUI no longer registers a FileSender (file delivery goes through
 // artifacts), so the tag is kept for parity with other connectors and for any
 // future source-keyed routing.
-func TestMutC_QuerySourceTaggedWUI(t *testing.T) {
+func TestQuerySourceTaggedWUI(t *testing.T) {
 	c := newTestConnector(t)
 	mutCEnableSessions(c)
 	mock := c.mock()
@@ -2207,9 +2218,9 @@ func TestMutC_QuerySourceTaggedWUI(t *testing.T) {
 // server.go — assembleContentBlocks
 // ---------------------------------------------------------------------------
 
-// TestMutC_MediaCacheNilSkipsAttachments pins that a connector without a
+// TestMediaCacheNilSkipsAttachments pins that a connector without a
 // media store skips attachment content entirely instead of touching the fs.
-func TestMutC_MediaCacheNilSkipsAttachments(t *testing.T) {
+func TestMediaCacheNilSkipsAttachments(t *testing.T) {
 	c := newTestConnector(t) // mediaCache deliberately nil
 	rec := mutCCaptureSlog(t)
 	pngPath := filepath.Join(t.TempDir(), "dot.png")
@@ -2227,7 +2238,7 @@ func TestMutC_MediaCacheNilSkipsAttachments(t *testing.T) {
 	}
 }
 
-func TestMutC_MultiContentAllProcessed(t *testing.T) {
+func TestMultiContentAllProcessed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c, _ := setupAttachmentServer(t)
 	d1 := filepath.Join(t.TempDir(), "d1.txt")
@@ -2250,10 +2261,10 @@ func TestMutC_MultiContentAllProcessed(t *testing.T) {
 	}
 }
 
-// TestMutC_ImageFailuresSkipOnlyTheItem pins that a failed image item does
+// TestImageFailuresSkipOnlyTheItem pins that a failed image item does
 // not abort the remaining content: the open-failure and sniff-failure paths
 // skip exactly that item.
-func TestMutC_ImageFailuresSkipOnlyTheItem(t *testing.T) {
+func TestImageFailuresSkipOnlyTheItem(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c, _ := setupAttachmentServer(t)
 	rec := mutCCaptureSlog(t)
@@ -2289,9 +2300,9 @@ func TestMutC_ImageFailuresSkipOnlyTheItem(t *testing.T) {
 	}
 }
 
-// TestMutC_ImageDecodeFailureWarns pins the else-branch trace when the
+// TestImageDecodeFailureWarns pins the else-branch trace when the
 // bytes sniff as an image but cannot be decoded.
-func TestMutC_ImageDecodeFailureWarns(t *testing.T) {
+func TestImageDecodeFailureWarns(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c, _ := setupAttachmentServer(t)
 	rec := mutCCaptureSlog(t)
@@ -2311,7 +2322,7 @@ func TestMutC_ImageDecodeFailureWarns(t *testing.T) {
 	}
 }
 
-func TestMutC_UnknownContentTypeWarns(t *testing.T) {
+func TestUnknownContentTypeWarns(t *testing.T) {
 	// The media-cache guard runs before the type switch, so this needs a
 	// connector with a store attached to reach the default case.
 	c, _ := setupAttachmentServer(t)
@@ -2328,9 +2339,9 @@ func TestMutC_UnknownContentTypeWarns(t *testing.T) {
 	}
 }
 
-// TestMutC_DocumentEstTokensZeroOnParseFail pins the est default when the
+// TestDocumentEstTokensZeroOnParseFail pins the est default when the
 // document cannot be parsed (the success path computes a real estimate).
-func TestMutC_DocumentEstTokensZeroOnParseFail(t *testing.T) {
+func TestDocumentEstTokensZeroOnParseFail(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c, _ := setupAttachmentServer(t)
 	// A nonexistent path fails the parse deterministically (the block is a
@@ -2346,10 +2357,10 @@ func TestMutC_DocumentEstTokensZeroOnParseFail(t *testing.T) {
 	}
 }
 
-// TestMutC_CommitClearsRewindStash pins that a new commit retires any
+// TestCommitClearsRewindStash pins that a new commit retires any
 // pending auto-rewind stash: later restores must not resurrect the aborted
 // prompt's attachments.
-func TestMutC_CommitClearsRewindStash(t *testing.T) {
+func TestCommitClearsRewindStash(t *testing.T) {
 	c := newTestConnector(t)
 	docBlock := types.NewDocumentBlock("old.pdf", "/cache/old.pdf", "application/pdf", 10, 0)
 	c.restoreMu.Lock()

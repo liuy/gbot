@@ -570,7 +570,7 @@ func busyMockA3(id string, busy bool, jobs []*job.JobInfo) *mockEngine {
 	}
 }
 
-func TestMutA3_BusyReportQueryItems(t *testing.T) {
+func TestBusyReportQueryItems(t *testing.T) {
 	c := &WUIConnector{pendingAsks: map[string]*types.AskEvent{}}
 	c.slots = map[string]*engineSlot{
 		"sys":  {engineID: "sys", engine: busyMockA3("sys", true, nil), name: "sys-name", system: true, taskToolIDs: map[string]bool{}},
@@ -591,7 +591,7 @@ func TestMutA3_BusyReportQueryItems(t *testing.T) {
 	}
 }
 
-func TestMutA3_BusyReportJobItems(t *testing.T) {
+func TestBusyReportJobItems(t *testing.T) {
 	c := &WUIConnector{pendingAsks: map[string]*types.AskEvent{}}
 	c.slots = map[string]*engineSlot{
 		"jobs": {engineID: "jobs", engine: busyMockA3("jobs", false, []*job.JobInfo{
@@ -619,7 +619,7 @@ func TestMutA3_BusyReportJobItems(t *testing.T) {
 
 // Kills admin.go:56 (concurrency/goroutine-remove): a synchronous upgrade
 // call would block RequestRestart for the upgrade's full duration.
-func TestMutD_RequestRestart_UpgradeMustNotBlockCaller(t *testing.T) {
+func TestRequestRestart_UpgradeMustNotBlockCaller(t *testing.T) {
 	upgradeReturned := make(chan struct{})
 	start := time.Now() // REAL-TIME
 	outcome, _ := RequestRestart(
@@ -639,7 +639,7 @@ func TestMutD_RequestRestart_UpgradeMustNotBlockCaller(t *testing.T) {
 // Kills admin.go:57 (expression/error-guard), admin.go:57 (conditional/negated,
 // together with the success-path test below), admin.go:58 (branch/if) and
 // admin.go:58 (statement/remove): a failed upgrade must produce the warn.
-func TestMutD_RequestRestart_UpgradeFailureWarns(t *testing.T) {
+func TestRequestRestart_UpgradeFailureWarns(t *testing.T) {
 	rec := mutDCaptureSlog(t)
 	outcome, _ := RequestRestart(
 		func() BusyReport { return BusyReport{} },
@@ -652,7 +652,7 @@ func TestMutD_RequestRestart_UpgradeFailureWarns(t *testing.T) {
 }
 
 // Kills the conditional/negated flavor of admin.go:57 (err == nil would log).
-func TestMutD_RequestRestart_UpgradeSuccessSilent(t *testing.T) {
+func TestRequestRestart_UpgradeSuccessSilent(t *testing.T) {
 	rec := mutDCaptureSlog(t)
 	upgradeDone := make(chan struct{})
 	outcome, _ := RequestRestart(
@@ -668,7 +668,7 @@ func TestMutD_RequestRestart_UpgradeSuccessSilent(t *testing.T) {
 
 // Kills admin.go:54 (statement/return): the unsupported outcome must still
 // hand the caller the busy report (409/501 bodies reuse it).
-func TestMutD_RequestRestart_UnsupportedCarriesReport(t *testing.T) {
+func TestRequestRestart_UnsupportedCarriesReport(t *testing.T) {
 	outcome, report := RequestRestart(
 		func() BusyReport {
 			return BusyReport{Busy: false, Items: []BusyItem{{Kind: "job", EngineID: "main", Detail: "make test"}}}
@@ -691,7 +691,7 @@ func TestMutD_RequestRestart_UnsupportedCarriesReport(t *testing.T) {
 
 // Kills admin.go:61 (statement/return, both entries): the started outcome must
 // return the probe's report, not a zero BusyReport.
-func TestMutD_RequestRestart_StartedCarriesReport(t *testing.T) {
+func TestRequestRestart_StartedCarriesReport(t *testing.T) {
 	outcome, report := RequestRestart(
 		func() BusyReport {
 			return BusyReport{Busy: false, Items: []BusyItem{{Kind: "query", EngineID: "main", Detail: "scan"}}}
@@ -711,7 +711,7 @@ func TestMutD_RequestRestart_StartedCarriesReport(t *testing.T) {
 
 // Kills admin.go:113 (statement/remove: Cache-Control header) and
 // admin.go:115 (composite/field-clear: embedded BusyReport zeroed).
-func TestMutD_AdminGET_NoStoreHeaderAndBusyState(t *testing.T) {
+func TestAdminGET_NoStoreHeaderAndBusyState(t *testing.T) {
 	srv := newAdminTestServerDeps(t, newTestConnector(t), AdminDeps{
 		Probe: func() BusyReport {
 			return BusyReport{Busy: true, Items: []BusyItem{{Kind: "query", EngineID: "main", Detail: "scanning files"}}}
@@ -742,7 +742,7 @@ func TestMutD_AdminGET_NoStoreHeaderAndBusyState(t *testing.T) {
 
 // Kills admin.go:125 (composite/field-clear: 501 error field) and
 // admin.go:134 (composite/field-clear: stepped_down status field).
-func TestMutD_AdminStepdown_Bodies(t *testing.T) {
+func TestAdminStepdown_Bodies(t *testing.T) {
 	c := newTestConnector(t)
 
 	nilSrv := newAdminTestServerDeps(t, c, AdminDeps{Probe: c.BusyReport})
@@ -789,7 +789,7 @@ func TestMutD_AdminStepdown_Bodies(t *testing.T) {
 
 // Kills admin.go:144 (branch/if) and admin.go:144 (statement/remove): an empty
 // UnsupportedMessage must fall back to the platform sentence.
-func TestMutD_AdminRestartPOST_UnsupportedDefaultMessage(t *testing.T) {
+func TestAdminRestartPOST_UnsupportedDefaultMessage(t *testing.T) {
 	srv := newAdminTestServerDeps(t, newTestConnector(t), AdminDeps{Probe: newTestConnector(t).BusyReport})
 	resp, err := http.Post(srv.URL+"/api/admin/restart", "application/json", nil)
 	if err != nil {

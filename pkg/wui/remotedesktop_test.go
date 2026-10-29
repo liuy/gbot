@@ -591,7 +591,7 @@ func TestVNCPumpWriteFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Kills remotedesktop.go:49 (statement/remove: Cache-Control header).
-func TestMutD_RemoteDesktopGET_NoStoreHeader(t *testing.T) {
+func TestRemoteDesktopGET_NoStoreHeader(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	resp, err := http.Get(srv.URL + "/api/settings/remotedesktop")
 	if err != nil {
@@ -609,7 +609,7 @@ func TestMutD_RemoteDesktopGET_NoStoreHeader(t *testing.T) {
 // Kills remotedesktop.go:170 (numbers x2), :179 (numbers x2) and :181
 // (conditional/negated, which panics on the nil resp of a refused dial):
 // error paths must report latency 0.
-func TestMutD_ProbeVNC_ErrorPathsReportZeroLatency(t *testing.T) {
+func TestProbeVNC_ErrorPathsReportZeroLatency(t *testing.T) {
 	latency, err := probeVNC(context.Background(), "")
 	if err == nil || err.Error() != "address is required" {
 		t.Fatalf("empty addr err = %v, want 'address is required'", err)
@@ -651,7 +651,7 @@ func mutDDeviceServer(t *testing.T, record func(string)) *httptest.Server {
 // Kills remotedesktop.go:173 (composite/field-clear: probe dialer
 // subprotocols): the probe must negotiate the binary subprotocol websockify
 // and noVNC speak.
-func TestMutD_ProbeVNC_NegotiatesBinarySubprotocol(t *testing.T) {
+func TestProbeVNC_NegotiatesBinarySubprotocol(t *testing.T) {
 	got := make(chan string, 4)
 	dev := mutDDeviceServer(t, func(s string) { got <- s })
 	if _, err := probeVNC(context.Background(), dev.URL); err != nil {
@@ -669,7 +669,7 @@ func TestMutD_ProbeVNC_NegotiatesBinarySubprotocol(t *testing.T) {
 
 // Kills remotedesktop.go:189 (numbers/incrementer): a sub-millisecond dial
 // must clamp to exactly 1, the documented floor.
-func TestMutD_ProbeVNC_LatencyFloorIsExactlyOne(t *testing.T) {
+func TestProbeVNC_LatencyFloorIsExactlyOne(t *testing.T) {
 	dev := mutDDeviceServer(t, func(string) {})
 	best := 0
 	for i := 0; i < 8; i++ {
@@ -711,7 +711,7 @@ func mutDHangListener(t *testing.T) string {
 // Kills remotedesktop.go:174 (composite/field-clear, arithmetic/base,
 // numbers/decrementer, numbers/incrementer): the probe dialer's handshake
 // timeout must fire at ~5s (mutants: 4s, 6s, or none until the 8s ctx cap).
-func TestMutD_ProbeVNC_HandshakeTimeout5s(t *testing.T) {
+func TestProbeVNC_HandshakeTimeout5s(t *testing.T) {
 	// No synctest here, measured: gorilla's HandshakeTimeout lands as a real
 	// fd SetDeadline while a bubble-parked dial goroutine freezes the virtual
 	// clock (wall 5s / bubble 0s), so the window must absorb scheduling
@@ -735,7 +735,7 @@ func TestMutD_ProbeVNC_HandshakeTimeout5s(t *testing.T) {
 // numbers/decrementer, numbers/incrementer): the proxy's device dial must
 // time out at ~10s and surface a 1011 close to the browser client (mutants:
 // 9s, 11s, or none before the 12s read deadline).
-func TestMutD_VNCProxy_DeviceDialTimeout10s(t *testing.T) {
+func TestVNCProxy_DeviceDialTimeout10s(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	addr := mutDHangListener(t)
 	seedSettings(t, `{"desktops":[{"name":"hang","addr":"`+addr+`"}]}`)
@@ -760,7 +760,7 @@ func TestMutD_VNCProxy_DeviceDialTimeout10s(t *testing.T) {
 
 // Kills remotedesktop.go:199 (composite/field-clear: vncUpgrader
 // subprotocols): the browser-facing upgrade must negotiate binary.
-func TestMutD_VNCProxy_ClientNegotiatesBinary(t *testing.T) {
+func TestVNCProxy_ClientNegotiatesBinary(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	dev := mutDDeviceServer(t, func(string) {})
 	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+dev.URL+`"}]}`)
@@ -778,7 +778,7 @@ func TestMutD_VNCProxy_ClientNegotiatesBinary(t *testing.T) {
 // Kills remotedesktop.go:200 (composite/field-clear: CheckOrigin dropped,
 // gorilla then rejects cross-origin upgrades by default): the proxy must
 // accept browsers from any origin — it is same-origin by construction.
-func TestMutD_VNCProxy_CrossOriginAccepted(t *testing.T) {
+func TestVNCProxy_CrossOriginAccepted(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	dev := mutDDeviceServer(t, func(string) {})
 	seedSettings(t, `{"desktops":[{"name":"echo","addr":"`+dev.URL+`"}]}`)
@@ -793,7 +793,7 @@ func TestMutD_VNCProxy_CrossOriginAccepted(t *testing.T) {
 
 // Kills remotedesktop.go:244 (composite/field-clear: proxy dialer
 // subprotocols): the proxy must dial the device with the binary subprotocol.
-func TestMutD_VNCProxy_DeviceSeesBinarySubprotocol(t *testing.T) {
+func TestVNCProxy_DeviceSeesBinarySubprotocol(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	subCh := make(chan string, 1)
 	dev := mutDDeviceServer(t, func(s string) { subCh <- s })
@@ -817,7 +817,7 @@ func TestMutD_VNCProxy_DeviceSeesBinarySubprotocol(t *testing.T) {
 // Kills remotedesktop.go:223 (loop/break: break flipped to continue): with
 // duplicate device names only settings.json can produce, the FIRST match must
 // win; flipping to continue lets the last match hijack the lookup.
-func TestMutD_VNCProxy_DuplicateNamesFirstMatchWins(t *testing.T) {
+func TestVNCProxy_DuplicateNamesFirstMatchWins(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	dev := mutDDeviceServer(t, func(string) {})
 	// First "dup" points at a refused port; second at the live echo device.
@@ -845,7 +845,7 @@ func TestMutD_VNCProxy_DuplicateNamesFirstMatchWins(t *testing.T) {
 // Kills remotedesktop.go:272 (statement/remove: trailing stop dropped): when
 // the main pump exits, relayWS itself must close both conns — the surviving
 // reverse pump would otherwise block on its read forever.
-func TestMutD_RelayWS_ClosesBothConnsWhenMainPumpExits(t *testing.T) {
+func TestRelayWS_ClosesBothConnsWhenMainPumpExits(t *testing.T) {
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mkPair := func() (*websocket.Conn, *websocket.Conn, *httptest.Server) {
 		srvConn := make(chan *websocket.Conn, 1)
@@ -896,7 +896,7 @@ func TestMutD_RelayWS_ClosesBothConnsWhenMainPumpExits(t *testing.T) {
 // through and forwards those partial bytes, the original must not. The
 // mid-message error is produced deterministically with a read limit hit on
 // the second frame of a fragmented message.
-func TestMutD_PumpWS_ReadErrorForwardsNothing(t *testing.T) {
+func TestPumpWS_ReadErrorForwardsNothing(t *testing.T) {
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 	// src side: the server pushes a fragmented binary message (2x64 bytes);

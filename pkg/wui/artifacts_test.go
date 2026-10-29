@@ -740,10 +740,10 @@ func TestObserveLLM(t *testing.T) {
 // artifacts.go — HTTP surface
 // ---------------------------------------------------------------------------
 
-// TestMutC_ArtifactOpenPermErrorIs404 pins the "unexplainable open error is
+// TestArtifactOpenPermErrorIs404 pins the "unexplainable open error is
 // a plain 404" branch: only a missing file may fall through to the bundled
 // game fallback.
-func TestMutC_ArtifactOpenPermErrorIs404(t *testing.T) {
+func TestArtifactOpenPermErrorIs404(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission-bit fixtures do not fail as root")
 	}
@@ -771,7 +771,7 @@ func TestMutC_ArtifactOpenPermErrorIs404(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactBundledFallback(t *testing.T) {
+func TestArtifactBundledFallback(t *testing.T) {
 	srv := newArtifactTestServer(t, t.TempDir())
 
 	status, header, body := getArtifactFull(t, srv.URL+"/artifacts/chess")
@@ -786,7 +786,7 @@ func TestMutC_ArtifactBundledFallback(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactListNoStoreHeader(t *testing.T) {
+func TestArtifactListNoStoreHeader(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "a.html", "a")
 	srv := newArtifactTestServer(t, dir)
@@ -803,10 +803,10 @@ func TestMutC_ArtifactListNoStoreHeader(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactWalkErrorsSurface500 uses an unreadable artifacts dir to
+// TestArtifactWalkErrorsSurface500 uses an unreadable artifacts dir to
 // pin that walk failures (other than a missing dir) answer 500 on both the
 // list and the clear route.
-func TestMutC_ArtifactWalkErrorsSurface500(t *testing.T) {
+func TestArtifactWalkErrorsSurface500(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission-bit fixtures do not fail as root")
 	}
@@ -826,10 +826,10 @@ func TestMutC_ArtifactWalkErrorsSurface500(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactDeleteRemoveFailure500 keeps the dir readable (r+x) but
+// TestArtifactDeleteRemoveFailure500 keeps the dir readable (r+x) but
 // not writable so readdir works and os.Remove fails with EACCES: a half-done
 // delete must answer 500, not 204.
-func TestMutC_ArtifactDeleteRemoveFailure500(t *testing.T) {
+func TestArtifactDeleteRemoveFailure500(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission-bit fixtures do not fail as root")
 	}
@@ -846,9 +846,9 @@ func TestMutC_ArtifactDeleteRemoveFailure500(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactGzipSizeFloor pins the exact eligibility floor around
+// TestArtifactGzipSizeFloor pins the exact eligibility floor around
 // 1 MiB: below it identity, at it gzip.
-func TestMutC_ArtifactGzipSizeFloor(t *testing.T) {
+func TestArtifactGzipSizeFloor(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "sub-threshold.html", strings.Repeat("a", 600*1024))
 	writeArtifactFile(t, dir, "one-under.html", strings.Repeat("a", 1<<20-1))
@@ -879,10 +879,10 @@ func TestMutC_ArtifactGzipSizeFloor(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactGzipEligibleText serves a >1MiB text artifact: the
+// TestArtifactGzipEligibleText serves a >1MiB text artifact: the
 // eligibility sniff must let plain text through and the octet-stream
 // Content-Type fallback must be applied on the compressed representation.
-func TestMutC_ArtifactGzipEligibleText(t *testing.T) {
+func TestArtifactGzipEligibleText(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Repeat("wui-gzip-text-payload\n", 80000) // > 1.5 MiB
 	writeArtifactFile(t, dir, "big.txt", content)
@@ -906,10 +906,10 @@ func TestMutC_ArtifactGzipEligibleText(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactGzipSkipsCompressedMedia pins the sniff blocklist: zip,
+// TestArtifactGzipSkipsCompressedMedia pins the sniff blocklist: zip,
 // gzip and video payloads must serve identity even when the client accepts
 // gzip.
-func TestMutC_ArtifactGzipSkipsCompressedMedia(t *testing.T) {
+func TestArtifactGzipSkipsCompressedMedia(t *testing.T) {
 	dir := t.TempDir()
 	zipBytes := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0}, 1<<20+512)...)
 	gzBytes := append([]byte{0x1f, 0x8b, 0x08}, bytes.Repeat([]byte{0}, 1<<20+512)...)
@@ -939,9 +939,9 @@ func TestMutC_ArtifactGzipSkipsCompressedMedia(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactGzipValidators pins If-None-Match: "*" (a one-byte
+// TestArtifactGzipValidators pins If-None-Match: "*" (a one-byte
 // header value) matching any representation, and the 304 header diet.
-func TestMutC_ArtifactGzipValidators(t *testing.T) {
+func TestArtifactGzipValidators(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "big.glb", bigGLB())
 	srv := newArtifactTestServer(t, dir)
@@ -965,7 +965,7 @@ func TestMutC_ArtifactGzipValidators(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactGzipHEADNoContentLength(t *testing.T) {
+func TestArtifactGzipHEADNoContentLength(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "big.glb", bigGLB())
 	srv := newArtifactTestServer(t, dir)
@@ -991,7 +991,7 @@ func TestMutC_ArtifactGzipHEADNoContentLength(t *testing.T) {
 	}
 }
 
-func TestMutC_ETagMatchesDirect(t *testing.T) {
+func TestETagMatchesDirect(t *testing.T) {
 	tests := []struct {
 		name string
 		inm  string
@@ -1012,7 +1012,7 @@ func TestMutC_ETagMatchesDirect(t *testing.T) {
 	}
 }
 
-func TestMutC_NotModifiedSinceDirect(t *testing.T) {
+func TestNotModifiedSinceDirect(t *testing.T) {
 	mtime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	fresh := mtime.UTC().Format(http.TimeFormat)
 	stale := mtime.Add(-time.Hour).UTC().Format(http.TimeFormat)
@@ -1037,7 +1037,7 @@ func TestMutC_NotModifiedSinceDirect(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactContentTypeGltf(t *testing.T) {
+func TestArtifactContentTypeGltf(t *testing.T) {
 	if got := artifactContentType("scene.GLTF"); got != "model/gltf+json" {
 		t.Errorf("gltf = %q, want model/gltf+json", got)
 	}
@@ -1049,7 +1049,7 @@ func TestMutC_ArtifactContentTypeGltf(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactListNewestFirstOrder(t *testing.T) {
+func TestArtifactListNewestFirstOrder(t *testing.T) {
 	dir := t.TempDir()
 	writeArtifactFile(t, dir, "old.html", "old")
 	writeArtifactFile(t, dir, "new.html", "newer")
@@ -1099,10 +1099,10 @@ func TestMutC_ArtifactListNewestFirstOrder(t *testing.T) {
 	}
 }
 
-// TestMutC_ArtifactClearENOTDIR500 registers the routes under a path whose
+// TestArtifactClearENOTDIR500 registers the routes under a path whose
 // parent is a regular file: stat fails with ENOTDIR (not IsNotExist), which
 // must surface as 500 rather than the nothing-to-clear 204.
-func TestMutC_ArtifactClearENOTDIR500(t *testing.T) {
+func TestArtifactClearENOTDIR500(t *testing.T) {
 	tmp := t.TempDir()
 	blocker := filepath.Join(tmp, "blocker")
 	mutCWriteFile(t, blocker, []byte("file"))
@@ -1121,7 +1121,7 @@ func TestMutC_ArtifactClearENOTDIR500(t *testing.T) {
 	}
 }
 
-func TestMutC_ArtifactFilePathDirect(t *testing.T) {
+func TestArtifactFilePathDirect(t *testing.T) {
 	dir := t.TempDir()
 	if got, status := artifactFilePath(dir, ""); got != "" || status != http.StatusBadRequest {
 		t.Errorf("empty name = (%q, %d), want (\"\", 400)", got, status)
@@ -1182,10 +1182,10 @@ func mutCCacheGet(t *testing.T, c *gzipCache, path string, mtime, size int64, co
 	return gz
 }
 
-// TestMutC_GzipCacheIdentity pins that a cached entry is keyed by the full
+// TestGzipCacheIdentity pins that a cached entry is keyed by the full
 // (mtime, size) identity and that replacing an entry updates the byte
 // accounting instead of accumulating.
-func TestMutC_GzipCacheIdentity(t *testing.T) {
+func TestGzipCacheIdentity(t *testing.T) {
 	c := newGzipCache(4, 1<<30)
 	cc := &mutCCacheCounts{}
 
@@ -1229,9 +1229,9 @@ func TestMutC_GzipCacheIdentity(t *testing.T) {
 	}
 }
 
-// TestMutC_GzipCacheJoinError pins single-flight error propagation: a joiner
+// TestGzipCacheJoinError pins single-flight error propagation: a joiner
 // must receive the leader's error, not start its own compression.
-func TestMutC_GzipCacheJoinError(t *testing.T) {
+func TestGzipCacheJoinError(t *testing.T) {
 	c := newGzipCache(2, 1<<30)
 	leaderStarted := make(chan struct{})
 	release := make(chan struct{})
@@ -1278,9 +1278,9 @@ func TestMutC_GzipCacheJoinError(t *testing.T) {
 	}
 }
 
-// TestMutC_GzipCacheLRUTickAndVictim pins the LRU clock: inserts and hits
+// TestGzipCacheLRUTickAndVictim pins the LRU clock: inserts and hits
 // advance tick, lastUsed reflects recency, and eviction picks the true LRU.
-func TestMutC_GzipCacheLRUTickAndVictim(t *testing.T) {
+func TestGzipCacheLRUTickAndVictim(t *testing.T) {
 	c := newGzipCache(2, 1<<30)
 	cc := &mutCCacheCounts{}
 
@@ -1314,10 +1314,10 @@ func TestMutC_GzipCacheLRUTickAndVictim(t *testing.T) {
 	}
 }
 
-// TestMutC_GzipCacheOversizedEntryKept pins the documented cap escape: a
+// TestGzipCacheOversizedEntryKept pins the documented cap escape: a
 // single entry larger than maxBytes stays servable instead of evicting
 // itself.
-func TestMutC_GzipCacheOversizedEntryKept(t *testing.T) {
+func TestGzipCacheOversizedEntryKept(t *testing.T) {
 	c := newGzipCache(3, 16)
 	cc := &mutCCacheCounts{}
 	payload := []byte(strings.Repeat("z", 40))
@@ -1338,9 +1338,9 @@ func TestMutC_GzipCacheOversizedEntryKept(t *testing.T) {
 	}
 }
 
-// TestMutC_GzipCacheEvictionBytesAccounting pins that evicting a victim
+// TestGzipCacheEvictionBytesAccounting pins that evicting a victim
 // subtracts (not assigns) its size.
-func TestMutC_GzipCacheEvictionBytesAccounting(t *testing.T) {
+func TestGzipCacheEvictionBytesAccounting(t *testing.T) {
 	c := newGzipCache(3, 1<<30)
 	cc := &mutCCacheCounts{}
 	mutCCacheGet(t, c, "a", 1, 1, cc.compress("a", bytes.Repeat([]byte{1}, 10)))
@@ -1360,10 +1360,10 @@ func TestMutC_GzipCacheEvictionBytesAccounting(t *testing.T) {
 	}
 }
 
-// TestMutC_GzipCacheBudgetConstants pins the documented daemon-wide memory
+// TestGzipCacheBudgetConstants pins the documented daemon-wide memory
 // budget. The byte cap is only observable with ~400MiB of resident entries,
 // which no hermetic test can produce; the constant itself is the contract.
-func TestMutC_GzipCacheBudgetConstants(t *testing.T) {
+func TestGzipCacheBudgetConstants(t *testing.T) {
 	if artifactGzipCacheMaxEntries != 3 {
 		t.Errorf("artifactGzipCacheMaxEntries = %d, want 3 (documented resident-model budget)", artifactGzipCacheMaxEntries)
 	}
@@ -1387,9 +1387,9 @@ func (w *mutCFailWriter) Write([]byte) (int, error) { return 0, errors.New("peer
 
 func (w *mutCFailWriter) WriteHeader(int) {}
 
-// TestMutC_ArtifactGzipWriteErrorWarns pins that a failed body write logs
+// TestArtifactGzipWriteErrorWarns pins that a failed body write logs
 // instead of passing silently (the only externally visible effect).
-func TestMutC_ArtifactGzipWriteErrorWarns(t *testing.T) {
+func TestArtifactGzipWriteErrorWarns(t *testing.T) {
 	rec := mutCCaptureSlog(t)
 	resetArtifactGzipCache(t)
 	path := filepath.Join(t.TempDir(), "warn.txt")
