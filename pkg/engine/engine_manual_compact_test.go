@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
+	"uuid"
 )
 
 func compactUserMsg() types.Message {
@@ -585,6 +587,378 @@ func toolUseIDOrEmpty(tu *types.ToolUseEvent) string {
 		return ""
 	}
 	return tu.ID
+}
+
+// blockingCompactFixture wires a funcCompactor whose fn signals entry and
+// then parks on release, holding ManualCompact exactly inside its LLM-call
+// window. enteredCount counts fn invocations so tests can assert the
+// compactor ran exactly once.
+type blockingCompactFixture struct {
+	eng          *Engine
+	mp           *mockProvider
+	ec           *eventCollector
+	entered      chan struct{}
+	enteredCount *atomic.Int32
+	releaseFn    func()
+}
+
+func newBlockingCompactFixture(t *testing.T, result func() (*short.CompactResult, error)) *blockingCompactFixture {
+	t.Helper()
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "post-compact answer"), nil)
+	entered := make(chan struct{})
+	var enteredCount atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFn)
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
+			if enteredCount.Add(1) == 1 {
+				close(entered)
+			}
+			<-release
+			return result()
+		},
+	}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetCompactor(compactor, AutoCompactConfig{ContextWindow: 100000})
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old message 1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old reply")}},
+	})
+	return &blockingCompactFixture{eng: eng, mp: mp, ec: ec, entered: entered, enteredCount: &enteredCount, releaseFn: releaseFn}
+}
+
+func twoMessageCompactResult() (*short.CompactResult, error) {
+	return &short.CompactResult{
+		BeforeTokens:   5000,
+		AfterTokens:    1500,
+		BeforeMessages: 2,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("boundary")}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("summary-of-history")}},
+		},
+		Summary: "<summary>compacted</summary>",
+	}, nil
+}
+
+// TestManualCompact_MarksEngineBusy_AndRejectsSecondCompact pins the busy
+// lifecycle: IsBusy is true for the whole compactor call, a second compact is
+// rejected with the busy error without re-entering the compactor, and the
+// flag clears when the compact finishes.
+func TestManualCompact_MarksEngineBusy_AndRejectsSecondCompact(t *testing.T) {
+	fix := newBlockingCompactFixture(t, twoMessageCompactResult)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := fix.eng.ManualCompact(context.Background(), compactUserMsg(), "")
+		done <- err
+	}()
+	select {
+	case <-fix.entered:
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("compactor never entered")
+	}
+
+	if !fix.eng.IsBusy() {
+		t.Fatal("IsBusy() = false while manual compact is in flight")
+	}
+
+	// Async shape: without the guard the second call blocks inside fn on
+	// release, so a synchronous call would hang the package past all
+	// assertions. The select bound converts that into a clear failure.
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := fix.eng.ManualCompact(context.Background(), compactUserMsg(), "")
+		done2 <- err
+	}()
+	select {
+	case err := <-done2:
+		if err == nil || !strings.Contains(err.Error(), "engine: busy") {
+			t.Fatalf("second ManualCompact err = %v, want \"engine: busy\"", err)
+		}
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("second compact not rejected")
+	}
+	if got := fix.enteredCount.Load(); got != 1 {
+		t.Errorf("compactor entered %d times, want 1", got)
+	}
+
+	fix.releaseFn()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first ManualCompact error: %v", err)
+		}
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("first compact never finished")
+	}
+	if fix.eng.IsBusy() {
+		t.Error("IsBusy() = true after compact finished, want false")
+	}
+}
+
+// TestManualCompact_MessageDuringCompact_QueuesThenFlushes is the core race
+// test: a message enqueued while ManualCompact rewrites history must stay in
+// the queue (no concurrent turn against pre-compact history) and flush
+// against post-compact history once the compact ends.
+func TestManualCompact_MessageDuringCompact_QueuesThenFlushes(t *testing.T) {
+	fix := newBlockingCompactFixture(t, twoMessageCompactResult)
+	// startProcessAttachmentsIfIdle early-returns on an empty system prompt,
+	// so the flush kick needs one — same constraint as the abort-path flush.
+	fix.eng.SetSystemPrompt("sys")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := fix.eng.ManualCompact(context.Background(), compactUserMsg(), "")
+		done <- err
+	}()
+	<-fix.entered
+	if !fix.eng.IsBusy() {
+		t.Fatal("IsBusy() = false while manual compact is in flight")
+	}
+	fix.eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "urgent follow-up",
+		Mode:      types.ItemModePrompt,
+		UUID:      uuid.New().String(),
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
+	})
+	// No concurrent turn: any provider call within the hold window means the
+	// enqueue-time kick spawned a turn loop during the compact rewrite.
+	holdDeadline := time.Now().Add(300 * time.Millisecond) // REAL-TIME
+	for time.Now().Before(holdDeadline) {
+		if got := fix.mp.callCount(); got != 0 {
+			t.Fatalf("LLM call count mid-compact = %d, want 0 (turn loop raced the history rewrite)", got)
+		}
+		if got := fix.eng.AttachmentsLen(); got != 1 {
+			t.Fatalf("attachment queue len mid-compact = %d, want 1", got)
+		}
+		time.Sleep(10 * time.Millisecond) // REAL-TIME
+	}
+
+	fix.releaseFn()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ManualCompact error: %v", err)
+		}
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("compact never finished")
+	}
+	// The endCompact kick must flush the queued item: one turn against
+	// post-compact history. QueryEnd #1 is the compact's, #2 the flush turn's.
+	if !fix.ec.WaitForEventCount(types.EventQueryEnd, 2, 5*time.Second) {
+		t.Fatal("queued message never flushed after compact (endCompact kick missing)")
+	}
+	if got := fix.mp.callCount(); got != 1 {
+		t.Fatalf("LLM call count after flush = %d, want 1", got)
+	}
+
+	// The flush turn must have seen post-compact history plus the new
+	// message, not the pre-compact transcript it would have raced.
+	reqText := flattenText(fix.mp.lastRequestMessages())
+	if !strings.Contains(reqText, "summary-of-history") {
+		t.Error("flush request does not contain the compact summary — ran against pre-compact history")
+	}
+	if !strings.Contains(reqText, "urgent follow-up") {
+		t.Error("flush request does not contain the queued message")
+	}
+	if strings.Contains(reqText, "old message 1") {
+		t.Error("flush request contains pre-compact history — rewrite lost")
+	}
+
+	msgs := fix.eng.Messages()
+	if flat := flattenText(msgs); strings.Contains(flat, "old message 1") {
+		t.Error("post-compact history still contains pre-compact messages")
+	}
+	// The idle drain appends the queued item as a plain attachment user
+	// message (createAttachmentMessages), not the mid-turn reminder envelope.
+	queuedIdx := findQueuedUserMessages(msgs, "urgent follow-up")
+	if len(queuedIdx) != 1 {
+		t.Fatalf("history contains %d queued-message rows, want 1", len(queuedIdx))
+	}
+	hasAssistantAfter := false
+	for i := queuedIdx[0] + 1; i < len(msgs); i++ {
+		if msgs[i].Role == types.RoleAssistant {
+			hasAssistantAfter = true
+		}
+	}
+	if !hasAssistantAfter {
+		t.Error("no assistant message after the queued message — flush turn did not run")
+	}
+	// runTurns emits its terminal QueryEnd before processAttachments' defer
+	// clears queryActive, so poll for the idle mark instead of reading once.
+	idleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	for fix.eng.IsBusy() {
+		if time.Now().After(idleDeadline) { // REAL-TIME: poll loop bounded by deadline
+			t.Fatal("IsBusy() stayed true after compact and flush finished")
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+	if n := fix.eng.AttachmentsLen(); n != 0 {
+		t.Errorf("attachment queue len after flush = %d, want 0", n)
+	}
+}
+
+// TestManualCompact_RejectedWhileQueryActive pins the guard's other side: a
+// manual compact attempted while a query is streaming is rejected before any
+// event emission or history rewrite, and the query finishes unaffected.
+func TestManualCompact_RejectedWhileQueryActive(t *testing.T) {
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "streaming answer"), nil)
+	gated := &streamGateProvider{inner: mp, gate: make(chan struct{})}
+	var gateOnce sync.Once
+	closeGate := func() { gateOnce.Do(func() { close(gated.gate) }) }
+	t.Cleanup(closeGate)
+
+	var compactCalls atomic.Int32
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
+			compactCalls.Add(1)
+			return &short.CompactResult{
+				BeforeTokens: 100,
+				AfterTokens:  50,
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("summary")}},
+				},
+				Summary: "ok",
+			}, nil
+		},
+	}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   gated,
+		Dispatcher: ec,
+		Model:      "test-model",
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetCompactor(compactor, AutoCompactConfig{ContextWindow: 100000})
+	eng.Query(context.Background(), "hello", "sys")
+	// Wait until the gated stream is in flight (held open by the gate).
+	deadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	for {
+		gated.mu.Lock()
+		calls := gated.calls
+		gated.mu.Unlock()
+		if calls == 1 {
+			break
+		}
+		if time.Now().After(deadline) { // REAL-TIME
+			closeGate()
+			t.Fatal("first LLM stream never started")
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+
+	_, err := eng.ManualCompact(context.Background(), compactUserMsg(), "")
+	if err == nil || !strings.Contains(err.Error(), "engine: busy") {
+		t.Fatalf("ManualCompact during active query: err = %v, want \"engine: busy\"", err)
+	}
+	if n := compactCalls.Load(); n != 0 {
+		t.Errorf("compactor ran %d times during an active query, want 0", n)
+	}
+	for _, ev := range ec.FindEvents(types.EventToolStart) {
+		if ev.ToolUse != nil && ev.ToolUse.Name == "Compact" {
+			t.Error("Compact ToolStart emitted during an active query — guard must fire before any event")
+		}
+	}
+
+	closeGate()
+	if res := ec.WaitForResult(); res.Error != nil {
+		t.Fatalf("query error after rejected compact: %v", res.Error)
+	}
+}
+
+// TestManualCompact_FailureClearsBusyAndFlushesQueue pins the error path:
+// the defer clears the compact-busy mark and still kicks the queued-item
+// flush, and the failed compact leaves history untouched.
+func TestManualCompact_FailureClearsBusyAndFlushesQueue(t *testing.T) {
+	fix := newBlockingCompactFixture(t, func() (*short.CompactResult, error) {
+		return nil, fmt.Errorf("summarizer down")
+	})
+	fix.eng.SetSystemPrompt("sys")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := fix.eng.ManualCompact(context.Background(), compactUserMsg(), "")
+		done <- err
+	}()
+	<-fix.entered
+	if !fix.eng.IsBusy() {
+		t.Fatal("IsBusy() = false while manual compact is in flight")
+	}
+	fix.eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "urgent follow-up",
+		Mode:      types.ItemModePrompt,
+		UUID:      uuid.New().String(),
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Date(2026, 10, 5, 11, 0, 0, 0, time.UTC),
+	})
+	fix.releaseFn()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "summarizer down") {
+			t.Fatalf("ManualCompact err = %v, want \"summarizer down\"", err)
+		}
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("compact never finished")
+	}
+	// The flush turn itself proves the compact flag was cleared on the error
+	// path: beginQueryIfIdle refuses while compacting, so a leaked flag would
+	// strand the queue instead of running this turn. QueryEnd #1 is the
+	// compact's error QueryEnd, #2 the flush turn's.
+	if !fix.ec.WaitForEventCount(types.EventQueryEnd, 2, 5*time.Second) {
+		t.Fatal("queued message never flushed after failed compact (defer kick missing on error path)")
+	}
+	if got := fix.mp.callCount(); got != 1 {
+		t.Fatalf("LLM call count after flush = %d, want 1", got)
+	}
+	// Same late-clear window as T2: poll instead of reading the flag once.
+	idleDeadline := time.Now().Add(5 * time.Second) // REAL-TIME
+	for fix.eng.IsBusy() {
+		if time.Now().After(idleDeadline) { // REAL-TIME: poll loop bounded by deadline
+			t.Fatal("IsBusy() stayed true after failed compact and completed flush — flag leaked on the error path")
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+	if got := fix.eng.AttachmentsLen(); got != 0 {
+		t.Errorf("attachment queue len after flush = %d, want 0", got)
+	}
+	if flat := flattenText(fix.eng.Messages()); !strings.Contains(flat, "old message 1") {
+		t.Error("failed compact removed pre-compact history — result must not apply on error")
+	}
+	if queued := findQueuedUserMessages(fix.eng.Messages(), "urgent follow-up"); len(queued) != 1 {
+		t.Fatalf("history contains %d queued-message rows, want 1", len(queued))
+	}
+}
+
+// findQueuedUserMessages returns the indices of user messages carrying the
+// drained queued item's text. The idle-drain path appends a plain attachment
+// message row, so the mid-turn reminder-envelope matcher does not apply.
+func findQueuedUserMessages(msgs []types.Message, text string) []int {
+	var out []int
+	for i, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, cb := range m.Content {
+			if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, text) {
+				out = append(out, i)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func toolUseSummaryOrEmpty(tu *types.ToolUseEvent) string {

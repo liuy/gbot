@@ -466,7 +466,11 @@ var assembleGate func()
 // goroutine has already been launched; the first goroutine's `eng.Query*`
 // call lands microseconds later (block assembly is trivial for text-only
 // messages), flipping `IsBusy()` to true before the second readLoop
-// iteration reaches its read.
+// iteration reaches its read. The dispatch-gate re-read inside the goroutine
+// (`busy || eng.IsBusy()`) is an upgrade-only OR — it can only divert a
+// message to the existing enqueue branch (e.g. a compact that started during
+// a large attachment parse), never bypass it; the synchronous readLoop
+// capture above remains load-bearing for the two-rapid-messages race.
 //
 // History-append stays synchronous because input-history tests
 // (input_history_test.go) assert on history state immediately after the
@@ -512,7 +516,7 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 			}
 			return
 		}
-		if busy {
+		if busy || eng.IsBusy() {
 			if slot.cancelEpoch.Load() != epoch {
 				// Cancelled mid-parse: the client already cleared its queue
 				// bubbles and will never match a late 'queued' uuid stamp.

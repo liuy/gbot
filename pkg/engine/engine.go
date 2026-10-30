@@ -129,7 +129,12 @@ type Engine struct {
 	skillListing       string                   // formatted skill listing for /context breakdown
 	agentDefs          []*types.AgentDefinition // agent definitions for /context breakdown
 	queryActive        atomic.Int32             // atomic: 1 = query/turn loop running, 0 = idle
-	queryStartMsgIdx   int
+	// compacting covers ManualCompact's LLM call: the compactor rewrites
+	// e.messages wholesale, so a turn loop spawned concurrently (queued-item
+	// flush, direct Query) would race the rewrite. beginQueryIfIdle and
+	// IsBusy both consult it so submissions queue instead.
+	compacting       atomic.Bool
+	queryStartMsgIdx int
 
 	// Queued-message watermarks, guarded by mu. queuedMsgSeq counts reminder-
 	// form user messages appended mid-turn; runTurns snapshots it into
@@ -881,7 +886,7 @@ func (e *Engine) beginQueryIfIdle(cancel context.CancelFunc) (uint64, bool) {
 	defer e.activeCancelMu.Unlock()
 	// Atomic read: processAttachments' public-entry path writes this flag
 	// outside the mutex, so the lock alone does not order this read.
-	if e.queryActive.Load() != 0 {
+	if e.queryActive.Load() != 0 || e.compacting.Load() {
 		return 0, false
 	}
 	tok := e.beginLocked(cancel)
@@ -915,6 +920,31 @@ func (e *Engine) endQuery(token uint64) {
 	}
 	e.activeCancel = nil
 	e.queryActive.Store(0)
+	e.activeCancelMu.Unlock()
+	e.startProcessAttachmentsIfIdle()
+}
+
+// beginCompact marks the engine busy for a manual compact unless a query,
+// attachment run, or another compact is active. Check and set share the
+// activeCancelMu critical section with beginQueryIfIdle so a compact cannot
+// slip past a kick that just saw idle, and vice versa.
+func (e *Engine) beginCompact() bool {
+	e.activeCancelMu.Lock()
+	defer e.activeCancelMu.Unlock()
+	if e.queryActive.Load() != 0 || e.compacting.Load() {
+		return false
+	}
+	e.compacting.Store(true)
+	return true
+}
+
+// endCompact releases the compact-busy mark and kicks the queued-item flush,
+// mirroring endQuery: clear under the lock, kick after. Anything enqueued
+// during the compact then runs against post-compact history instead of
+// stranding until the next query.
+func (e *Engine) endCompact() {
+	e.activeCancelMu.Lock()
+	e.compacting.Store(false)
 	e.activeCancelMu.Unlock()
 	e.startProcessAttachmentsIfIdle()
 }
@@ -3694,6 +3724,10 @@ func (e *Engine) ManualCompact(ctx context.Context, userMsg types.Message, custo
 	if comp == nil {
 		return nil, fmt.Errorf("compaction not configured")
 	}
+	if !e.beginCompact() {
+		return nil, errors.New("engine: busy — a query or compaction is already in progress")
+	}
+	defer e.endCompact()
 
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg, Model: e.model})
 
@@ -5504,9 +5538,10 @@ func (e *Engine) SystemPrompt() string {
 	return e.systemPrompt
 }
 
-// IsBusy reports whether a query or attachment-processing turn is running.
+// IsBusy reports whether a query, attachment-processing turn, or manual
+// compact is running.
 func (e *Engine) IsBusy() bool {
-	return e.queryActive.Load() != 0
+	return e.queryActive.Load() != 0 || e.compacting.Load()
 }
 
 // AttachmentsLen returns the number of items in the attachment queue.

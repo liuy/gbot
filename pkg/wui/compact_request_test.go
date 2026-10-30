@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -248,5 +250,144 @@ func TestCompactRequest_BusyEngineRejected(t *testing.T) {
 	defer c.mock().mu.RUnlock()
 	if n := c.mock().manualCompactCalls; n != 0 {
 		t.Errorf("manualCompactCalls = %d, want 0 — compact on a busy engine must be rejected before reaching the engine", n)
+	}
+}
+
+// TestCompactRequest_DuringCompact_RejectedWithBusyEnvelope pins the wui
+// composition for a second compact_request while a first compact runs: the
+// IsBusy reject fires before the engine call, so the second request gets the
+// errBusySessionOp error envelope and ManualCompact runs exactly once.
+func TestCompactRequest_DuringCompact_RejectedWithBusyEnvelope(t *testing.T) {
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+
+	var busy atomic.Bool
+	// entered closes after busy flips true: waiting on manualCompactCalls
+	// alone would race the second request's IsBusy read against the store.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFn)
+
+	mock := c.mock()
+	mock.isBusyFn = func() bool { return busy.Load() }
+	mock.manualCompactFn = func(_ context.Context, _ types.Message, _ string) (*short.CompactResult, error) {
+		busy.Store(true)
+		close(entered)
+		defer busy.Store(false)
+		<-release
+		return &short.CompactResult{BeforeTokens: 10000, AfterTokens: 2000}, nil
+	}
+
+	sendJSON(t, ws, map[string]string{"type": "compact_request"})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first compact_request never reached ManualCompact")
+	}
+	sendJSON(t, ws, map[string]string{"type": "compact_request"})
+
+	// The mock dispatches no engine events, so the guard's error frame is the
+	// only frame the second request can produce — single read with timeout.
+	type wsFrame struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan wsFrame, 1)
+	go func() {
+		_, data, err := ws.ReadMessage()
+		ch <- wsFrame{data: data, err: err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("ws closed while waiting for busy error frame: %v", r.err)
+		}
+		var head struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(r.data, &head) != nil || head.Type != "error" {
+			t.Fatalf("frame = %q, want {type:\"error\"}", r.data)
+		}
+		if !strings.Contains(head.Message, errBusySessionOp.Error()) {
+			t.Fatalf("error message = %q, want substring %q", head.Message, errBusySessionOp.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second compact_request produced no busy error frame within 2s")
+	}
+
+	c.mock().mu.RLock()
+	defer c.mock().mu.RUnlock()
+	if n := c.mock().manualCompactCalls; n != 1 {
+		t.Errorf("manualCompactCalls = %d, want 1 — second compact must be rejected before the engine", n)
+	}
+}
+
+// TestMessage_DispatchReReadQueuesWhenCompactStartsMidParse pins the
+// dispatch-gate busy re-read: a compact starting during a large attachment
+// parse (between the synchronous busy capture and the dispatch decision) must
+// divert the message to the queue — enqueue branch, queued ack frame, no
+// Query call.
+func TestMessage_DispatchReReadQueuesWhenCompactStartsMidParse(t *testing.T) {
+	c := newTestConnector(t)
+	ws := dialAndStore(t, c)
+	defer ws.Close()
+
+	var busy atomic.Bool
+	mock := c.mock()
+	mock.isBusyFn = func() bool { return busy.Load() }
+	// The gate runs in the assemble goroutine between the busy capture and
+	// the dispatch decision — exactly where a compact starts during a parse.
+	prevGate := assembleGate
+	assembleGate = func() { busy.Store(true) }
+	t.Cleanup(func() { assembleGate = prevGate })
+
+	sendJSON(t, ws, map[string]any{"type": "message", "text": "hi"})
+	if !waitFor(2*time.Second, func() bool {
+		mock.mu.RLock()
+		defer mock.mu.RUnlock()
+		return len(mock.enqueueCalls) == 1
+	}) {
+		mock.mu.RLock()
+		enq := len(mock.enqueueCalls)
+		qc := len(mock.queryCalls)
+		qwc := len(mock.queryWithContentCalls)
+		mock.mu.RUnlock()
+		t.Fatalf("enqueueCalls = %d, want 1 (queryCalls = %d, queryWithContentCalls = %d) — message must queue when a compact starts mid-parse",
+			enq, qc, qwc)
+	}
+
+	mock.mu.RLock()
+	item := mock.enqueueCalls[0]
+	qc := len(mock.queryCalls)
+	qwc := len(mock.queryWithContentCalls)
+	mock.mu.RUnlock()
+	if item.Value != "hi" {
+		t.Errorf("enqueued item Value = %q, want %q", item.Value, "hi")
+	}
+	if item.Mode != types.ItemModePrompt {
+		t.Errorf("enqueued item Mode = %v, want ItemModePrompt", item.Mode)
+	}
+	if qc != 0 || qwc != 0 {
+		t.Errorf("queryCalls = %d, queryWithContentCalls = %d, want 0/0 — dispatch must not call Query into a running compact", qc, qwc)
+	}
+
+	// The queue-bubble ack: the frontend learns the message queued.
+	data := readWSMessage(t, ws)
+	var frame struct {
+		Type string `json:"type"`
+		UUID string `json:"uuid"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatalf("queued frame unmarshal: %v (%q)", err, data)
+	}
+	if frame.Type != "queued" {
+		t.Errorf("frame type = %q, want %q (frame: %q)", frame.Type, "queued", data)
+	}
+	if frame.UUID != item.UUID {
+		t.Errorf("queued frame UUID = %q, want enqueued item UUID %q", frame.UUID, item.UUID)
 	}
 }
