@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -873,18 +874,8 @@ func TestSsrfDialContext_BlockedLinkLocalIPv6(t *testing.T) {
 // ssrfDialContext — DNS resolution path (ENOTFOUND)
 // ---------------------------------------------------------------------------
 
-func TestSsrfDialContext_DNSLookupFailed(t *testing.T) {
-	ctx := context.Background()
-	// Use a hostname that should not resolve
-	_, err := ssrfDialContext(ctx, "tcp", "this-domain-definitely-does-not-exist-xyz123.invalid:80")
-	if err == nil {
-		t.Fatal("want error for unresolvable domain")
-	}
-	if !strings.Contains(err.Error(), "DNS lookup failed") && !strings.Contains(err.Error(), "ENOTFOUND") {
-		// DNS might fail with lookup error or ENOTFOUND
-		t.Logf("error = %v (acceptable DNS failure)", err)
-	}
-}
+// (TestSsrfDialContext_DNSLookupFailed removed: TestSsrfDialContext_DNSFailureKeepsDNSError
+// in transport_mutate_test.go pins the same path with errors.As + Name + prefix.)
 
 func TestSsrfDialContext_DNSResolvesAllowed(t *testing.T) {
 	// Start a real TCP server on loopback
@@ -1000,26 +991,9 @@ func TestSsrfDialContext_IPv6UniqueLocalBlocked(t *testing.T) {
 // ssrfDialContext — DNS resolves to blocked IP
 // ---------------------------------------------------------------------------
 
-func TestSsrfDialContext_DNSResolvesToBlockedIP(t *testing.T) {
-	// This test exercises the DNS resolution path where the resolved IP
-	// is in a blocked range. We can't control DNS in unit tests, but
-	// we test the logic by verifying that the hostname "localhost" on a
-	// non-listening port either connects or fails with a non-SSRF error.
-	// The actual DNS-to-blocked-IP path is covered by the IP literal tests
-	// and isomorphic reasoning (same code path after LookupIPAddr).
-	ctx := context.Background()
-	// Test with a hostname that resolves — use localhost with a port
-	// that's likely not listening to avoid hanging.
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	_, err := ssrfDialContext(ctx, "tcp", "localhost:1")
-	// This will either fail to connect (no listener) or succeed.
-	// Either way, it should NOT be an SSRF block error since localhost
-	// resolves to 127.0.0.1 which is allowed.
-	if err != nil && strings.Contains(err.Error(), "private/link-local") {
-		t.Errorf("localhost should not be blocked, got: %v", err)
-	}
-}
+// (TestSsrfDialContext_DNSResolvesToBlockedIP removed: it never tested a
+// blocked IP — localhost is allowed. The blocked-after-resolution path is
+// pinned by the zoned-literal tests in transport_mutate_test.go.)
 
 // ---------------------------------------------------------------------------
 // ssrfDialContext — missing port (SplitHostPort error)
@@ -1031,7 +1005,10 @@ func TestSsrfDialContext_MissingPort(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error for address missing port")
 	}
-	if !strings.Contains(err.Error(), "invalid address") {
-		t.Errorf("error = %v, want mention of invalid address", err)
+	if _, ok := errors.AsType[*net.AddrError](err); !ok {
+		t.Fatalf("error %v (%T) does not wrap *net.AddrError", err, err)
+	}
+	if want := `mcp: invalid address "example.com": `; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error = %q, want prefix %q", err.Error(), want)
 	}
 }

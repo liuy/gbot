@@ -221,8 +221,10 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 // FetchResourcesForServer fetches resources from a connected MCP server.
 // Source: client.ts:2000-2031
 func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []ServerResource]) ([]ServerResource, error) {
+	// TS fetchResourcesForClient (client.ts:2002-2007) returns [] on every
+	// non-error path; callers render nil and [] alike, but the contract is [].
 	if conn == nil || conn.Session == nil {
-		return nil, nil
+		return []ServerResource{}, nil
 	}
 
 	// Check cache
@@ -231,7 +233,7 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 	}
 
 	if conn.Capabilities == nil || conn.Capabilities.Resources == nil {
-		return nil, nil
+		return []ServerResource{}, nil
 	}
 
 	result, err := conn.Session.ListResources(ctx, nil)

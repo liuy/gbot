@@ -127,8 +127,19 @@ func ReadMcpResource(ctx context.Context, reg *Registry, serverName, uri string)
 		} else if len(c.Blob) > 0 {
 			// Blob is []byte — Go SDK already decoded base64.
 			// TS needs Buffer.from(c.blob, 'base64') because TS SDK returns string.
-			persistID := fmt.Sprintf("mcp-resource-%d-%d-%s", time.Now().UnixMilli(), i, randomBase36(6))
-			filepath, size, persistErr := persistBinaryContent(c.Blob, c.MIMEType, persistID)
+			randSuffix, randErr := randomBase36(6)
+			if randErr != nil {
+				// No persist ID means no disk write — reuse the persist-failure
+				// fallback shape (ReadMcpResourceTool.ts:120-125).
+				contents = append(contents, ResourceContent{
+					URI:      c.URI,
+					MimeType: c.MIMEType,
+					Text:     fmt.Sprintf("Binary content could not be saved to disk: %s", randErr),
+				})
+				continue
+			}
+			persistID := fmt.Sprintf("mcp-resource-%d-%d-%s", time.Now().UnixMilli(), i, randSuffix)
+			persistPath, size, persistErr := persistBinaryContent(c.Blob, c.MIMEType, persistID)
 			if persistErr != nil {
 				// Source: ReadMcpResourceTool.ts:120-125 — error fallback: text field with error message
 				contents = append(contents, ResourceContent{
@@ -141,8 +152,8 @@ func ReadMcpResource(ctx context.Context, reg *Registry, serverName, uri string)
 				contents = append(contents, ResourceContent{
 					URI:         c.URI,
 					MimeType:    c.MIMEType,
-					Text:        getBinaryBlobSavedMessage(filepath, c.MIMEType, size, sourceDesc),
-					BlobSavedTo: filepath,
+					Text:        getBinaryBlobSavedMessage(persistPath, c.MIMEType, size, sourceDesc),
+					BlobSavedTo: persistPath,
 				})
 			}
 		} else {
@@ -265,14 +276,19 @@ func extensionForMimeType(mimeType string) string {
 
 // randomBase36 generates a random alphanumeric string of the given length.
 // Source: ReadMcpResourceTool.ts:114 — Math.random().toString(36).slice(2, 8)
+// TS's Math.random never fails; Go's crypto/rand can, and a swallowed error
+// here nil-derefs base36Chars[n.Int64()] — the error must reach the caller.
 const base36Chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 
-func randomBase36(length int) string {
+func randomBase36(length int) (string, error) {
 	result := make([]byte, length)
 	max := big.NewInt(int64(len(base36Chars)))
 	for i := range result {
-		n, _ := rand.Int(rand.Reader, max)
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", fmt.Errorf("mcp: crypto/rand: %w", err)
+		}
 		result[i] = base36Chars[n.Int64()]
 	}
-	return string(result)
+	return string(result), nil
 }

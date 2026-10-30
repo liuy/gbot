@@ -3,7 +3,9 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -173,6 +175,9 @@ func TestReadMcpResource_TextContent(t *testing.T) {
 	if contents[0].URI != "test://hello" {
 		t.Errorf("URI = %q, want %q", contents[0].URI, "test://hello")
 	}
+	if contents[0].MimeType != "text/plain" {
+		t.Errorf("MimeType = %q, want %q", contents[0].MimeType, "text/plain")
+	}
 	if contents[0].BlobSavedTo != "" {
 		t.Errorf("BlobSavedTo should be empty for text content, got %q", contents[0].BlobSavedTo)
 	}
@@ -224,6 +229,12 @@ func TestReadMcpResource_BinaryContent(t *testing.T) {
 
 	if !strings.HasSuffix(contents[0].BlobSavedTo, ".pdf") {
 		t.Errorf("BlobSavedTo = %q, should end with .pdf", contents[0].BlobSavedTo)
+	}
+	if contents[0].URI != "test://doc.pdf" {
+		t.Errorf("URI = %q, want %q", contents[0].URI, "test://doc.pdf")
+	}
+	if contents[0].MimeType != "application/pdf" {
+		t.Errorf("MimeType = %q, want %q", contents[0].MimeType, "application/pdf")
 	}
 
 	data, err := os.ReadFile(contents[0].BlobSavedTo)
@@ -566,7 +577,10 @@ func TestHasResourceSupport_NoConnections(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRandomBase36(t *testing.T) {
-	s := randomBase36(6)
+	s, err := randomBase36(6)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(s) != 6 {
 		t.Errorf("length = %d, want 6", len(s))
 	}
@@ -576,10 +590,39 @@ func TestRandomBase36(t *testing.T) {
 		}
 	}
 	// Verify uniqueness (probabilistic)
-	s2 := randomBase36(6)
+	s2, err := randomBase36(6)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if s == s2 {
-		// Not impossible but very unlikely
-		t.Logf("warning: two random base36 strings were identical: %q", s)
+		t.Errorf("two random base36 strings were identical: %q", s)
+	}
+}
+
+type failingRandReader struct{}
+
+func (failingRandReader) Read(p []byte) (int, error) {
+	return 0, errors.New("rng unavailable")
+}
+
+func TestRandomBase36_RNGFailure(t *testing.T) {
+	old := rand.Reader
+	rand.Reader = failingRandReader{}
+	defer func() { rand.Reader = old }()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("randomBase36 panicked on RNG failure: %v", r)
+		}
+	}()
+	s, err := randomBase36(6)
+	if err == nil {
+		t.Fatalf("want error on RNG failure, got result %q", s)
+	}
+	if !strings.Contains(err.Error(), "rng unavailable") {
+		t.Errorf("err = %v, want it to wrap the reader failure", err)
+	}
+	if s != "" {
+		t.Errorf("result = %q, want empty on failure", s)
 	}
 }
 
@@ -702,12 +745,21 @@ func TestReadMcpResource_EmptyResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPersistBinaryContent_WriteFailure(t *testing.T) {
-	_, _, err := persistBinaryContent([]byte("x"), "text/plain", "../../../nonexistent/dir/test")
+	fp, size, err := persistBinaryContent([]byte("x"), "text/plain", "../../../nonexistent/dir/test")
 	if err == nil {
 		t.Fatal("expected error for write to non-existent directory")
 	}
 	if !strings.Contains(err.Error(), "failed to persist binary content") {
 		t.Errorf("error = %q, want persist failure message", err.Error())
+	}
+	if fp != "" {
+		t.Errorf("filepath = %q, want empty string on failure", fp)
+	}
+	if size != 0 {
+		t.Errorf("size = %d, want 0 on failure", size)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("errors.Is(err, os.ErrNotExist) = false, want the OS cause wrapped: %v", err)
 	}
 }
 
@@ -954,6 +1006,12 @@ func TestReadMcpResource_BinaryPersistFailureInsideRead(t *testing.T) {
 	// Persist failure → Text should contain error message
 	if !strings.Contains(contents[0].Text, "Binary content could not be saved to disk") {
 		t.Errorf("expected persist failure message, got: %q", contents[0].Text)
+	}
+	if contents[0].URI != "test://bin" {
+		t.Errorf("URI = %q, want %q", contents[0].URI, "test://bin")
+	}
+	if contents[0].MimeType != "application/pdf" {
+		t.Errorf("MimeType = %q, want %q", contents[0].MimeType, "application/pdf")
 	}
 	if contents[0].BlobSavedTo != "" {
 		t.Errorf("BlobSavedTo should be empty on failure, got: %q", contents[0].BlobSavedTo)

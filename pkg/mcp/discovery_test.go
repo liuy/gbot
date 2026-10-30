@@ -270,8 +270,9 @@ func TestFetchResourcesForServer_NilConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if resources != nil {
-		t.Errorf("expected nil, got %v", resources)
+	// TS fetchResourcesForClient (client.ts:2002) returns [] on every path.
+	if resources == nil || len(resources) != 0 {
+		t.Errorf("expected non-nil empty slice, got %#v", resources)
 	}
 }
 
@@ -285,8 +286,9 @@ func TestFetchResourcesForServer_NoCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if resources != nil {
-		t.Errorf("expected nil resources, got %v", resources)
+	// TS client.ts:2005-2007: missing capabilities returns [].
+	if resources == nil || len(resources) != 0 {
+		t.Errorf("expected non-nil empty slice, got %#v", resources)
 	}
 }
 
@@ -297,8 +299,9 @@ func TestFetchResourcesForServer_NilSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if resources != nil {
-		t.Errorf("expected nil resources, got %v", resources)
+	// TS client.ts:2002: not-connected clients return [].
+	if resources == nil || len(resources) != 0 {
+		t.Errorf("expected non-nil empty slice, got %#v", resources)
 	}
 }
 
@@ -797,8 +800,9 @@ func TestOnResourcesChanged_ReFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnResourcesChanged: %v", err)
 	}
-	if resources != nil {
-		t.Errorf("expected nil resources, got %v", resources)
+	// TS fetchResourcesForClient returns [] on every non-error path.
+	if resources == nil || len(resources) != 0 {
+		t.Errorf("expected non-nil empty slice, got %#v", resources)
 	}
 }
 
@@ -1217,15 +1221,15 @@ func TestDiscoverForServer_ResourceErrorStopsCommands(t *testing.T) {
 	commandCache := mustLRU[string, []MCPCommand](10)
 
 	d := discoverForServer(context.Background(), conn, toolCache, resourceCache, commandCache)
-	// Session nil → tools returns nil, resources returns nil, commands returns nil
+	// Session nil → tools returns nil, resources returns [] (TS contract), commands returns nil
 	if d.Error != nil {
 		t.Errorf("expected nil error for nil session, got: %v", d.Error)
 	}
 	if d.Tools != nil {
 		t.Errorf("expected nil tools, got %v", d.Tools)
 	}
-	if d.Resources != nil {
-		t.Errorf("expected nil resources, got %v", d.Resources)
+	if d.Resources == nil || len(d.Resources) != 0 {
+		t.Errorf("expected non-nil empty resources, got %#v", d.Resources)
 	}
 	if d.Commands != nil {
 		t.Errorf("expected nil commands, got %v", d.Commands)
