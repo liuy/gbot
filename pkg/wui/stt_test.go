@@ -42,13 +42,14 @@ type sttFakeUpstream struct {
 	modelsDelay  time.Duration
 	// batch knob
 	batchStatus int
-	// live behavior: "ok" | "ok-bigline" | "stall" | "sse-error" | "400" | "readn-close" | "eof-death"
+	// live behavior: "ok" | "ok-bigline" | "stall" | "stall-recover" | "sse-error" | "400" | "readn-close" | "eof-death"
 	liveMode     string
 	live400Body  string // "400" mode body override (flat vs nested shape)
 	liveRST      bool   // "eof-death": RST instead of graceful FIN
 	sseErrorBody string
 	readN        int
 	closeCh      chan struct{}
+	resumeCh     chan struct{} // "stall-recover": parked until signaled, then drains like "ok"
 
 	// capture
 	liveCount   int
@@ -95,6 +96,7 @@ func newSttFakeUpstream(t *testing.T) *sttFakeUpstream {
 		modelsJSON:  `{"data":[{"id":"stt-stream","mode":"streaming"},{"id":"stt","mode":"offline"}]}`,
 		liveMode:    "ok",
 		closeCh:     make(chan struct{}),
+		resumeCh:    make(chan struct{}),
 		progress:    make(chan struct{}, 32),
 		handlerExit: make(chan struct{}),
 	}
@@ -230,6 +232,35 @@ func (f *sttFakeUpstream) handleLive(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 		case <-time.After(3 * time.Second):
 		}
+		return
+	case "stall-recover":
+		// Park without reading until the test signals, then drain to EOF
+		// and emit the final event like "ok": models a consumption hiccup
+		// shorter than the stall grace — pcmCh fills, but the queue must
+		// not be declared dead while the writer can still make progress.
+		<-f.resumeCh
+		buf := make([]byte, 32*1024)
+		var acc []byte
+		for {
+			n, err := r.Body.Read(buf)
+			if n > 0 {
+				acc = append(acc, buf[:n]...)
+				f.recordProgress(len(acc))
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return
+			}
+		}
+		f.mu.Lock()
+		f.pcmTotal = len(acc)
+		f.mu.Unlock()
+		_, _ = io.WriteString(w, `data: {"type":"transcript.text.delta","delta":"你好。"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"transcript.text.done","text":"你好。","timing":{"ttft_ms":100}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
 		return
 	case "sse-error":
 		// Drain so the writer never sees a write error — the SSE error is
@@ -898,6 +929,41 @@ func TestSttWS_UpstreamStallErrors(t *testing.T) {
 	}
 	if hook.countKind("error") != 1 {
 		t.Errorf("terminal hook error count = %d, want 1", hook.countKind("error"))
+	}
+}
+
+// A full pcmCh during a burst is NOT a stall: the writer is merely paused on
+// transport backpressure. When consumption resumes inside the grace window
+// the frame must enter the queue and the stream must carry on to done —
+// only a queue that is still full after the grace may be declared stalled.
+// 600 frames ≈ 3.7× the pinned ~106KB absorption, so pcmCh provably fills.
+func TestSttWS_UpstreamStallRecoversWithinGrace(t *testing.T) {
+	f := newSttFakeUpstream(t)
+	f.set("stall-recover")
+	pinSttLiveClient(t)
+	hook := installSttTerminalHook(t)
+	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
+	ws := dialSttWS(t, srv)
+	sttSendJSON(t, ws, map[string]any{"type": "start"})
+	sttExpectReady(t, ws, "live")
+	sttSendBinariesLoose(ws, framesOf(speechPCM(600*epdFrameSamples)))
+	// The queue is full NOW; upstream wakes up and drains — the grace must
+	// absorb the wakeup instead of racing it.
+	close(f.resumeCh)
+	sttSendJSON(t, ws, map[string]any{"type": "stop"})
+	log := sttReadUntilClose(t, ws)
+	if len(log.errs) != 0 {
+		t.Fatalf("errors = %q, want none (a hiccup shorter than the grace is not a stall)", log.errs)
+	}
+	if log.done == "" {
+		t.Fatal("no done — the stream must finish normally after the recovery")
+	}
+	if n := hook.countKind("done"); n != 1 {
+		t.Errorf("terminal hook done count = %d, want 1", n)
+	}
+	_, _, _, pcmTotal, _, _, _ := f.got(t)
+	if want := 600 * epdFrameSamples * 2; pcmTotal != want {
+		t.Errorf("upstream received %d bytes, want %d (zero-loss: every parked frame must eventually drain)", pcmTotal, want)
 	}
 }
 

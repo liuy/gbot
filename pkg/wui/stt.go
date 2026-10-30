@@ -58,6 +58,12 @@ var sttLiveClient = &http.Client{}
 // limit; 60s × 32KB/s ≈ 1.9MB, so the cap is pure defense).
 const sttBatchLimit = 20 << 20
 
+// sttStallGrace is how long handleBinary waits on a full pcmCh before
+// declaring an upstream stall: burst-filled queues must give the writer time
+// to drain (and transport aborts time to win the terminal race), matching
+// the "≈2s unconsumed" semantics of the 64-frame queue at speech rate.
+const sttStallGrace = 500 * time.Millisecond
+
 // sttReadLimit caps a single WS frame: one binary frame above the 20MB
 // transcription budget is protocol abuse, not audio.
 const sttReadLimit = 20<<20 + 1024
@@ -386,13 +392,26 @@ func (c *sttConn) handleBinary(pcm []byte) {
 		select {
 		case c.pcmCh <- pcm:
 		default:
-			// ≥64 frames ≈ 2s unconsumed = upstream stall. Order is a
-			// defensive invariant: flag, close, error, cancel.
-			c.finalizing = true
-			close(c.pcmCh)
-			c.failConn("stt: upstream audio stalled")
-			c.cancel()
-			return
+			// A full queue means ≥64 frames ≈ 2s of audio unconsumed — but
+			// a burst fills it in milliseconds while the writer is merely
+			// paused on transport backpressure. Give the writer a grace
+			// window: transport-level deaths (abort → write failed) declare
+			// themselves well inside it, so only a queue that is still full
+			// after the grace is a genuine stall.
+			select {
+			case c.pcmCh <- pcm:
+			case <-time.After(sttStallGrace):
+				// Order is a defensive invariant: flag, close, error, cancel.
+				c.finalizing = true
+				close(c.pcmCh)
+				c.failConn("stt: upstream audio stalled")
+				c.cancel()
+				return
+			case <-c.ctx.Done():
+				// Terminal was reported elsewhere (e.g. the writer's write
+				// failure): frames no longer matter.
+				return
+			}
 		}
 	} else {
 		// Batch: append to the utterance buffer.
