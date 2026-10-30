@@ -6,14 +6,17 @@ package engine
 // connection instead of a permanent "not connected" error.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -374,6 +377,12 @@ func TestRemoteCallReconnectFailureSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("call against permanently dead remote must fail")
 	}
+	// Kept from the P5 investigation as a real assertion: the reconstructed
+	// "connection died" error must keep the original dead chain, or callers
+	// cannot classify it.
+	if !mcp.IsConnectionDeadError(err) {
+		t.Errorf("reconstructed connection-died error lost its dead chain: %v", err)
+	}
 	// Two legitimate surfacing shapes: the established session died mid-call
 	// (retry → reconnect reports failure), or the transport re-dial hit the
 	// downed listener directly. Either way the failure must surface verbatim.
@@ -400,4 +409,78 @@ func TestRemoteCallReconnectFailureSurfaces(t *testing.T) {
 	if _, err2 := tool.Call(context.Background(), json.RawMessage(`{}`), nil); err2 == nil {
 		t.Fatal("second call against a permanently dead remote must fail")
 	}
+}
+
+// A reconnect can land on a server that is dying at that very moment: the
+// fresh connection is adopted as connected, then the retry call fails with a
+// dead-connection error. The retry failure must evict the freshly adopted
+// connection too, and the surfaced error must keep the dead chain so callers
+// can still classify it.
+func TestMCPToolRetryDeathEvictsAdoptedConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	sdkSrv := sdk.NewServer(&sdk.Implementation{Name: "flapper", Version: "v1"}, nil)
+	sdkSrv.AddTool(&sdk.Tool{Name: "ping", Description: "pong", InputSchema: map[string]any{"type": "object"}},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "pong"}}}, nil
+		})
+	var killCalls atomic.Bool
+	sdkHandler := sdk.NewStreamableHTTPHandler(func(r *http.Request) *sdk.Server { return sdkSrv }, nil)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if killCalls.Load() && isMcpMethod(r, "tools/call") {
+			// Abort mid-stream: the client sees its session die exactly like
+			// a server crash would, while initialize still succeeds.
+			panic(http.ErrAbortHandler)
+		}
+		sdkHandler.ServeHTTP(w, r)
+	})
+	srv := &http.Server{Handler: handler}
+	go func() { _ = srv.Serve(ln) }()
+	tmpDir := t.TempDir()
+	data, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"remote": map[string]any{"type": "http", "url": "http://" + addr},
+	}})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".mcp.json"), data, 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+	reg, err := mcp.LoadAndConnectMCP(context.Background(), tmpDir, mcp.TransportFactory{}, nil)
+	if err != nil {
+		t.Fatalf("LoadAndConnectMCP: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.Close() })
+	tool := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__remote__ping",
+		OriginalName: "ping",
+		ServerName:   "remote",
+	}, reg)
+	callPing(t, tool)
+	killCalls.Store(true)
+	_, err = tool.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err == nil {
+		t.Fatal("call against a dying remote must fail")
+	}
+	// The surfaced error must remain classifiable as a dead connection.
+	if !mcp.IsConnectionDeadError(err) {
+		t.Errorf("surfaced error lost its dead-connection chain: %v", err)
+	}
+	// The retry's death evidence must evict the freshly adopted connection:
+	// a dead remote may not stand as connected in the registry.
+	if conn, ok := reg.GetConnection("remote"); ok && conn.ConnType() == "connected" {
+		t.Errorf("registry still marks the retry-dead remote as connected — retry eviction never ran (connType=%s)", conn.ConnType())
+	}
+}
+
+func isMcpMethod(r *http.Request, method string) bool {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return bytes.Contains(body, []byte(`"`+method+`"`))
 }

@@ -1003,14 +1003,26 @@ func TestMCPTool_Call_DeadSessionReconnectFailureSurfaces(t *testing.T) {
 	if !strings.Contains(err.Error(), "connection died") || !strings.Contains(err.Error(), "reconnect failed") {
 		t.Errorf("error must carry the dead connection and the failed reconnect, got: %v", err)
 	}
-	// The reconnect failure must stay wrapped — same chain contract as the
-	// not-found path, checked here on the death-retry branch.
-	inner := errors.Unwrap(err)
-	if inner == nil {
-		t.Fatalf("reconnect error is not in the wrap chain (Unwrap = nil): %v", err)
+	// Both halves must stay wrapped in the multi-error chain: the original
+	// dead-connection error (callers classify it via IsConnectionDeadError)
+	// and the reconnect failure (same chain contract as before, now with
+	// the death cause alongside).
+	multi, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("want a multi-wrap chain carrying death + reconnect failure, got %T: %v", err, err)
 	}
-	if !strings.Contains(inner.Error(), "not found in registry") {
-		t.Errorf("wrapped reconnect error = %q, want the registry's not-found error", inner.Error())
+	var hasDeath, hasReconnect bool
+	for _, e := range multi.Unwrap() {
+		msg := e.Error()
+		if strings.Contains(msg, "connection closed") || strings.Contains(msg, "client is closing") {
+			hasDeath = true
+		}
+		if strings.Contains(msg, "not found in registry") {
+			hasReconnect = true
+		}
+	}
+	if !hasDeath || !hasReconnect {
+		t.Errorf("chain parts = %v, want both the dead-connection cause and the reconnect failure wrapped", multi.Unwrap())
 	}
 	// The dead entry must not survive the failed retry: eviction is what
 	// routes every later call through reconnect instead of a dead session.

@@ -165,14 +165,21 @@ func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.To
 		t.registry.EvictIfSame(t.info.ServerName, cs)
 		newConn, reconnectErr := t.registry.Reconnect(ctx, t.info.ServerName)
 		if reconnectErr != nil {
-			return nil, fmt.Errorf("mcp: server %q connection died: %v (reconnect failed: %w)", t.info.ServerName, originalErr, reconnectErr)
+			return nil, fmt.Errorf("mcp: server %q connection died: %w (reconnect failed: %w)", t.info.ServerName, originalErr, reconnectErr)
 		}
 		newCS, ok := newConn.(*mcp.ConnectedServer)
 		if !ok {
-			return nil, fmt.Errorf("mcp: server %q connection died: %v (reconnect returned state %s)", t.info.ServerName, originalErr, newConn.ConnType())
+			return nil, fmt.Errorf("mcp: server %q connection died: %w (reconnect returned state %s)", t.info.ServerName, originalErr, newConn.ConnType())
 		}
 		params.Server = newCS
 		result, err = mcp.CallMCPTool(ctx, params)
+		if err != nil && mcp.IsConnectionDeadError(err) {
+			// The reconnect can land on a server dying at that very moment
+			// (e.g. it rode an in-flight single-flight reconnect). A freshly
+			// adopted connection carrying death evidence must not stay in
+			// the registry as connected.
+			t.registry.EvictIfSame(t.info.ServerName, newCS)
+		}
 	}
 	if err != nil {
 		return nil, err
