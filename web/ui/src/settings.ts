@@ -452,14 +452,22 @@ export function createSettingsPage(): SettingsPageHandles {
       // list; the probe/test affordance is where fetch errors surface.
       inflight = fetchProviderModels(p.url, p.keys?.[0] ?? '', p.type ?? 'audio')
         .then((res) => {
-          if (res.mode !== 'fetched') return
+          // Non-fetched modes are resolved (not rejected) failures — without
+          // the cache drop the first probe during a backend restart would
+          // poison the page-scoped map forever and the badges never heal.
+          if (res.mode !== 'fetched') {
+            audioTaskFetches.delete(p.name)
+            return
+          }
           const map: Record<string, string> = {}
           for (const entry of res.models) {
             if (typeof entry === 'object' && entry.task) map[entry.id] = entry.task
           }
           audioTasks.set(p.name, map)
         })
-        .catch(() => {})
+        .catch(() => {
+          audioTaskFetches.delete(p.name)
+        })
       audioTaskFetches.set(p.name, inflight)
     }
     return inflight
@@ -479,12 +487,18 @@ export function createSettingsPage(): SettingsPageHandles {
     const chev = createNode('span', { className: 'text-t3 text-[15px] leading-none transition-transform', text: '›' })
     head.append(kindBadge, title, chev)
     const panel = createElement('div', 'hidden border-t border-hairline max-h-[260px] overflow-y-auto')
+    // Render epoch: async appends (voices catalog) must only land on the
+    // panel generation they were started for — rerenderIfOpen mid-flight
+    // would otherwise double-append (old cb + new cb both hit replaceChildren's
+    // successor). Stale callbacks see a bumped epoch and drop out.
+    let panelEpoch = 0
     if (kind === 'llm') panel.setAttribute('data-default-panel', '')
     else if (kind === 'stt') panel.setAttribute('data-stt-panel', '')
     else panel.setAttribute('data-tts-panel', '')
     const current = () =>
       kind === 'llm' ? payload.default : kind === 'stt' ? (payload.stt ?? { provider: '', model: '' }) : (payload.tts ?? { provider: '', model: '' })
     const renderPanel = () => {
+      const epoch = ++panelEpoch
       panel.replaceChildren()
       const wantAudio = kind === 'stt' || kind === 'tts'
       // Card's own task gate: stt ↔ asr, tts ↔ tts. A model with a KNOWN
@@ -559,45 +573,49 @@ export function createSettingsPage(): SettingsPageHandles {
       // TTS only: a voice picker fed by the engine's own catalog
       // (/api/tts/voices proxies audio.cpp GET /audio/voices). The list is
       // backend knowledge; empty selection falls back to the engine's
-      // default preset.
+      // default preset. Radio rows — the model-row idiom — not a native
+      // <select> popup (user ruling: align with the other selectors).
       if (kind === 'tts') {
         const cur = current() as { provider: string; model: string; voice?: string }
-        const row = createElement('div', 'flex items-center gap-2.5 px-3.5 py-2 border-t border-hairline')
-        const label = createElement('span', 'text-[11px] text-t3 font-medium shrink-0')
-        label.textContent = t('ttsVoice')
-        const sel = document.createElement('select')
-        sel.setAttribute('data-tts-voice', '')
-        sel.className = 'flex-1 bg-ink3 border border-hairline rounded-lg px-2 py-1 text-xs font-mono'
-        const defOpt = document.createElement('option')
-        defOpt.value = ''
-        defOpt.textContent = t('ttsVoiceDefault')
-        sel.appendChild(defOpt)
-        sel.disabled = !cur.provider
-        row.append(label, sel)
-        panel.appendChild(row)
+        const group = createElement('div', 'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1 border-t border-hairline')
+        group.textContent = t('ttsVoice')
+        panel.appendChild(group)
+        const voiceRow = (value: string, label: string) => {
+          const row = createElement(
+            'div',
+            'flex items-center gap-2.5 px-3.5 py-2 ' + (cur.provider ? 'cursor-pointer' : 'cursor-default opacity-55'),
+          )
+          row.setAttribute('data-tts-voice', value)
+          const isSel = (cur.voice ?? '') === value
+          const dot = createElement(
+            'span',
+            'w-[14px] h-[14px] rounded-full border flex items-center justify-center ' + (isSel ? 'border-blue' : 'border-t3'),
+          )
+          if (isSel) dot.appendChild(createElement('span', 'w-[7px] h-[7px] rounded-full bg-blue'))
+          const labelEl = createElement('span', 'text-xs font-mono' + (isSel ? ' text-blue' : ''))
+          labelEl.textContent = label
+          row.append(dot, labelEl)
+          row.addEventListener('click', async () => {
+            if (!cur.provider || (cur.voice ?? '') === value) return
+            try {
+              await saveTTSDefault(cur.provider, cur.model, value)
+              payload.tts = { ...cur, voice: value }
+              renderPanel()
+            } catch (err) {
+              toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
+            }
+          })
+          return row
+        }
+        panel.appendChild(voiceRow('', t('ttsVoiceDefault')))
         fetchTTSVoices()
           .then((voices) => {
-            for (const v of voices) {
-              const o = document.createElement('option')
-              o.value = v
-              o.textContent = v
-              sel.appendChild(o)
-            }
-            sel.value = cur.voice ?? ''
+            if (epoch !== panelEpoch) return // a newer render owns the panel
+            for (const v of voices) panel.appendChild(voiceRow(v, v))
           })
           .catch(() => {
-            /* picker keeps just the default option; backend list is optional */
+            /* default row only; backend list is optional */
           })
-        sel.addEventListener('change', async () => {
-          try {
-            const c = current() as { provider: string; model: string; voice?: string }
-            await saveTTSDefault(c.provider, c.model, sel.value)
-            payload.tts = { ...c, voice: sel.value }
-            toast(t('savedRestart'))
-          } catch (err) {
-            toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
-          }
-        })
       }
     }
     card.append(head, panel)

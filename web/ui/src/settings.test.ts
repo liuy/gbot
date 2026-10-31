@@ -2554,7 +2554,7 @@ describe('STT settings surface', () => {
     })
   })
 
-  it('TTS voice dropdown: engine catalog fills the picker, selecting PUTs tts.voice', async () => {
+  it('TTS voice rows: engine catalog renders as radio rows (no select popup), tapping PUTs tts.voice', async () => {
     let putBody: { provider: string; model: string; voice?: string } | undefined
     const page = await openPage(
       makeFetchHandler({
@@ -2566,14 +2566,92 @@ describe('STT settings surface', () => {
     )
     const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
     ;(ttsCard.firstElementChild as HTMLElement).click()
-    const sel = page.root.querySelector('[data-tts-voice]') as HTMLSelectElement
-    expect(sel).toBeTruthy()
     await vi.waitFor(() => {
-      expect(Array.from(sel.options).map((o) => o.value)).toEqual(['', 'Aiden', 'Serena', 'Ryan'])
+      const rows = Array.from(page.root.querySelectorAll('[data-tts-voice]')) as HTMLElement[]
+      expect(rows.map((r) => r.dataset.ttsVoice)).toEqual(['', 'Aiden', 'Serena', 'Ryan'])
     })
-    sel.value = 'Serena'
-    sel.dispatchEvent(new Event('change'))
+    // No native picker — the rows ride the model-row radio idiom.
+    expect(page.root.querySelector('[data-tts-panel] select')).toBeNull()
+    const serena = Array.from(page.root.querySelectorAll('[data-tts-voice]')).find(
+      (r) => (r as HTMLElement).dataset.ttsVoice === 'Serena',
+    ) as HTMLElement
+    serena.click()
     await vi.waitFor(() => expect(putBody).toEqual({ provider: 'audiocpp', model: 'stt', voice: 'Serena' }))
+    // Selection state moves to the tapped row (radio dot + label tint).
+    await vi.waitFor(() => {
+      const sel = Array.from(page.root.querySelectorAll('[data-tts-voice]')).find(
+        (r) => (r as HTMLElement).dataset.ttsVoice === 'Serena',
+      ) as HTMLElement
+      expect(sel.querySelector('.bg-blue')).toBeTruthy()
+    })
+    // Collapse/reopen re-renders while the catalog promise may still be in
+    // flight — exactly one row set must survive (render-epoch guard).
+    ;(ttsCard.firstElementChild as HTMLElement).click()
+    ;(ttsCard.firstElementChild as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(page.root.querySelectorAll('[data-tts-voice]')).toHaveLength(4)
+    })
+  })
+
+  it('audio task probe: a failed first probe retries on the next card open (badges self-heal)', async () => {
+    let released = false
+    let modelsCalls = 0
+    const base = makeFetchHandler({
+      payload: STT_PAYLOAD,
+      models: { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }, { id: 'stt', task: 'tts' }] },
+    })
+    const handler = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/models' && !released) {
+        modelsCalls++
+        return { ok: true, status: 200, json: async () => ({ mode: 'error', error: 'backend restarting' }) }
+      }
+      return base(url, init)
+    })
+    const page = await openPage(handler, STT_PAYLOAD)
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    // The gated first probe errors; its cache-drop lands with it.
+    await vi.waitFor(() => expect(modelsCalls).toBe(1))
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-stt-panel]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    })
+    expect(page.root.querySelectorAll('[data-task-badge]')).toHaveLength(0)
+    // Backend comes back; the failed probe must not stay cached forever.
+    released = true
+    // Keep reopening until the retried probe succeeds: it goes through
+    // base's success stub (outside the error counter), so the badge is the
+    // user-visible outcome that matters.
+    await vi.waitFor(() => {
+      ;(sttCard.firstElementChild as HTMLElement).click() // collapse
+      ;(sttCard.firstElementChild as HTMLElement).click() // reopen
+      expect(page.root.querySelectorAll('[data-task-badge="stt"]')).toHaveLength(1)
+    })
+  })
+
+  it('audio task probe: a REJECTED probe also retries (catch-branch cache drop)', async () => {
+    let released = false
+    let modelsCalls = 0
+    const base = makeFetchHandler({
+      payload: STT_PAYLOAD,
+      models: { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }, { id: 'stt', task: 'tts' }] },
+    })
+    const handler = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/models' && !released) {
+        modelsCalls++
+        throw new Error('transport down') // rejection, not a resolved error mode
+      }
+      return base(url, init)
+    })
+    const page = await openPage(handler, STT_PAYLOAD)
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    await vi.waitFor(() => expect(modelsCalls).toBe(1))
+    released = true
+    await vi.waitFor(() => {
+      ;(sttCard.firstElementChild as HTMLElement).click() // collapse
+      ;(sttCard.firstElementChild as HTMLElement).click() // reopen
+      expect(page.root.querySelectorAll('[data-task-badge="stt"]')).toHaveLength(1)
+    })
   })
 
   it('audio provider card shows an AUDIO badge; model rows carry the STT tag on the default, no disclosure', async () => {
