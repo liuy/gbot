@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -131,52 +132,46 @@ func TestConfigWatcher_Stop(t *testing.T) {
 }
 
 func TestConfigWatcher_RapidWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, ".mcp.json")
-	if err := os.WriteFile(configPath, []byte(`{}`), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, ".mcp.json")
+		if err := os.WriteFile(configPath, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// Filesystem mtime granularity is coarser than the writes below: several
+		// writes in a row can share one timestamp, which would make the watcher
+		// correctly report "no change". Pin the baseline in the past so any
+		// subsequent write is unambiguously newer.
+		baseline := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(configPath, baseline, baseline); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
 
-	var reloadCount atomic.Int32
-	reloadDone := make(chan struct{})
-	watcher := NewConfigWatcher(func() {
-		if reloadCount.Add(1) >= 1 {
-			select {
-			case reloadDone <- struct{}{}:
-			default:
+		var reloadCount atomic.Int32
+		watcher := NewConfigWatcher(func() { reloadCount.Add(1) }, WithInterval(100*time.Millisecond))
+		watcher.AddPath(configPath)
+
+		go watcher.Start()
+		defer watcher.Stop()
+
+		// Virtual time does not advance during the writes, so every poll
+		// sees only the final state — coalescing is guaranteed, not raced.
+		for i := range 5 {
+			if err := os.WriteFile(configPath, fmt.Appendf(nil, `{"v":%d}`, i), 0644); err != nil {
+				t.Fatalf("write %d: %v", i, err)
 			}
 		}
-	}, WithInterval(100*time.Millisecond))
-	watcher.AddPath(configPath)
 
-	go watcher.Start()
-	defer watcher.Stop()
-
-	// Wait for first poll to pass (baseline established)
-	time.Sleep(150 * time.Millisecond) // REAL-TIME: polling test needs to wait for ticker
-
-	// Write 5 times rapidly — should coalesce into 1 reload
-	for i := range 5 {
-		if err := os.WriteFile(configPath, fmt.Appendf(nil, `{"v":%d}`, i), 0644); err != nil {
-			t.Fatalf("write %d: %v", i, err)
+		time.Sleep(150 * time.Millisecond) // virtual: crosses the first tick
+		if n := reloadCount.Load(); n != 1 {
+			t.Errorf("expected 1 reload after rapid writes, got %d", n)
 		}
-	}
 
-	// Wait for reload
-	select {
-	case <-reloadDone:
-		// Good
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reload")
-	}
-
-	// Wait another interval to verify no additional reloads
-	time.Sleep(200 * time.Millisecond) // REAL-TIME: polling test needs to wait for ticker
-
-	count := reloadCount.Load()
-	if count != 1 {
-		t.Errorf("expected 1 reload after rapid writes, got %d", count)
-	}
+		time.Sleep(100 * time.Millisecond) // virtual: one more poll, no further change
+		if n := reloadCount.Load(); n != 1 {
+			t.Errorf("watcher re-fired on unchanged config, got %d reloads", n)
+		}
+	})
 }
 
 func TestConfigWatcher_NoChange(t *testing.T) {
