@@ -620,10 +620,18 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   const pendingBlocks: Block[] = []
   const pendingToolByID = new Map<string, ToolBlock>()
   const currentSubAgentTextDiv = new Map<string, HTMLDivElement>()
+  // Keyed by the block OBJECT the snapshot rendered, not by parentID: a
+  // replayed delta continuing that same object (the frozen tree is reused,
+  // not copied) must morph the snapshot's div instead of appending a twin.
+  // Identity keying keeps backfill/prepend registrations inert — only the
+  // block object the replay continues can ever be resumed. WeakMap → no
+  // pruning: entries die with their blocks on the next renderStreamStateBlocks.
+  const snapshotTextDivs = new WeakMap<object, HTMLDivElement>()
   const currentSubAgentThinking = new Map<string, ThinkingEntry>()
-  // The shared block renderer reports running tools / active thinking so chat's
-  // incremental-delta registries stay wired across snapshot renders; job feeds
-  // render with no sink and never touch these.
+  // The shared block renderer reports running tools / active thinking / live
+  // text divs so chat's incremental-delta registries stay wired across
+  // snapshot renders; job feeds pass their own sink that omits these optional
+  // hooks, so the reports are no-ops there.
   const liveSink: LiveStreamSink = {
     onToolRunning: (handles, block, parentID) => {
       toolEntries.set(block.id, { handles, startedAt: block.startedAt || Date.now(), parentID, pendingBlock: block })
@@ -631,6 +639,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     onThinkingActive: (entry, parentID) => {
       if (parentID) currentSubAgentThinking.set(parentID, entry)
       else currentThinking = entry
+    },
+    onTextActive: (div, block) => {
+      snapshotTextDivs.set(block, div)
     },
     onTruncated: (block) => fireSubtreeFetch(block),
   }
@@ -1930,7 +1941,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             return
           }
           if (domContainer) {
-            let div = currentSubAgentTextDiv.get(parentID)
+            let div = currentSubAgentTextDiv.get(parentID) ?? snapshotTextDivs.get(last)
             if (!div) {
               div = appendTextBlock(domContainer)
               currentSubAgentTextDiv.set(parentID, div)
@@ -1941,7 +1952,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           return
         }
         if (!currentPendingText) {
-          startNewTextBlock()
+          const lastPending = pendingBlocks[pendingBlocks.length - 1]
+          const resumeDiv = lastPending?.kind === 'text' ? snapshotTextDivs.get(lastPending) : undefined
+          if (lastPending?.kind === 'text' && resumeDiv) {
+            currentPendingText = { block: lastPending }
+            currentTextDiv = resumeDiv
+          } else {
+            startNewTextBlock()
+          }
         }
         if (currentPendingText) {
           currentPendingText.block.text += e.text

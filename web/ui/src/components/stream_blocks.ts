@@ -41,6 +41,10 @@ export interface ThinkingEntryData {
 export interface LiveStreamSink {
   onToolRunning(handles: ToolDomHandles, block: ToolBlockData, parentID: string | null): void
   onThinkingActive(entry: ThinkingEntryData, parentID: string | null): void
+  // Reports the div a (re)render built for a text block so a consumer can
+  // resume in-flight text on it instead of appending a twin — the text
+  // counterpart of onThinkingActive.
+  onTextActive?(div: HTMLDivElement, block: Extract<Block, { kind: 'text' }>, parentID: string | null): void
   // Fires when a truncated block renders (chat immediately fetches the first
   // page). Absent (or a sink-less render) means no request channel — job-feed
   // blocks carry the truncation markers but never backfill them.
@@ -169,6 +173,7 @@ export function renderStreamBlock(
     const div = appendTextBlock(parent, before)
     div.innerHTML = renderMarkdown(block.text)
     wireCopyButtons(div)
+    live?.onTextActive?.(div, block, parentID)
   } else if (block.kind === 'thinking') {
     const startedAt = block.startedAt || Date.now()
     const { p, labelEl } = appendThinkingBlock(parent, startedAt, before)
