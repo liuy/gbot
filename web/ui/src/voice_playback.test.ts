@@ -103,6 +103,20 @@ function makeDeps(): { deps: PlaybackDeps; ctx: FakeCtx } {
   return { deps, ctx }
 }
 
+// Holds ensureAudio before its addModule step resolves: writes landing in
+// this window see no makeNode — the cold-start buffering path under test.
+function gatedDeps(): { deps: PlaybackDeps; ctx: FakeCtx; release: () => void } {
+  const { deps, ctx } = makeDeps()
+  let release!: () => void
+  const gate = new Promise<void>((r) => (release = r))
+  const realAdd = ctx.audioWorklet.addModule
+  ctx.audioWorklet.addModule = async (url: string) => {
+    await gate
+    return realAdd(url)
+  }
+  return { deps, ctx, release }
+}
+
 beforeEach(() => {
   FakeCtx.created = 0
 })
@@ -444,7 +458,7 @@ describe('JitterBufferCore', () => {
 })
 
 describe('createPlayback', () => {
-  it('creates zero AudioContexts at construction (D8: deferred to first hold)', () => {
+  it('creates zero AudioContexts at construction (D8: creation waits for a user gesture)', () => {
     const { deps } = makeDeps()
     createPlayback(deps)
     expect(FakeCtx.created).toBe(0)
@@ -489,6 +503,128 @@ describe('createPlayback', () => {
     const posted = ctx.workletNode!.port.posted as { buffer: Int16Array }[]
     expect(posted.length).toBe(2)
     expect(posted[1].buffer).toEqual(new Int16Array([0x0403, 0x0605]))
+  })
+
+  it('write() during the cold-start window queues PCM; attach flushes it in order', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02, 0x03]))
+    p.write(new Uint8Array([0x04]))
+    p.write(new Uint8Array([0x05, 0x06]))
+    expect(ctx.nodes).toHaveLength(0) // no node exists yet — nothing to receive
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { event?: string; buffer?: Int16Array }[]
+    expect(posted).toHaveLength(3)
+    expect(posted[0].buffer).toEqual(new Int16Array([0x0201]))
+    expect(posted[1].buffer).toEqual(new Int16Array([0x0403]))
+    expect(posted[2].buffer).toEqual(new Int16Array([0x0605]))
+    p.write(new Uint8Array([0x07, 0x08]))
+    expect((posted.at(-1) as { buffer: Int16Array }).buffer).toEqual(new Int16Array([0x0807]))
+  })
+
+  it('interrupt() discards queued PCM — the cut stream never plays on the next attach', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02]))
+    p.interrupt()
+    p.write(new Uint8Array([0x05, 0x06]))
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { buffer?: Int16Array }[]
+    expect(posted).toHaveLength(1)
+    expect(posted[0].buffer).toEqual(new Int16Array([0x0605]))
+  })
+
+  it('odd tail at flush stays a tail — queued bytes go out verbatim, carry survives for the next live write', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05])) // odd count: 05 lands in carry
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { buffer?: Int16Array }[]
+    expect(posted).toHaveLength(1)
+    expect(posted[0].buffer).toEqual(new Int16Array([0x0201, 0x0403]))
+    p.write(new Uint8Array([0x06, 0x07])) // live write: the carried 05 pairs with 06
+    expect((posted.at(-1) as { buffer: Int16Array }).buffer).toEqual(new Int16Array([0x0605]))
+  })
+
+  it('end() in the node-less window is deferred — the attached worklet still retires the stream', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02]))
+    p.end()
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { event?: string }[]
+    // Order is load-bearing: data before EOS — 'end' first would retire the
+    // worklet on a stream it never played.
+    expect(posted.map((m) => m.event)).toEqual(['write', 'end'])
+  })
+
+  it('interrupt() clears a deferred EOS — the next stream starts without a stale end', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02]))
+    p.end() // deferred
+    p.interrupt() // the round is cut — its EOS is void
+    p.write(new Uint8Array([0x05, 0x06])) // next stream, still node-less
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { event?: string; buffer?: Int16Array }[]
+    expect(posted.filter((m) => m.event === 'write')).toHaveLength(1)
+    expect((posted[0] as { buffer: Int16Array }).buffer).toEqual(new Int16Array([0x0605]))
+    expect(posted.filter((m) => m.event === 'end')).toHaveLength(0)
+  })
+
+  it('teardown() discards queued PCM — a dead session never reaches a node', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02]))
+    await p.teardown()
+    release()
+    await ready
+    expect(ctx.nodes).toHaveLength(0)
+  })
+
+  it('pending caps at ~30s: oldest whole chunk drops, newest survives', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    for (let i = 0; i < 31; i++) p.write(new Uint8Array(48000).fill(i + 1)) // 31 × 1s
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { buffer?: Int16Array }[]
+    const totalBytes = posted.reduce((a, m) => a + m.buffer!.length * 2, 0)
+    expect(totalBytes).toBe(1440000) // 31s written, the oldest 1s fell off
+    expect(posted[0].buffer![0]).toBe(0x0202) // marker 2: chunk 0 is gone
+    expect((posted.at(-1) as { buffer: Int16Array }).buffer[0]).toBe(0x1f1f) // marker 31: newest kept
+  })
+
+  it('pending trim is sample-aligned: a partial cut lands on an even byte offset', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    const head = new Uint8Array(48000)
+    for (let k = 0; k < 48000; k++) head[k] = k & 0xff
+    p.write(head)
+    for (let i = 1; i < 30; i++) p.write(new Uint8Array(48000).fill(i + 1)) // 30s total
+    p.write(new Uint8Array(100).fill(0xff)) // 100 bytes over the cap
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { buffer?: Int16Array }[]
+    const totalBytes = posted.reduce((a, m) => a + m.buffer!.length * 2, 0)
+    expect(totalBytes).toBe(1440000)
+    // Exactly 50 samples fell off the front at a sample boundary: the first
+    // delivered sample is bytes 100|101, not a mispaired half-sample splice.
+    expect(posted[0].buffer![0]).toBe(100 | (101 << 8))
+    expect(posted[0].buffer!.length).toBe((48000 - 100) / 2)
   })
 
   it('interrupt() posts the interrupt event', async () => {
@@ -597,10 +733,14 @@ describe('createPlayback', () => {
     expect(posted.at(-1)!.event).toBe('end')
   })
 
-  it('end() with no live node is a no-op', async () => {
+  it('end() with no queued PCM and no node records nothing — no stale EOS for the next stream', async () => {
     const { deps, ctx } = makeDeps()
     const p = createPlayback(deps)
-    p.end() // before ensureAudio — must not throw
-    expect(ctx.nodes).toHaveLength(0)
+    p.end() // before ensureAudio — must not throw, must not arm pendingEnd
+    const ready = p.ensureAudio()
+    await ready
+    p.write(new Uint8Array([0x01, 0x02])) // next stream's data
+    const posted = ctx.workletNode!.port.posted as { event?: string }[]
+    expect(posted.filter((m) => m.event === 'end')).toHaveLength(0)
   })
 })

@@ -150,6 +150,9 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   // soon as its queue settles.
   let wroteAudio = false
   let drained = true
+  // Set once the audio graph failed to build; drained can never fire after
+  // that, so the drain gate must let rounds through.
+  let audioDead = false
 
   const setState = (ev: VoiceSignal): void => {
     const next = reduceVoiceState(st, ev)
@@ -160,7 +163,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   }
 
   const maybeIdleAfterDrain = (): void => {
-    if (queryEnded && ttsQueue && ttsQueue.inFlight() === 0 && st === 'speak' && (!wroteAudio || drained)) {
+    // audioDead: the worklet never loaded, so drained can never fire —
+    // without this the round wedges in speak and blocks the mic (v1 no
+    // barge-in) until the page closes.
+    if (queryEnded && ttsQueue && ttsQueue.inFlight() === 0 && st === 'speak' && (!wroteAudio || drained || audioDead)) {
       setState({ kind: 'drained' })
     }
   }
@@ -310,6 +316,20 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     })
     mic = buildMic()
     openedSessionID = deps.currentSessionID?.()
+    // Prime the audio graph here: open rides the mount click's user
+    // activation, so the worklet is warm long before the first TTS PCM.
+    // A failed prime kills audio for THIS session only — the flag describes
+    // this playback, and a rejection landing after teardown/reopen belongs
+    // to a session that no longer exists.
+    audioDead = false
+    const pb = playback
+    pb.ensureAudio().catch(() => {
+      if (playback !== pb) return
+      audioDead = true
+      deps.onTTSError?.('tts: audio unavailable')
+      // A round may have settled while the rejection was in flight.
+      maybeIdleAfterDrain()
+    })
     // Opening sends NOTHING: the voice marking rides each final's own
     // message frame, so there is no face-level state to announce.
     unsubscribe = conn.subscribe(handleServerMessage)
@@ -327,8 +347,6 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       if (releasing) return // previous release still owns the mic
       setState({ kind: 'hold', held: true })
       recording = true
-      // AudioContexts live inside the gesture (autoplay policy, D8).
-      void playback?.ensureAudio()
       void mic?.start()
       return
     }

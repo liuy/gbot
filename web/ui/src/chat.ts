@@ -882,9 +882,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   }
 
   // Mounts the page as a body-level sibling of #root and hides #root.
-  // No AudioContext here — contexts are created inside the first hold
-  // gesture (D8). The aura canvas owns its draw loop; the page only needs
-  // the controller's live RMS level.
+  // The AudioContext is created in controller.open() — the mount click's
+  // own gesture (D8), warm before the first hold can produce TTS. The aura
+  // canvas owns its draw loop; the page only needs the controller's live
+  // RMS level.
   const mountVoicePage = (): void => {
     const page = createVoicePage({
       engineName: voiceEngineName,

@@ -1,7 +1,8 @@
 // Voice playback graph: jitter-buffered StreamProcessor worklet →
 // AnalyserNode → destination, on a dedicated 24kHz context. The context is
-// NOT created at construction — autoplay policy ties it to the first hold
-// gesture (D8), so ensureAudio() is the creation point and is idempotent.
+// NOT created at construction — autoplay policy ties it to a user gesture
+// (D8); controller.open() rides the mount click, so ensureAudio() is the
+// creation point and is idempotent.
 //
 // The worklet's buffering is a line-by-line port of the hf-realtime-voice
 // AudioPlaybackProcessor (PR #13, a production fork port): playback waits for
@@ -302,7 +303,8 @@ export interface PlaybackDeps {
 
 export interface Playback {
   // Creates the 24kHz context + worklet + analyser chain. Idempotent; the
-  // ONLY creation point (called inside the first hold gesture).
+  // ONLY creation point (the controller calls it from open(), inside the
+  // mount click's user activation).
   ensureAudio(): Promise<void>
   write(pcm: Uint8Array): void
   interrupt(): void
@@ -317,6 +319,11 @@ export interface Playback {
   teardown(): Promise<void>
 }
 
+// ~30s of 24kHz s16le mono: ceiling for PCM queued while no node exists —
+// write() must never drop bytes, but the queue also can't grow unbounded if
+// the worklet never loads.
+const PENDING_MAX_BYTES = 24000 * 2 * 30
+
 export function createPlayback(deps: PlaybackDeps = {}): Playback {
   let ctx: PlaybackContext | null = null
   let node: PlaybackWorkletNode | null = null
@@ -326,6 +333,57 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
   let carry = new Uint8Array(0)
   let drainedCb: (() => void) | null = null
   let makeNode: (() => PlaybackWorkletNode) | null = null
+  let pending: Uint8Array[] = []
+  // end() that fired while no node existed: without it the flushed stream
+  // never retires and the controller wedges in speak.
+  let pendingEnd = false
+
+  // s16le little-endian with odd-tail carry (voice-demo player semantics):
+  // a split sample must never be dropped or misaligned. Returns the
+  // whole-sample prefix; the odd tail (≤1 byte) stays in carry.
+  const framed = (pcm: Uint8Array): Uint8Array => {
+    const m = new Uint8Array(carry.length + pcm.length)
+    m.set(carry)
+    m.set(pcm, carry.length)
+    const n = m.length - (m.length % 2)
+    carry = m.slice(n)
+    return m.subarray(0, n)
+  }
+
+  const postSamples = (bytes: Uint8Array): void => {
+    if (bytes.length < 2) return
+    const i16 = new Int16Array(bytes.length >> 1)
+    for (let i = 0, j = 0; i < bytes.length; i += 2, j++) i16[j] = (bytes[i] | (bytes[i + 1] << 8)) as number
+    node!.port.postMessage({ event: 'write', buffer: i16, trackId: 'tts' })
+  }
+
+  const deliver = (pcm: Uint8Array): void => {
+    postSamples(framed(pcm))
+  }
+
+  // Queued buffers are framed (even-length), so a prefix cut always lands on
+  // a sample boundary — an odd cut would mispair every kept sample. All
+  // entries and the cap are even, so excess is provably even.
+  const pushPending = (pcm: Uint8Array): void => {
+    if (pcm.length === 0) return
+    pending.push(pcm)
+    let excess = -PENDING_MAX_BYTES
+    for (const b of pending) excess += b.length
+    while (excess > 0 && pending.length > 0) {
+      const head = pending[0]
+      const drop = Math.min(head.length, excess)
+      excess -= drop
+      if (drop === head.length) pending.shift()
+      else pending[0] = head.subarray(drop)
+    }
+  }
+
+  // Pending buffers were framed at push (even-length); they must go out
+  // verbatim — running them through framed() again would prepend the
+  // leftover carry to the queue's FRONT, mispairing every sample.
+  const flushPending = (): void => {
+    while (pending.length > 0) postSamples(pending.shift()!)
+  }
 
   // Node lifecycle (voice-go page.go:142-147 precedent): one node per stream.
   // The worklet's 'stop' event (interrupt or drain — the processor returns
@@ -349,6 +407,14 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
       }
     }
     n.connect(analyser)
+    // attach is the only !node → node transition (cold-start attach from
+    // ensureAudio, rebuild from write), so it is the single flush point:
+    // pending is empty whenever a node already exists.
+    flushPending()
+    if (pendingEnd) {
+      pendingEnd = false
+      node.port.postMessage({ event: 'end' })
+    }
   }
 
   const ensureAudio = (): Promise<void> => {
@@ -357,24 +423,32 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
       const create =
         deps.createContext ??
         (() => new AudioContext({ sampleRate: 24000 }) as unknown as PlaybackContext)
-      ctx = create()
-      await ctx.resume().catch(() => {})
+      // Hold the context in a local: teardown() nulls the closure's ctx at
+      // any await, and dereferencing it here would turn a clean close into
+      // an unhandled TypeError.
+      const c = create()
+      ctx = c
+      await c.resume().catch(() => {})
       const url = URL.createObjectURL(new Blob([PLAYBACK_WORKLET_SRC], { type: 'text/javascript' }))
-      await ctx.audioWorklet.addModule(url)
+      await c.audioWorklet.addModule(url)
+      // Torn down mid-prime (teardown nulls the closure's ctx): this
+      // context is closed — reviving analyser/node on it would resurrect a
+      // dead session's graph.
+      if (ctx !== c) return
       makeNode =
         deps.makeNode ??
         (() =>
-          new AudioWorkletNode(ctx as unknown as BaseAudioContext, 'stream_processor', {
+          new AudioWorkletNode(c as unknown as BaseAudioContext, 'stream_processor', {
             numberOfInputs: 0,
             outputChannelCount: [1],
           }) as unknown as PlaybackWorkletNode)
-      analyser = ctx.createAnalyser()
+      analyser = c.createAnalyser()
       // Aura RMS tap (readVol spec): 1024 time-domain frames, 0.55 smoothing.
       // Structural fakes carry the props as plain assignments.
       const sized = analyser as PlaybackAnalyser & { fftSize?: number; smoothingTimeConstant?: number }
       sized.fftSize = 1024
       sized.smoothingTimeConstant = 0.55
-      analyser.connect(ctx.destination)
+      analyser.connect(c.destination)
       td = new Uint8Array(1024)
       attachNode()
     })()
@@ -385,21 +459,18 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
     ensureAudio,
     write(pcm: Uint8Array): void {
       if (!node) attachNode()
-      if (!node) return
-      // s16le little-endian with odd-tail carry (voice-demo player
-      // semantics): a split sample must never be dropped or misaligned.
-      const m = new Uint8Array(carry.length + pcm.length)
-      m.set(carry)
-      m.set(pcm, carry.length)
-      const n = m.length - (m.length % 2)
-      carry = m.slice(n)
-      if (n < 2) return
-      const i16 = new Int16Array(n >> 1)
-      for (let i = 0, j = 0; i < n; i += 2, j++) i16[j] = (m[i] | (m[i + 1] << 8)) as number
-      node.port.postMessage({ event: 'write', buffer: i16, trackId: 'tts' })
+      if (!node) {
+        pushPending(framed(pcm))
+        return
+      }
+      deliver(pcm)
     },
     interrupt(): void {
       carry = new Uint8Array(0)
+      // The cut stream's undelivered PCM must not suddenly play on the next
+      // attach — the next stream starts from a clean queue.
+      pending = []
+      pendingEnd = false
       const n = node
       if (!n) return
       n.port.postMessage({ event: 'interrupt' })
@@ -412,7 +483,14 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
       drainedCb?.()
     },
     end(): void {
-      node?.port.postMessage({ event: 'end' })
+      if (!node) {
+        // Deferred EOS: the queued stream still owes the worklet its retire.
+        // An empty queue owes nothing — recording it would post 'end' ahead
+        // of the NEXT stream's data and skip its jitter floor.
+        pendingEnd = pending.length > 0
+        return
+      }
+      node.port.postMessage({ event: 'end' })
     },
     onDrained(cb: () => void): void {
       drainedCb = cb
@@ -429,6 +507,10 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
       td = null
       ensurePromise = null
       carry = new Uint8Array(0)
+      // ensureAudio can run again after teardown — a torn-down session's
+      // queued PCM must not leak into the next one.
+      pending = []
+      pendingEnd = false
       const c = ctx
       ctx = null
       await c?.close().catch(() => {})

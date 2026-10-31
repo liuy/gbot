@@ -238,15 +238,17 @@ describe('VoiceController', () => {
     vi.useRealTimers()
   })
 
-  it('cold start: construction creates no AudioContext; first hold does', async () => {
+  it('cold start: construction creates no AudioContext; open does (mount click gesture)', async () => {
     const { controller, pb, mic, ttsQueue } = setup()
     expect(controller.state()).toBe('idle')
     expect(pb.ensured).toBe(0)
     controller.open({ autoListen: false })
-    expect(pb.ensured).toBe(0)
+    // open rides the mount click's user activation — the worklet is warm
+    // long before the first TTS PCM arrives.
+    expect(pb.ensured).toBe(1)
     controller.hold(true)
     await vi.runAllTimersAsync()
-    expect(pb.ensured).toBe(1)
+    expect(pb.ensured).toBe(1) // open is the single trigger; hold never re-arms
     expect(mic().startCalls).toBe(1)
     expect(ttsQueue().texts).toEqual([]) // no tts traffic from a hold
     expect(controller.state()).toBe('listen')
@@ -665,6 +667,94 @@ describe('VoiceController', () => {
     controller.open({ autoListen: false })
     queue!.emitError('tts: no default voice')
     expect(onTTSError).toHaveBeenCalledWith('tts: no default voice')
+  })
+
+  it('a failed audio prime surfaces the error and the round settles without a drain', async () => {
+    const c = makeConn()
+    let queue: FakeTTSQueue | null = null
+    const onTTSError = vi.fn()
+    const pb = fakePlayback()
+    const livePb = fakePlayback()
+    const deadPb = { ...pb.pb, ensureAudio: () => Promise.reject(new Error('worklet blocked')) }
+    let useDead = true
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createTTSQueue: (opts) => (queue = new FakeTTSQueue(opts)),
+      createMic: (opts) => new FakeMic(opts.onDone),
+      createPlayback: () => (useDead ? deadPb : livePb.pb),
+      getPromptTexts: () => [],
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      onTTSError,
+    })
+    controller.open({ autoListen: false })
+    await vi.runAllTimersAsync()
+    expect(onTTSError).toHaveBeenCalledWith('tts: audio unavailable')
+    // The round must settle to idle with no drain — drained can never fire
+    // when the worklet never loaded (the pre-fix wedge: stuck in speak,
+    // mic blocked by no-barge-in until the page closes).
+    c.emit(ev('query_start'))
+    c.emit(ev('text_start'))
+    c.emit(ev('text_delta', SENTENCE))
+    c.emit(ev('text_end'))
+    c.emit(ev('query_end'))
+    queue!.emitPCM(new Uint8Array([1]))
+    queue!.settle()
+    expect(controller.state()).toBe('idle')
+    // audioDead must not leak into the next session: reopen with working
+    // audio and the round WAITS for the real drain again.
+    controller.teardown()
+    useDead = false
+    controller.open({ autoListen: false })
+    await vi.runAllTimersAsync()
+    c.emit(ev('query_start'))
+    c.emit(ev('text_start'))
+    c.emit(ev('text_delta', SENTENCE))
+    c.emit(ev('text_end'))
+    c.emit(ev('query_end'))
+    queue!.emitPCM(new Uint8Array([1]))
+    queue!.settle()
+    expect(controller.state()).toBe('speak')
+    livePb.drain()
+    expect(controller.state()).toBe('idle')
+  })
+
+  it('a rejection landing after teardown belongs to the dead session — no error, the next session drains normally', async () => {
+    const c = makeConn()
+    let queue: FakeTTSQueue | null = null
+    const onTTSError = vi.fn()
+    let rejectPrime!: (e: Error) => void
+    const deadPb = { ...fakePlayback().pb, ensureAudio: () => new Promise<void>((_, rej) => (rejectPrime = rej)) }
+    const livePb = fakePlayback()
+    let useDead = true
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createTTSQueue: (opts) => (queue = new FakeTTSQueue(opts)),
+      createMic: (opts) => new FakeMic(opts.onDone),
+      createPlayback: () => (useDead ? deadPb : livePb.pb),
+      getPromptTexts: () => [],
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      onTTSError,
+    })
+    controller.open({ autoListen: false }) // prime hangs
+    controller.teardown() // face closed mid-prime
+    rejectPrime(new Error('closed ctx')) // rejection lands after teardown
+    await vi.runAllTimersAsync()
+    expect(onTTSError).not.toHaveBeenCalled() // dead session: swallowed
+    useDead = false
+    controller.open({ autoListen: false }) // fresh session, working audio
+    c.emit(ev('query_start'))
+    c.emit(ev('text_start'))
+    c.emit(ev('text_delta', SENTENCE))
+    c.emit(ev('text_end'))
+    c.emit(ev('query_end'))
+    queue!.emitPCM(new Uint8Array([1]))
+    queue!.settle()
+    // audioDead must not have leaked: the round WAITS for the drain
+    expect(controller.state()).toBe('speak')
+    livePb.drain()
+    expect(controller.state()).toBe('idle')
   })
 
   // Scoped silence regression: a sentence whose synthesis fails surfaces the
