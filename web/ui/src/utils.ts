@@ -648,6 +648,19 @@ function jobNotificationDisplay(text: string): string {
   return out
 }
 
+// Mirror of Go ctxbuild.VoiceMsgMarker (pkg/context/voice_prompt.go). The
+// connector prefixes it onto every spoken message before dispatch, so every
+// server-side view of a spoken prompt — bubble, queue, echo, rewind,
+// cancel-restore — carries it. utils.test.ts pins this literal against the
+// Go source.
+export const VOICE_MSG_MARKER = '[voice] '
+
+// Strip only a leading marker: prompt text never contains it mid-string, and
+// a re-sent prompt gets the prefix again server-side.
+export function stripVoiceMarker(text: string): string {
+  return text.startsWith(VOICE_MSG_MARKER) ? text.slice(VOICE_MSG_MARKER.length) : text
+}
+
 // Snapshot hydration cost estimate: recursive block count and parseable
 // character volume. Image src excluded — base64 data URLs are huge but
 // never markdown-parsed.

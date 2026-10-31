@@ -183,6 +183,7 @@ func (a *engineAdapter) UpdateSessionTitle(sessionID, title string) error {
 	}
 	return store.UpdateSessionTitle(sessionID, title)
 }
+
 func (a *engineAdapter) SessionID() string     { return a.eng.SessionID() }
 func (a *engineAdapter) EngineID() string      { return a.eng.EngineID() }
 func (a *engineAdapter) Model() string         { return a.eng.Model() }
@@ -619,6 +620,10 @@ type WUIConnector struct {
 	// the mic button is offered.
 	sttDefault string
 
+	// ttsDefault mirrors config.TTS.Default the same way; the voice entry
+	// is offered only when stt AND tts both resolve.
+	ttsDefault string
+
 	// createEngine builds a new engine, registers it in the manager, and
 	// subscribes this connector to its hub. Set by main.go via
 	// SetCreateEngineFn. nil when engine_new is not supported.
@@ -705,6 +710,11 @@ func (c *WUIConnector) SetSTTDefault(d string) {
 	c.sttDefault = d
 }
 
+// SetTTSDefault records the configured TTS default the same way.
+func (c *WUIConnector) SetTTSDefault(d string) {
+	c.ttsDefault = d
+}
+
 // sttAvailable reports whether the STT default resolves to a model on an
 // audio provider. Uses the startup-cached sttDefault + providerConfigs, so
 // no disk read happens per config frame.
@@ -718,6 +728,21 @@ func (c *WUIConnector) sttAvailable() bool {
 	}
 	cfg := &config.Config{Providers: providers, STT: config.STTConfig{Default: c.sttDefault}}
 	_, _, err := cfg.ResolveSTT()
+	return err == nil
+}
+
+// ttsAvailable mirrors sttAvailable for the TTS default (startup cache only,
+// no disk read per config frame).
+func (c *WUIConnector) ttsAvailable() bool {
+	if c.ttsDefault == "" {
+		return false
+	}
+	providers := make([]config.Provider, 0, len(c.providerConfigs))
+	for _, p := range c.providerConfigs {
+		providers = append(providers, *p)
+	}
+	cfg := &config.Config{Providers: providers, TTS: config.TTSConfig{Default: c.ttsDefault}}
+	_, _, err := cfg.ResolveTTS()
 	return err == nil
 }
 
@@ -2094,6 +2119,17 @@ func freezeWindow(blocks []streamBlock, gen int) []streamBlock {
 	return out
 }
 
+// queryWindowLive reports whether the root stream region is inside a live
+// query. QueryStartMsgIdx only clears in the deferred endQuery after runTurns
+// returns, while the root region is replaced on the root query_end inside the
+// same ssMu section that stamps its seq — so the region flag is what closes
+// the drain window for a page or metadata frame minted in between.
+// The caller must hold slot.ssMu (both callers do).
+func queryWindowLive(slot *engineSlot) bool {
+	r := slot.streams[""]
+	return r != nil && r.queryActive
+}
+
 // buildHistory serves one page of the merged committed+stream view. The
 // IsBusy exclusion: when the engine is streaming, the assistant's streaming
 // response (after the last user text message) is omitted so the page's
@@ -2271,7 +2307,7 @@ func (c *WUIConnector) buildHistory(slot *engineSlot, cursor string, limit int, 
 		Seq        uint64           `json:"seq,omitempty"`
 		Nonce      uint64           `json:"nonce,omitempty"`
 	}{Type: "history", Messages: page, Stream: streamWindow, NextCursor: nextCursor, HasMore: hasMore,
-		Rev: viewRev(msgs), Busy: slot.engine.QueryStartMsgIdx() >= 0,
+		Rev: viewRev(msgs), Busy: slot.engine.QueryStartMsgIdx() >= 0 && queryWindowLive(slot),
 		Seq: wuiMonotonic.Add(1), Nonce: n})
 	return payload
 }
@@ -2873,12 +2909,14 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Current  configCurrent     `json:"current"`
 		Thinking string            `json:"thinking"`
 		Stt      bool              `json:"stt,omitempty"`
+		Tts      bool              `json:"tts,omitempty"`
 	}{
 		Type:     "config",
 		Models:   []configModelItem{},
 		Current:  configCurrent{Provider: currentProvider, Model: currentModel},
 		Thinking: string(slot.engine.Thinking()),
 		Stt:      c.sttAvailable(),
+		Tts:      c.ttsAvailable(),
 	}
 	for _, it := range items {
 		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
@@ -3370,7 +3408,7 @@ func (c *WUIConnector) sendMetadata(slot *engineSlot) {
 		Engines:    c.buildEngineList(),
 		Tasks:      c.buildTaskList(slot),
 		Rev:        sessionRev(slot.engine),
-		Busy:       slot.engine.QueryStartMsgIdx() >= 0,
+		Busy:       slot.engine.QueryStartMsgIdx() >= 0 && queryWindowLive(slot),
 		QueuedMsgs: buildQueuedMsgs(slot.engine.PendingAttachments()),
 		Stats:      c.buildStats(slot),
 		Jobs:       c.buildJobsMetadata(slot),

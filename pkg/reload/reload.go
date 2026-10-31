@@ -141,7 +141,11 @@ func (o *Orchestrator) captureBaseline() {
 		s.plugins = pieces
 	}
 	if env := o.deps.Env.Load(); env != nil {
-		s.prompt = ctxbuild.BuildSystemPrompt(o.deps.WorkingDir, o.deps.ProjectDir, env.ToolPrompts, env.SkillListing, "")
+		// Voice-wrapped to mirror what the engines actually hold: the primary
+		// engine's prompt carries the block (10-31 ruling), and this baseline
+		// is the diff's copy of that prompt — a bare build here would make the
+		// next reload's prompt row compare against a prompt that never existed.
+		s.prompt = ctxbuild.AppendVoiceBlock(ctxbuild.BuildSystemPrompt(o.deps.WorkingDir, o.deps.ProjectDir, env.ToolPrompts, env.SkillListing, ""))
 	}
 	s.ctxMap = ctxbuild.LoadContextFiles(o.deps.WorkingDir)
 	o.baseline = s
@@ -389,8 +393,9 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 		projRaw: projRaw,
 		plugins: pieces,
 		// The carried-over SkillListing (skills-failure path included) is
-		// what the next diff must compare against.
-		prompt: ctxbuild.BuildSystemPrompt(d.WorkingDir, d.ProjectDir, newEnv.ToolPrompts, newEnv.SkillListing, ""),
+		// what the next diff must compare against. Voice-wrapped for the same
+		// reason as captureBaseline: it is the primary engine's prompt mirror.
+		prompt: ctxbuild.AppendVoiceBlock(ctxbuild.BuildSystemPrompt(d.WorkingDir, d.ProjectDir, newEnv.ToolPrompts, newEnv.SkillListing, "")),
 		ctxMap: ctxbuild.LoadContextFiles(d.WorkingDir),
 	}
 	return rep
@@ -496,8 +501,8 @@ func (o *Orchestrator) appendDiffRows(rep *Report, userRaw, projRaw []byte, piec
 	// Prompt/context row: prompt built with the respective env parts, plus
 	// the context files. Any prompt-affecting change (MEMORY.md/CLAUDE.md,
 	// tool prompts, skill listing) flips it — that mirrors what the engine
-	// refresh actually swapped.
-	newPrompt := ctxbuild.BuildSystemPrompt(o.deps.WorkingDir, o.deps.ProjectDir, newEnv.ToolPrompts, newEnv.SkillListing, "")
+	// refresh actually swapped, voice wrap included (see captureBaseline).
+	newPrompt := ctxbuild.AppendVoiceBlock(ctxbuild.BuildSystemPrompt(o.deps.WorkingDir, o.deps.ProjectDir, newEnv.ToolPrompts, newEnv.SkillListing, ""))
 	newCtx := ctxbuild.LoadContextFiles(o.deps.WorkingDir)
 	promptRow := FileEntry{Path: "MEMORY.md · CLAUDE.md"}
 	if newPrompt != b.prompt || !reflect.DeepEqual(newCtx, b.ctxMap) {

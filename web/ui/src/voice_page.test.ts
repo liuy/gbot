@@ -1,0 +1,231 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { createVoicePage, VOICE_AURA_SIZE, type VoiceState } from './voice_page'
+import { createEventBlockStore } from './components/event_blocks'
+import { renderStreamBlock } from './components/stream_blocks'
+
+// The page renders through the shared event→block pipeline (the controller
+// writes QueryEvents into the store; the page's feed sink renders chat-standard
+// rows), so every rendering test drives the store — the same object chat.ts
+// hands to both sides.
+
+function setup() {
+  const store = createEventBlockStore()
+  const page = createVoicePage({
+    engineName: '小爪',
+    level: () => 0,
+    blocks: store,
+    onHold: vi.fn(),
+    onClose: vi.fn(),
+  })
+  document.body.appendChild(page.root)
+  return { page, store }
+}
+
+const toolStart = (id: string, name: string, summary = '') =>
+  ({ type: 'tool_start', tool_use: { id, name, input: {}, summary } })
+
+describe('createVoicePage', () => {
+  let page: ReturnType<typeof createVoicePage>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    page = setup().page
+  })
+
+  it('renders the structural skeleton (X/stage/aura canvas/avatar/controls)', () => {
+    expect(page.root.querySelector('.voice-x')).toBeTruthy()
+    expect(page.root.querySelector('.voice-stage')).toBeTruthy()
+    expect(page.root.querySelector('.voice-aura')).toBeTruthy() // shader field replaces halo + waveform
+    expect(page.root.querySelector('.voice-halo')).toBe(null)
+    expect(page.root.querySelector('.voice-wave')).toBe(null)
+    expect(page.root.querySelector('.voice-avatar')).toBeTruthy()
+    expect(page.root.querySelector('.voice-vcontent')).toBeTruthy()
+    expect(page.root.querySelector('.voice-mic')).toBeTruthy()
+    // 10-28 cut: status is visual only — no text hint element exists.
+    expect(page.root.querySelector('.voice-hint')).toBe(null)
+  })
+
+  it('the aura canvas keeps the ≤512 WebGL backing-store discipline', () => {
+    const canvas = page.root.querySelector('.voice-aura') as HTMLCanvasElement
+    expect(canvas.width).toBe(VOICE_AURA_SIZE)
+    expect(canvas.height).toBe(VOICE_AURA_SIZE)
+    expect(VOICE_AURA_SIZE).toBeLessThanOrEqual(512)
+  })
+
+  it('initializes cleanly under jsdom zero-WebGL (no context, no crash)', () => {
+    // createVoicePage in beforeEach already ran the aura path with
+    // getContext('webgl') → null; reaching here means no throw. The state
+    // machine still works.
+    page.setState('speak')
+    expect(page.root.dataset.st).toBe('speak')
+  })
+
+  it('setState switches data-st', () => {
+    for (const st of ['idle', 'listen', 'wait', 'think', 'tool', 'speak'] as VoiceState[]) {
+      page.setState(st)
+      expect(page.root.dataset.st).toBe(st)
+    }
+  })
+
+  it('mount resets the shared store so a remounted face starts empty', () => {
+    const store = createEventBlockStore()
+    store.apply({ type: 'thinking_start' })
+    store.apply({ type: 'thinking_delta', thinking: { text: '上一回合' } })
+    const p = createVoicePage({
+      engineName: 'e', level: () => 0, blocks: store, onHold: vi.fn(), onClose: vi.fn(),
+    })
+    document.body.appendChild(p.root)
+    expect(store.blocks()).toEqual([])
+    expect(p.root.querySelectorAll('[data-thinking="1"]').length).toBe(0)
+    p.destroy()
+  })
+
+  it('think fold: the shared pipeline streams the chat thinking block', () => {
+    const { page, store } = setup()
+    page.setState('think')
+    store.apply({ type: 'thinking_start' })
+    store.apply({ type: 'thinking_delta', thinking: { text: '先想一部分' } })
+    store.apply({ type: 'thinking_delta', thinking: { text: '先想一部分，再补全推理' } })
+    const wrap = page.root.querySelector('[data-thinking="1"]') as HTMLElement
+    expect(wrap).toBeTruthy()
+    const p = wrap.querySelector('p') as HTMLParagraphElement
+    expect(p.textContent).toContain('先想一部分，再补全推理')
+    expect(p.classList.contains('hidden')).toBe(false) // live while thinking
+    store.apply({ type: 'thinking_end', thinking: { duration: 2_500_000_000 } })
+    expect(p.classList.contains('hidden')).toBe(true) // chat auto-collapse on finish
+    expect(wrap.textContent).toContain('Thought for')
+  })
+
+  it('tool rows complete: summary streams via param deltas, finish stamps the duration', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const { page, store } = setup()
+      page.setState('tool')
+      store.apply(toolStart('t1', 'web'))
+      store.apply({
+        type: 'tool_param_delta',
+        partial_input: { id: 't1', name: 'web', delta: '{}', summary: '杭州 天气' },
+      })
+      const row = page.root.querySelector('[data-tool-root]') as HTMLElement
+      expect(row.dataset.toolName).toBe('web')
+      expect(row.textContent).toContain('杭州 天气')
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'))
+      store.apply({
+        type: 'tool_end',
+        tool_result: { tool_use_id: 't1', output: '', display_output: 'Sunny' },
+      })
+      const done = page.root.querySelector('[data-tool-root]') as HTMLElement
+      expect(done.dataset.toolTimingNs).toBe('2000000000')
+      expect(done.textContent).toContain('2s')
+      expect(done.textContent).toContain('杭州 天气')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tool rows are chat-isomorphic: rendered by the shared stream renderer', () => {
+    const { page, store } = setup()
+    page.setState('tool')
+    store.apply(toolStart('t1', 'web', '杭州 天气'))
+    const rows = page.root.querySelectorAll('[data-tool-root]')
+    expect(rows.length).toBe(1)
+    expect((rows[0] as HTMLElement).dataset.blockKind).toBe('tool')
+    // Isomorphism: a reference row rendered by the shared renderer from the
+    // SAME block object must be structurally identical — zero parallel
+    // rendering code on the voice face.
+    const scratch = document.createElement('div')
+    renderStreamBlock(scratch, store.blocks()[0], null, null)
+    const ref = scratch.firstElementChild as HTMLElement
+    expect(rows[0].className).toBe(ref.className)
+    expect(rows[0].innerHTML).toBe(ref.innerHTML)
+    expect(rows[0].textContent).toContain('web')
+    expect(rows[0].textContent).toContain('杭州 天气')
+  })
+
+  it('transient blocks: speak/listen/idle clear vcontent AND the store, wait keeps', () => {
+    const { page, store } = setup()
+    page.setState('tool')
+    store.apply(toolStart('t1', 'web'))
+    page.setState('think')
+    store.apply({ type: 'thinking_start' })
+    store.apply({ type: 'thinking_delta', thinking: { text: '推理中' } })
+    expect(page.root.querySelectorAll('[data-tool-root]').length).toBe(1)
+    expect(page.root.querySelectorAll('[data-thinking="1"]').length).toBe(1)
+    page.setState('speak')
+    expect(page.root.querySelectorAll('[data-tool-root]').length).toBe(0)
+    expect(page.root.querySelectorAll('[data-thinking="1"]').length).toBe(0)
+    // The DOM clear rides a store reset: new events start from empty truth,
+    // not from blocks the cleared DOM no longer shows.
+    expect(store.blocks()).toEqual([])
+    page.setState('wait')
+    store.apply({ type: 'thinking_start' })
+    page.setState('idle')
+    expect(page.root.querySelectorAll('[data-thinking="1"]').length).toBe(0)
+    expect(store.blocks()).toEqual([])
+  })
+
+  it('partial transcript shown and cleared', () => {
+    page.setPartial('你好')
+    const el = page.root.querySelector('.voice-partial') as HTMLElement
+    expect(el.textContent).toBe('你好')
+    expect(el.hasAttribute('hidden')).toBe(false)
+    page.setPartial('')
+    expect(el.hasAttribute('hidden')).toBe(true)
+  })
+
+  it('X click fires onClose', () => {
+    const onClose = vi.fn()
+    document.body.innerHTML = ''
+    const p = createVoicePage({ engineName: 'e', level: () => 0, blocks: createEventBlockStore(), onHold: vi.fn(), onClose })
+    ;(p.root.querySelector('.voice-x') as HTMLElement).click()
+    expect(onClose).toHaveBeenCalledTimes(1)
+    p.destroy()
+  })
+
+  it('big mic PTT: hold/release callbacks; ignored in speak state', () => {
+    const onHold = vi.fn()
+    document.body.innerHTML = ''
+    const p = createVoicePage({ engineName: 'e', level: () => 0, blocks: createEventBlockStore(), onHold, onClose: vi.fn() })
+    document.body.appendChild(p.root)
+    const mic = p.root.querySelector('.voice-mic') as HTMLElement
+    // Energy-orb structure (ptt-preview .micA): press ring + white mic icon.
+    expect(mic.querySelector('.ring')).toBeTruthy()
+    expect((mic.querySelector('svg') as SVGElement).getAttribute('stroke')).toBe('#fff')
+    p.setState('idle')
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(onHold).toHaveBeenCalledWith(true)
+    mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    expect(onHold).toHaveBeenCalledWith(false)
+    // speak: no barge-in — holds are suppressed.
+    onHold.mockClear()
+    p.setState('speak')
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    expect(onHold).not.toHaveBeenCalled()
+    p.destroy()
+  })
+
+  it('big mic PTT: finger slid off the button releases the turn', () => {
+    const onHold = vi.fn()
+    document.body.innerHTML = ''
+    const p = createVoicePage({ engineName: 'e', level: () => 0, blocks: createEventBlockStore(), onHold, onClose: vi.fn() })
+    document.body.appendChild(p.root)
+    const mic = p.root.querySelector('.voice-mic') as HTMLElement
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(onHold).toHaveBeenCalledWith(true)
+    mic.dispatchEvent(new MouseEvent('pointerleave', { bubbles: true }))
+    expect(onHold).toHaveBeenCalledWith(false)
+    p.destroy()
+  })
+
+  it('destroy removes the root and detaches the store subscription', () => {
+    const { page, store } = setup()
+    expect(document.body.contains(page.root)).toBe(true)
+    page.destroy()
+    expect(document.body.contains(page.root)).toBe(false)
+    // Events after destroy must not touch the detached DOM (or throw).
+    expect(() => store.apply({ type: 'thinking_start' })).not.toThrow()
+    expect(page.root.querySelectorAll('[data-thinking="1"]').length).toBe(0)
+  })
+})

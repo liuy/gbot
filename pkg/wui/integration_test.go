@@ -1051,7 +1051,7 @@ func TestHandleMessageInbound_NilEngine(t *testing.T) {
 	t.Cleanup(c.Stop)
 
 	// Should not panic.
-	c.handleMessageInbound("test message", nil)
+	c.handleMessageInbound("test message", nil, false)
 }
 
 // ---- Section 13: handleStop nil engine ----

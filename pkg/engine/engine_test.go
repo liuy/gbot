@@ -6413,6 +6413,110 @@ func TestEnqueueAttachmentLogPreview(t *testing.T) {
 	}
 }
 
+// TestTurnBoundaryPromptLandsBeforeNotification pins the busy-path landing
+// order at the tool-result turn boundary: drainQueuedUserAttachments
+// (prompts) runs BEFORE DrainByPriority(PriorityNext) (job/message
+// notifications), so history reads user prompt → notification marker —
+// regardless of the order the two items were enqueued in. Reordering the
+// two drains (or letting FIFO queue order decide) must turn this red.
+func TestTurnBoundaryPromptLandsBeforeNotification(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// Turn 1 returns a tool_use so the query stays busy through a turn
+	// boundary; the blocking tool holds that boundary open until both items
+	// are enqueued. Later turns are text so the query terminates.
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "my_tool", "{}"), nil)
+	mp.addResponse(textStreamEvents("test-model", "answer"), nil)
+	mp.addResponse(textStreamEvents("test-model", "done"), nil)
+
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	mt := &mockTool{
+		name:    "my_tool",
+		enabled: true,
+		callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(toolStarted)
+			<-releaseTool
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: ec,
+	})
+	t.Cleanup(func() { eng.Close() })
+	eng.systemPrompt = "{}"
+
+	eng.Query(context.Background(), "test", "")
+
+	// Park inside the tool: the turn boundary (drain order under test) has
+	// not run yet, so both items below are guaranteed to beat it.
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started; query did not reach execution")
+	}
+	if !eng.IsBusy() {
+		t.Fatal("engine must be busy while the tool is parked")
+	}
+
+	// Enqueue the notification FIRST — the pin must hold against queue order.
+	eng.EnqueueAttachment(types.QueuedItem{
+		UUID:      "note-1",
+		Value:     "notification-marker",
+		Mode:      types.ItemModeNotification,
+		Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	eng.EnqueueAttachment(types.QueuedItem{
+		UUID:      "prompt-1",
+		Value:     "user-prompt-text",
+		Mode:      types.ItemModePrompt,
+		Timestamp: time.Date(2024, 1, 1, 0, 0, 1, 0, time.UTC),
+	})
+	close(releaseTool)
+
+	select {
+	case <-ec.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("query did not complete")
+	}
+
+	msgs := eng.Messages()
+	promptIdx, noteIdx := -1, -1
+	for i, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.Type != types.ContentTypeText {
+				continue
+			}
+			if strings.Contains(b.Text, "user-prompt-text") {
+				promptIdx = i
+			}
+			if strings.Contains(b.Text, "notification-marker") {
+				noteIdx = i
+			}
+		}
+	}
+	if promptIdx < 0 {
+		t.Fatal("prompt message not found in history")
+	}
+	if noteIdx < 0 {
+		t.Fatal("notification marker not found in history")
+	}
+	if promptIdx >= noteIdx {
+		t.Errorf("history order = notification at %d, prompt at %d; want the user prompt BEFORE the notification marker", noteIdx, promptIdx)
+	}
+}
+
 func TestDrainQueuedUserAttachmentsOnlyDrainsPrompts(t *testing.T) {
 	t.Parallel()
 	e := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: silentLogger()})

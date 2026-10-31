@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import {
   parseDurationFromOutput,
   timeDividerLabel,
@@ -13,8 +15,11 @@ import {
   isInjectedReminderEnvelope,
   isJobNotificationEnvelope,
   isLegacyJobReminderEnvelope,
+  classifyReminderMessage,
   countStreamBlocks,
   streamTextChars,
+  VOICE_MSG_MARKER,
+  stripVoiceMarker,
 } from './utils'
 import type { Block } from './model'
 
@@ -742,6 +747,16 @@ const CHAHUA_ENVELOPE =
   '<system-reminder>\nThe user sent a new message while you were working:\nhi' +
   '\n\nIMPORTANT: After completing your current task, you MUST address the user\'s message above. Do not ignore it.\n</system-reminder>'
 
+// Unknown reminder-shaped envelopes must classify as null (render as a
+// bubble) — the voice-face markers are retired, nothing else matches a bare
+// system-reminder wrap.
+describe('classifyReminderMessage: unknown envelopes stay null', () => {
+  it('a user message that merely mentions retired phrases, or an unmatched envelope, must not classify', () => {
+    expect(classifyReminderMessage('The user has switched to the voice interface, said nobody')).toBe(null)
+    expect(classifyReminderMessage('<system-reminder>\nplant talk\n</system-reminder>')).toBe(null)
+  })
+})
+
 describe('isInjectedReminderEnvelope', () => {
   it.each<[string, string, boolean]>([
     ['bash job envelope', BASH_JOB_ENVELOPE, true],
@@ -916,5 +931,36 @@ describe('streamTextChars', () => {
     ] as unknown as Block[]
     expect(streamTextChars(sparse)).toBe(0)
     expect(countStreamBlocks(sparse)).toBe(2)
+  })
+})
+
+// The marker prefix lives in the Go connector (the server is what stores it);
+// the TS mirror only renders and strips it. If the two literals drift, live
+// rows and their replayed rows disagree and abort-rewind's text match misses.
+describe('VOICE_MSG_MARKER mirror', () => {
+  it('equals the Go const VoiceMsgMarker literal', () => {
+    const goSrc = readFileSync(resolve(__dirname, '../../../pkg/context/voice_prompt.go'), 'utf-8')
+    const m = goSrc.match(/^const VoiceMsgMarker = "((?:[^"\\]|\\.)*)"/m)
+    if (!m) throw new Error('const VoiceMsgMarker not found in pkg/context/voice_prompt.go')
+    // Go source literals are already JS-escapable for this constant.
+    expect(JSON.parse(`"${m[1]}"`)).toBe(VOICE_MSG_MARKER)
+  })
+})
+
+describe('stripVoiceMarker', () => {
+  it('strips a leading marker', () => {
+    expect(stripVoiceMarker('[voice] 你好。')).toBe('你好。')
+  })
+  it('leaves marker-less text untouched', () => {
+    expect(stripVoiceMarker('你好')).toBe('你好')
+  })
+  it('strips the leading marker only', () => {
+    expect(stripVoiceMarker('[voice] mid [voice] tail')).toBe('mid [voice] tail')
+  })
+  it('marker alone empties the text', () => {
+    expect(stripVoiceMarker('[voice] ')).toBe('')
+  })
+  it('empty string stays empty', () => {
+    expect(stripVoiceMarker('')).toBe('')
   })
 })

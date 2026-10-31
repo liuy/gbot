@@ -439,6 +439,7 @@ func TestSendMetadata_StripCarryRevBusy(t *testing.T) {
 		// Busy takeover: idx 35 truncates the rev view; one delta lands in
 		// the stream region before the second client takes over.
 		c.mock().SetQueryStartMsgIdxFn(func() int { return 35 })
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
 		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 		ws2 := hs.dialWS(t)
 		meta2 := readMetadata(t, ws2)
@@ -480,6 +481,10 @@ func TestServeHistoryPage_TakeoverIntegration(t *testing.T) {
 			}
 		})
 		c.mock().SetQueryStartMsgIdxFn(func() int { return 1 })
+
+		// The root region must be live for the page/metadata busy flag; the
+		// pending dialDrained client absorbs this frame (never read).
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
 
 		ws2 := hs.dialWS(t)
 		meta := readMetadata(t, ws2)
@@ -523,6 +528,87 @@ func TestServeHistoryPage_TakeoverIntegration(t *testing.T) {
 		seq3 := extractEventSeq(t, readWSMessage(t, ws2))
 		if seq3 <= page.Seq {
 			t.Errorf("post-page event seq = %d, want > page seq %d", seq3, page.Seq)
+		}
+	})
+}
+
+// A page frozen in the drain window (root query_end delivered, the engine's
+// deferred endQuery not yet run) must not claim a live query: the client's
+// absorption rule drops the query_end frame numbered below the page's seq, so
+// a busy:true here strands its STOP bar forever.
+func TestServeHistoryPage_QueryEndDrainWindowReportsIdle(t *testing.T) {
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
+		c.mock().SetMessagesFn(func() []types.Message {
+			return []types.Message{
+				{ID: "m0", Role: types.RoleUser, Timestamp: time.Unix(1000, 0), Content: []types.ContentBlock{types.NewTextBlock("q")}},
+				{ID: "m1", Role: types.RoleAssistant, Timestamp: time.Unix(1001, 0), Content: []types.ContentBlock{types.NewTextBlock("answer")}},
+			}
+		})
+		// Fixed for the whole test: the engine still reports the query window
+		// open after query_end, which is exactly the window under test.
+		c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+
+		ws := hs.dialWS(t)
+		readMetadata(t, ws)
+		hs.awaitTakeover(t)
+
+		c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+		readWSMessage(t, ws) // discarded — it only opens the region
+		c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "answer"})
+		readWSMessage(t, ws)
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+		qeSeq := extractEventSeq(t, readWSMessage(t, ws))
+
+		page := parseHistPage(t, requestHistory(t, ws, "", 30, 9))
+		if page.Busy {
+			t.Errorf("page busy = true, want false (query_end seq %d already stamped; the deferred endQuery must not make a frozen page claim a live query)", qeSeq)
+		}
+		if page.Seq <= qeSeq {
+			t.Errorf("page seq = %d, want > query_end seq %d (the client drops that query_end as absorbed)", page.Seq, qeSeq)
+		}
+		if len(page.Stream) != 0 {
+			t.Errorf("page stream = %+v, want none (the query_end region reset wiped it)", page.Stream)
+		}
+
+		// The metadata producer must fail the same way, not just the page.
+		ws3 := hs.dialWS(t)
+		meta3 := readMetadata(t, ws3)
+		hs.awaitTakeover(t)
+		if meta3.Busy != nil {
+			t.Errorf("third-client metadata busy = %v, want nil (same drain window via sendMetadata)", *meta3.Busy)
+		}
+	})
+}
+
+// A query whose root region has not opened yet (prefill window: accepted, no
+// top-level turn_start emitted) reports idle, because a client that armed its
+// bar on this page could never clear it — the page's seq numbers every frame
+// of the query it cannot show. The live turn_start arms the bar normally, and
+// the query row itself still ships, so nothing vanishes from history.
+func TestServeHistoryPage_PrefillWindowReportsIdle(t *testing.T) {
+	hermeticWUI(t, func(t *testing.T, c *WUIConnector, hs *chatServer) {
+		_ = hs.dialDrained(t)
+		c.mock().SetMessagesFn(func() []types.Message {
+			return []types.Message{
+				{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0), Content: []types.ContentBlock{types.NewTextBlock("prefill query")}},
+			}
+		})
+		c.mock().SetQueryStartMsgIdxFn(func() int { return 0 })
+
+		ws := hs.dialWS(t)
+		readMetadata(t, ws)
+		hs.awaitTakeover(t)
+
+		page := parseHistPage(t, requestHistory(t, ws, "", 30, 1))
+		if page.Busy {
+			t.Error("page busy = true, want false (prefill window: a query whose root region never opened must report idle)")
+		}
+		if len(page.Messages) != 1 || page.Messages[0].ID != "u1" {
+			t.Errorf("page messages = %+v, want the single query row u1", page.Messages)
+		}
+		if len(page.Stream) != 0 {
+			t.Errorf("page stream = %+v, want none (no turn_start, so no streamed blocks)", page.Stream)
 		}
 	})
 }

@@ -3,6 +3,9 @@ import { createChat, mapHistoryToChatMessages } from './chat'
 import { refreshAvatar, resetAvatarStateForTest } from './avatar'
 import { TokenRate } from './token_rate'
 import { stopStatusSweep } from './components/status_sweep'
+import { createTTSQueue } from './voice_tts'
+import { floatTo16Le } from './stt'
+import * as sttModule from './stt'
 
 // jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
 class MockIntersectionObserver {
@@ -34,6 +37,106 @@ vi.mock('./ws', () => ({
     reconnect: () => { stateCb?.('reconnecting') },
   }),
 }))
+// The TTS queue is mocked so the chat-level voice tests can observe what
+// the controller enqueues and drive playback (write/settle/error) — a real
+// queue would POST /api/tts and stream, which connects to nothing in jsdom.
+// voice_tts.test.ts covers the queue itself.
+vi.mock('./voice_tts', () => {
+  interface MockOpts {
+    write(pcm: Uint8Array): void
+    onError?(message: string): void
+    onSettled?(): void
+  }
+  class MockTTSQueue {
+    opts: MockOpts
+    texts: string[] = []
+    aborts = 0
+    inFlightCount = 0
+    constructor(opts: MockOpts) {
+      this.opts = opts
+    }
+    enqueue(text: string): void {
+      this.texts.push(text)
+      this.inFlightCount++
+    }
+    inFlight(): number {
+      return this.inFlightCount
+    }
+    abort(): void {
+      this.aborts++
+      this.inFlightCount = 0
+    }
+    // Driver: one item finished — inFlight DECREMENTS, reaching 0 only when
+    // every enqueued item settled (the real queue's drain semantics).
+    settle(): void {
+      if (this.inFlightCount > 0) this.inFlightCount--
+      this.opts.onSettled?.()
+    }
+  }
+  const all: MockTTSQueue[] = []
+  const create = (opts: MockOpts): MockTTSQueue => {
+    const q = new MockTTSQueue(opts)
+    all.push(q)
+    return q
+  }
+  return { createTTSQueue: Object.assign(create, { all }) }
+})
+// The voice mic leg is a real SttSession; its /ws/stt socket is faked here
+// so the tests can drive the handshake (start frame wire shape, ready, done)
+// through the genuine capture/buffering path. The wrapper is transparent to
+// the dictation session (no chat-level test drives it).
+vi.mock('./stt', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./stt')>()
+  class MockSttWS {
+    static instances: MockSttWS[] = []
+    static OPEN = 1
+    readyState = MockSttWS.OPEN
+    bufferedAmount = 0
+    onopen: (() => void) | null = null
+    onclose: (() => void) | null = null
+    onerror: (() => void) | null = null
+    onmessage: ((ev: { data: unknown }) => void) | null = null
+    sentText: string[] = []
+    sentBinary: ArrayBuffer[] = []
+    closed = false
+    constructor() {
+      MockSttWS.instances.push(this)
+      queueMicrotask(() => {
+        this.readyState = MockSttWS.OPEN
+        this.onopen?.()
+      })
+    }
+    send(data: string | ArrayBuffer) {
+      if (typeof data === 'string') this.sentText.push(data)
+      else this.sentBinary.push(data)
+    }
+    close() {
+      this.closed = true
+      this.readyState = 3
+    }
+    dispatch(data: unknown) {
+      this.onmessage?.({ data })
+    }
+  }
+  const RealSttSession = orig.SttSession
+  const sttSocks: unknown[] = []
+  class SttSession extends RealSttSession {
+    constructor(opts: Record<string, unknown>) {
+      super({
+        ...opts,
+        deps: {
+          ...(opts.deps as object | undefined),
+          connectSocket: () => {
+            const sock = new MockSttWS()
+            sttSocks.push(sock)
+            return sock as never
+          },
+        },
+      } as never)
+    }
+  }
+  return { ...orig, SttSession, __sttSocks: sttSocks }
+})
 
 function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
@@ -3578,6 +3681,108 @@ describe('chat integration', () => {
     expect(document.body.textContent).toContain('Tap to CANCEL')
     expect(document.body.textContent).toContain('[doc.pdf]')
   })
+
+  // A stuck STOP has no trace of WHERE its query_end went. The page's seq
+  // watermark swallows frames silently; each of those drops must name itself
+  // in the log so a phone capture can tell the mechanisms apart.
+  it('event frame absorbed by the page watermark logs its breadcrumb', () => {
+    const debugSpy = vi.spyOn(console, 'debug')
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      busy: true,
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    // The page must echo the nonce the client itself sent, or case 'history'
+    // drops it whole and no watermark ever lands.
+    const req = sent.filter((m) => (m as { type?: string }).type === 'history_request').at(-1) as {
+      nonce: number
+    }
+    // Deferral first: a frame that lands while the page is in flight is
+    // buffered, then skipped at replay when the page's watermark covers it.
+    dispatch({ type: 'event', event: { type: 'text_delta', text: 'buffered' }, seq: 12 })
+    dispatch({
+      type: 'history',
+      nonce: req.nonce,
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'working' }],
+      nextCursor: '',
+      hasMore: false,
+      busy: true,
+      seq: 20,
+    })
+    const lines = () => debugSpy.mock.calls.map((c) => c[0])
+    expect(lines()).toContain('[chat] event buffered type=text_delta seq=12')
+    expect(lines()).toContain('[chat] event absorbed(replay) type=text_delta seq=12 watermark=20')
+    expect(document.body.textContent).not.toContain('buffered')
+    dispatch({ type: 'event', event: { type: 'text_delta', text: 'absorbed' }, seq: 15 })
+    expect(lines()).toContain('[chat] event absorbed type=text_delta seq=15 watermark=20')
+    // Characterization: the swallowed frame changes no state.
+    expect(document.body.textContent).not.toContain('absorbed')
+    dispatch({ type: 'event', event: { type: 'text_delta', text: 'fresh' }, seq: 21 })
+    expect(document.body.textContent).toContain('fresh')
+    expect(lines()).not.toContain('[chat] event absorbed type=text_delta seq=21 watermark=20')
+    debugSpy.mockRestore()
+  })
+
+  // The no-local-copy rewind branch (observer tab / takeover / queue
+  // misroute): rewound_text is server-side and marker-bearing, and this is the
+  // second of the three sites where a stored string re-enters the input.
+  it('rewind of a voice prompt with no local copy restores the clean text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }])
+    clickStop()
+    dispatchEvents([
+      { type: 'query_end', aborted: true, rewound: true, rewound_text: '[voice] 你好。' },
+    ])
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('你好。')
+  })
+
+  // The Busy gate's other half: a page that reports busy:false for a query in
+  // its prefill window arms nothing, and the live turn_start one seq above the
+  // watermark arms the bar late rather than never.
+  it('TestPrefillPageArmsLate: a busy:false prefill page arms nothing, its turn_start arms STOP', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // No rev on this metadata frame: the page0Cache write and lookup both
+    // require one, so the client must mint a fresh history_request here
+    // instead of replaying an earlier test's cached page.
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'main' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    const req = sent.filter((m) => (m as { type?: string }).type === 'history_request').at(-1) as {
+      nonce: number
+    }
+    dispatch({
+      type: 'history',
+      nonce: req.nonce,
+      messages: [
+        {
+          id: 'u1', role: 'user', text: 'prefill query',
+          thinking: [], tools: [],
+          usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+          error: '', status: 'done', startedAt: 0,
+        },
+      ],
+      stream: [],
+      nextCursor: '',
+      hasMore: false,
+      busy: false,
+      seq: 20,
+    })
+    expect(document.body.textContent).not.toContain('STOP')
+    dispatch({ type: 'event', event: { type: 'turn_start' }, seq: 21 })
+    expect(document.body.textContent).toContain('STOP')
+  })
 })
 
 // formatDuration renders "0.2s" | "45s" | "5m 0s" | "1h 2m 3s"; parse any of
@@ -4723,6 +4928,525 @@ describe('STT mic availability', () => {
     })
     expect(mic().classList.contains('stt-mic-off')).toBe(true)
     expect(mic().disabled).toBe(true)
+  })
+})
+
+// ── Voice face integration: long-press entry → PTT turn → marked message ─
+// Pins the whole chain from the plan's test matrix: long-press → overlay →
+// big-mic hold (/ws/stt, ptt start frame) → release → done → message frame
+// with the transient voice flag → engine events → speak → TTS queue writes
+// (POST /api/tts sentences) → worklet write → drain → idle.
+describe('voice face integration', () => {
+  interface TTSQueueMock {
+    opts: {
+      write(pcm: Uint8Array): void
+      onError?(message: string): void
+      onSettled?(): void
+    }
+    texts: string[]
+    aborts: number
+    inFlightCount: number
+    settle(): void
+  }
+  interface SttSockMock {
+    sentText: string[]
+    sentBinary: ArrayBuffer[]
+    dispatch(data: unknown): void
+  }
+  const ttsQueues = (): TTSQueueMock[] =>
+    (createTTSQueue as unknown as { all: TTSQueueMock[] }).all
+  const lastTTSQueue = (): TTSQueueMock => ttsQueues()[ttsQueues().length - 1]
+  const sttSocks = (): SttSockMock[] =>
+    (sttModule as unknown as { __sttSocks: SttSockMock[] }).__sttSocks
+  const lastStt = (): SttSockMock => sttSocks()[sttSocks().length - 1]
+
+  class FakeAudioContext {
+    static created: FakeAudioContext[] = []
+    static analysers: Array<{ connectedTo: unknown; data: Uint8Array }> = []
+    readonly sampleRate: number
+    readonly destination = {}
+    readonly audioWorklet = { addModule: async () => {} }
+    constructor(opts?: { sampleRate?: number }) {
+      this.sampleRate = opts?.sampleRate ?? 48000
+      FakeAudioContext.created.push(this)
+    }
+    resume() {
+      return Promise.resolve()
+    }
+    close() {
+      return Promise.resolve()
+    }
+    createAnalyser() {
+      const analyser = {
+        connectedTo: null as unknown,
+        data: new Uint8Array(0),
+        connect(target: unknown) {
+          this.connectedTo = target
+        },
+        disconnect() {},
+        getByteTimeDomainData(arr: Uint8Array) {
+          this.data = arr
+        },
+      }
+      FakeAudioContext.analysers.push(analyser)
+      return analyser
+    }
+    createMediaStreamSource(_s: unknown) {
+      return { connect() {}, disconnect() {} }
+    }
+  }
+  class FakeAudioWorkletNode {
+    static created: Array<{ node: FakeAudioWorkletNode; name: string }> = []
+    readonly name: string
+    readonly port = {
+      posted: [] as unknown[],
+      onmessage: null as ((e: { data: unknown }) => void) | null,
+      postMessage(msg: unknown) {
+        this.posted.push(msg)
+      },
+    }
+    constructor(_ctx: unknown, name: string) {
+      this.name = name
+      FakeAudioWorkletNode.created.push({ node: this, name })
+    }
+    connect() {}
+    disconnect() {}
+  }
+  const nodeByName = (name: string): FakeAudioWorkletNode[] =>
+    FakeAudioWorkletNode.created.filter((e) => e.name === name).map((e) => e.node)
+
+  // AudioContext/AudioWorkletNode/navigator.mediaDevices are absent in
+  // jsdom; the real capture/playback graphs are driven through these fakes.
+  // Manual save/restore (no vi.unstubAllGlobals): the file-scope
+  // IntersectionObserver stub must survive this describe.
+  const realAudioContext = globalThis.AudioContext
+  const realAudioWorkletNode = globalThis.AudioWorkletNode
+  const realBlobUrl = URL.createObjectURL
+
+  beforeEach(() => {
+    FakeAudioContext.created = []
+    FakeAudioContext.analysers = []
+    FakeAudioWorkletNode.created = []
+    ttsQueues().length = 0
+    sttSocks().length = 0
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    vi.stubGlobal('AudioWorkletNode', FakeAudioWorkletNode)
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+    URL.createObjectURL = () => 'blob:mock'
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.stubGlobal('AudioContext', realAudioContext)
+    vi.stubGlobal('AudioWorkletNode', realAudioWorkletNode)
+    URL.createObjectURL = realBlobUrl
+    Reflect.deleteProperty(navigator, 'mediaDevices')
+  })
+
+  function mountWithRoot() {
+    document.body.innerHTML = ''
+    const rootEl = document.createElement('div')
+    rootEl.id = 'root'
+    document.body.appendChild(rootEl)
+    const chat = createChat({ connected: true })
+    rootEl.appendChild(chat.root)
+    return chat
+  }
+  const enableVoice = () =>
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+      stt: true,
+      tts: true,
+    })
+  const micBtn = () => document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+  const voicePage = () => document.querySelector('.voice-page') as HTMLElement
+  const flushMicrotasks = async (): Promise<void> => {
+    for (let i = 0; i < 12; i++) await Promise.resolve()
+  }
+
+  // User rows live in the chat timeline (messagesContainer `.space-y-7`); the
+  // voice face hides #root with display:none, which jsdom does not apply to
+  // textContent — every bubble assertion below is a DOM query, not a
+  // visibility check.
+  const userBubbleTexts = (): string[] =>
+    Array.from(document.querySelectorAll('.space-y-7 .ml-auto')).map((el) => el.textContent ?? '')
+  const queuedBubbleTexts = (): string[] =>
+    Array.from(document.querySelectorAll('.queued-bubble span:first-child')).map(
+      (el) => el.textContent ?? '',
+    )
+
+  // Entry gesture (long-press 350ms) + the voice page's big-mic hold and
+  // release. Stops at the stt socket so each case dispatches its own final.
+  // midTurn puts the chat in a streaming turn BEFORE the face opens.
+  async function faceAtReleasedMic(
+    midTurn = false,
+  ): Promise<{ sttWs: SttSockMock; bigMic: HTMLElement }> {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    if (midTurn) dispatchEvents([{ type: 'query_start' }])
+    micBtn().dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    )
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    const bigMic = voicePage().querySelector('.voice-mic') as HTMLElement
+    bigMic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    const sttWs = lastStt()
+    bigMic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    return { sttWs, bigMic }
+  }
+
+  it('voice final renders its user bubble in the chat timeline before any engine event', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic()
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    expect(userBubbleTexts()).toEqual(['[voice] 你好。'])
+    expect(sent.filter((m) => (m as { type?: string }).type === 'message')).toEqual([
+      { type: 'message', text: '你好。', voice: true },
+    ])
+  })
+
+  it('voice final mid-turn creates the cancellable queued bubble, marker included', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic(true)
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    // The queued bubble renders inside inputBar.bubbles under the display:none
+    // #root while the voice face is up; jsdom sees it, a phone user sees it
+    // only after closing the face.
+    expect(queuedBubbleTexts()).toEqual(['[voice] 你好。'])
+    // The server's uuid ack backfills the local uuid:'' entry — the bubble
+    // must survive the backfill, not be orphaned by a re-render.
+    dispatch({ type: 'queued', uuid: 'srv-1' })
+    expect(queuedBubbleTexts()).toEqual(['[voice] 你好。'])
+    expect(sent.filter((m) => (m as { type?: string }).type === 'message')).toEqual([
+      { type: 'message', text: '你好。', voice: true },
+    ])
+  })
+
+  it('voice turn: query_start arms STOP, query_end clears it', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic()
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    dispatchEvents([{ type: 'query_start' }])
+    expect(document.body.textContent).toContain('STOP')
+    dispatchEvents([{ type: 'query_end' }])
+    expect(document.body.textContent).not.toContain('STOP')
+  })
+
+  it('voice final lands in the input history clean', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic()
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    setTextarea('')
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(ta.value).toBe('你好。')
+  })
+
+  it('abort-rewind of a voice turn removes its bubble and restores the clean text', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic()
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    dispatchEvents([{ type: 'query_start' }])
+    clickStop()
+    dispatchEvents([
+      { type: 'query_end', aborted: true, rewound: true, rewound_text: '[voice] 你好。' },
+    ])
+    expect(userBubbleTexts()).toEqual([])
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('你好。')
+  })
+
+  it('cancel_result of a queued voice utterance restores the textarea without the marker', async () => {
+    vi.useFakeTimers()
+    const { sttWs } = await faceAtReleasedMic(true)
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    dispatch({ type: 'queued', uuid: 'srv-1' })
+    ;(document.querySelector('.queued-bubble') as HTMLElement).click()
+    expect(sent).toContainEqual({ type: 'cancel_queued', uuids: ['srv-1'] })
+    dispatch({ type: 'cancel_result', restored: [{ uuid: 'srv-1', text: '[voice] 你好。' }] })
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('你好。')
+    expect(queuedBubbleTexts()).toEqual([])
+  })
+
+  it('cancel_result with two restored voice prompts strips the marker per entry', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'cancel_result',
+      restored: [
+        { uuid: 'srv-1', text: '[voice] 第一句。' },
+        { uuid: 'srv-2', text: '[voice] 第二句。' },
+      ],
+    })
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe(
+      '第一句。\n第二句。',
+    )
+  })
+
+  it('long-press entry: overlay opens ONLY (no recording) → big-mic hold → release sends the transcript with voice:true', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    expect(micBtn().disabled).toBe(false)
+
+    // Long-press 350ms on the chat mic enters the voice face — and NOTHING
+    // else (10-28 ruling): no recording rides the entry gesture; recording
+    // starts only on the voice page's big mic below.
+    micBtn().dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    )
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+
+    expect(voicePage()).toBeTruthy()
+    expect(document.getElementById('root')?.getAttribute('aria-hidden')).toBe('true')
+    expect(document.getElementById('root')?.style.display).toBe('none')
+    // Voice mode is retired (10-28): entry sends NOTHING voice-related — no
+    // message; the marker rides every voice final below.
+    expect(sent.filter((m) => ['voice_mode', 'message'].includes((m as { type?: string }).type ?? ''))).toEqual([])
+    // Entry-only: no stt round, no capture graph, page idles.
+    expect(sttSocks().length).toBe(0)
+    expect(voicePage().dataset.st).toBe('idle')
+
+    // Push the BIG mic: one /ws/stt round opens with a ptt start frame.
+    const bigMic = voicePage().querySelector('.voice-mic') as HTMLElement
+    bigMic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    const sttWs = lastStt()
+    expect(sttWs.sentText.length).toBe(1)
+    expect(JSON.parse(sttWs.sentText[0])).toEqual({ type: 'start', prompt: '', ptt: true })
+    expect(voicePage().dataset.st).toBe('listen')
+    expect(nodeByName('stt-capture').length).toBe(1)
+
+    // ⑤ at the integration level: the real SttSession mic leg built the
+    // sink-only analyser tap on the capture chain (the play ctx's analyser
+    // is a separate node — this one belongs to the 16k capture ctx, created
+    // second, and connects nowhere but the source → analyser edge).
+    expect(FakeAudioContext.analysers.length).toBeGreaterThanOrEqual(2)
+    const micAnalyser = FakeAudioContext.analysers[1]
+    expect(micAnalyser.connectedTo).toBe(null) // sink-only: never destination
+
+    // Mic capture frames go up the stt socket as s16le PCM once ready.
+    sttWs.dispatch('{"type":"ready","mode":"live"}')
+    const frame = new Float32Array([0.5, -0.25, 0, 0.125])
+    nodeByName('stt-capture')[0].port.onmessage?.({ data: frame })
+    expect(sttWs.sentBinary.length).toBe(1)
+    expect(Array.from(new Uint8Array(sttWs.sentBinary[0]))).toEqual(Array.from(floatTo16Le(frame)))
+
+    // Partial transcript renders DURING the entry animation window (the
+    // voiceIn slide runs 350→800ms; +100ms here is mid-flight) — the words
+    // must already be on screen, not waiting for the animation to settle.
+    await vi.advanceTimersByTimeAsync(100)
+    sttWs.dispatch('{"type":"partial","text":"你好"}')
+    const partialEl = voicePage().querySelector('.voice-partial') as HTMLElement
+    expect(partialEl.textContent).toBe('你好')
+    expect(partialEl.hasAttribute('hidden')).toBe(false)
+
+    // Releasing the big mic ends the utterance round.
+    bigMic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    expect(sttWs.sentText.at(-1)).toBe('{"type":"stop"}')
+    expect(voicePage().dataset.st).toBe('wait')
+
+    // The transcript lands as a user message plus the wire-transient voice
+    // flag (every voice final): same path as typing, the connector prefixes
+    // the marker server-side and the flag never persists.
+    sttWs.dispatch('{"type":"done","text":"你好。"}')
+    await flushMicrotasks()
+    expect(sent).toContainEqual({ type: 'message', text: '你好。', voice: true })
+    const tts = lastTTSQueue()
+    expect(tts.texts).toEqual([]) // no prefetch at the final — only body text synthesizes
+
+    // Engine reply: speak state + rendered sentence out as TTS.
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_delta', text: '大家好。' }, { type: 'text_end' }])
+    expect(voicePage().dataset.st).toBe('speak')
+    expect(tts.texts).toContainEqual('大家好。')
+
+    // TTS PCM down → worklet write; settle + query_end + drain → idle.
+    tts.opts.write(new Uint8Array([0, 64, 0, 192]))
+    const playNode = nodeByName('stream_processor')[0]
+    expect(playNode.port.posted.some((m) => (m as { event?: string }).event === 'write')).toBe(true)
+    tts.settle()
+    dispatchEvents([{ type: 'query_end' }])
+    playNode.port.onmessage?.({ data: { event: 'stop' } })
+    expect(voicePage().dataset.st).toBe('idle')
+  })
+
+  it('entry holds never record: a silent open-then-close leaves zero frames', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    micBtn().dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    )
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    // The entry finger lifting does nothing: no stt round ever opened, page
+    // never left idle, and closing from here sends no frames at all (no
+    // speech happened — voice mode is retired, nothing to turn off).
+    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    expect(sttSocks().length).toBe(0)
+    expect(voicePage().dataset.st).toBe('idle')
+  })
+
+  it('empty final (silent hold on the big mic) sends nothing at all', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    micBtn().dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    )
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    const bigMic = voicePage().querySelector('.voice-mic') as HTMLElement
+    bigMic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    const sttWs = lastStt()
+    sttWs.dispatch('{"type":"ready","mode":"live"}')
+    sttWs.dispatch('{"type":"partial","text":"嗯"}')
+    bigMic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    // Ambient-noise final: whitespace/punctuation only — no message, no
+    // voice flag, no filler prefetch. The round never happened.
+    sttWs.dispatch('{"type":"done","text":"。"}')
+    await flushMicrotasks()
+    expect(sent.filter((m) => (m as { type?: string }).type === 'message')).toEqual([])
+    expect(lastTTSQueue().texts).toEqual([]) // nothing synthesized for a non-round
+  })
+
+  it('contextmenu (desktop right-click) enters the voice page WITHOUT recording', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    micBtn().dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(voicePage()).toBeTruthy()
+    // Lazy marking: entry-only opens send nothing voice-related.
+    expect(sent.filter((m) => (m as { type?: string }).type === 'message')).toEqual([])
+    // Entry-only: no first hold, no capture graph, no mic round, page stays idle.
+    expect(sttSocks().length).toBe(0)
+    expect(nodeByName('stt-capture').length).toBe(0)
+    expect(voicePage().dataset.st).toBe('idle')
+    // No release wiring was armed either.
+    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    expect(sttSocks().length).toBe(0)
+    await flushMicrotasks()
+  })
+
+  it('X close tears the whole face down: page removed, chat restored, no frames, tts socket closed', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    micBtn().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(voicePage()).toBeTruthy()
+    const tts = lastTTSQueue()
+
+    ;(voicePage().querySelector('.voice-x') as HTMLElement).click()
+
+    // Container removed and the chat shell visible again.
+    expect(voicePage()).toBe(null)
+    const rootEl = document.getElementById('root') as HTMLElement
+    expect(rootEl.getAttribute('aria-hidden')).toBe(null)
+    expect(rootEl.style.display).toBe('')
+    // Voice mode is retired: this speech-less session sent nothing, and the
+    // close sends nothing either — the wire footprint is empty.
+    expect(sent.filter((m) => (m as { type?: string }).type === 'voice_mode')).toEqual([])
+    expect(sent.filter((m) => (m as { type?: string }).type === 'message')).toEqual([])
+    expect(tts.aborts).toBe(1)
+    // Re-entry mounts a fresh face on a clean slate.
+    micBtn().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(voicePage()).toBeTruthy()
+    expect(sent.filter((m) => (m as { type?: string }).type === 'voice_mode')).toEqual([])
+    await flushMicrotasks()
+  })
+
+  it('prefetch stays silent behind the voice face and resumes after close', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    const page = (id: string, cursor: string) => ({
+      type: 'history' as const,
+      messages: [{
+        id, role: 'user', text: `old ${id}`,
+        thinking: [], tools: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '', status: 'done', startedAt: 0,
+      }],
+      nextCursor: cursor,
+      hasMore: true,
+    })
+    const prefetches = () => sent.filter((m) => (m as { type?: string; cursor?: string }).type === 'history_request' && (m as { cursor?: string }).cursor !== '')
+    dispatch(page('m-1', 'a:9:0:1'))
+    await flushMicrotasks()
+    // jsdom measures zero layout, so the visible page prefetches at load end.
+    expect(prefetches().length).toBe(1)
+    // Enter the voice face — the chat tree goes display:none.
+    micBtn().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(voicePage()).toBeTruthy()
+    sent.length = 0
+    // A further page arrives while hidden (the in-flight prefetch
+    // answering). Its load-completion re-check must NOT self-feed another
+    // request: hidden layout reads all-zero and lies (the 60-page loop
+    // first-cause, 2026-10-30 14:29).
+    dispatch(page('m-2', 'a:8:0:1'))
+    await flushMicrotasks()
+    expect(prefetches()).toEqual([])
+    // X close: the chat face is visible again and the same re-check fires.
+    ;(voicePage().querySelector('.voice-x') as HTMLElement).click()
+    expect(voicePage()).toBe(null)
+    dispatch(page('m-3', 'a:7:0:1'))
+    await flushMicrotasks()
+    expect(prefetches().length).toBe(1)
+  })
+
+  it('a scoped tts error surfaces in the chat capsule instead of silence', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    enableVoice()
+    micBtn().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(voicePage()).toBeTruthy()
+    // A failed sentence synthesis reports its message verbatim — the text
+    // is what the user needs to see (same policy as an error frame).
+    lastTTSQueue().opts.onError?.('tts: no default voice')
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.textContent).toBe('tts: no default voice')
+    expect(capsule.classList.contains('opacity-0')).toBe(false)
+  })
+
+  it('long-press with voice unavailable (stt but no tts) never opens the face', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+      stt: true,
+    })
+    micBtn().dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    )
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    expect(voicePage()).toBe(null)
+    expect(sent.filter((m) => (m as { type?: string }).type === 'voice_mode')).toEqual([])
   })
 })
 

@@ -147,7 +147,7 @@ func TestHandleMessageInbound_BusyEnqueues(t *testing.T) {
 	mock := c.mock()
 	mock.isBusyFn = func() bool { return true }
 
-	c.handleMessageInbound("queued text", nil)
+	c.handleMessageInbound("queued text", nil, false)
 
 	// Enqueue happens inside a goroutine launched by handleMessageInbound.
 	// Poll until the recorded call lands.
@@ -896,6 +896,10 @@ func TestBuildHistory_IsBusy_ExcludesQueryMessagesWithToolResult(t *testing.T) {
 	}
 	mock.isBusyFn = func() bool { return true }
 	mock.queryStartMsgIdxFn = func() int { return 3 } // index of "/goal"
+	// Opens the root region (busy requires a live region). Before the dial:
+	// after it the frame would be pushed onto that socket and readWSMessage
+	// below would pick it up instead of the page.
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
 
 	mux := http.NewServeMux()
 	RegisterChatWS(mux, c)
@@ -1792,7 +1796,7 @@ func TestNilEngineSlotNoPanic(t *testing.T) {
 	t.Cleanup(c.Stop)
 
 	// A slot whose engine is not (yet) wired must be ignored quietly.
-	c.handleMessageInbound("hello", nil)
+	c.handleMessageInbound("hello", nil, false)
 
 	// A connector with no slot at all is the same contract.
 	noSlots := &WUIConnector{
@@ -1802,7 +1806,7 @@ func TestNilEngineSlotNoPanic(t *testing.T) {
 	}
 	noSlots.outQ.Store(newOutQueue(outQueueCapacity))
 	t.Cleanup(noSlots.Stop)
-	noSlots.handleMessageInbound("hello", nil)
+	noSlots.handleMessageInbound("hello", nil, false)
 }
 
 // TestCancelQueuedWithoutSlotsSurvives pins the cancel-path nil guard:
@@ -2303,7 +2307,7 @@ func TestCommitClearsRewindStash(t *testing.T) {
 	c.rewindStash = &rewindStash{engineID: "main", blocks: []types.ContentBlock{docBlock}}
 	c.restoreMu.Unlock()
 
-	c.handleMessageInbound("moving on", nil)
+	c.handleMessageInbound("moving on", nil, false)
 
 	c.restoreMu.Lock()
 	stash := c.rewindStash

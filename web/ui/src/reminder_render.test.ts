@@ -449,3 +449,4 @@ test('reminder row carries no time suffix in the duration slot', async () => {
   const durEl = host.querySelector('span.font-mono.text-xs') as HTMLElement
   expect(durEl.textContent).toContain('0s')
 })
+

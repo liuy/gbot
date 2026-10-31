@@ -129,6 +129,10 @@ export interface InputBarHandles {
   endSttUtterance: () => void
   setSttStatus: (msg: string | null) => void
   onMicToggle: (cb: () => void) => void
+  // holds=true = the 350ms long-press (enter the voice face AND start the
+  // first hold in the same gesture); holds=false = desktop contextmenu
+  // (enter only — a right-click has no release gesture to finish a turn).
+  onMicHold: (cb: (holds: boolean) => void) => void
 }
 
 export function createInputBar(initial: {
@@ -149,6 +153,7 @@ export function createInputBar(initial: {
   let historyResetCb: (() => void) | null = null
   let nextPasteID = 1
   let micToggleCb: (() => void) | null = null
+  let micHoldCb: ((holds: boolean) => void) | null = null
   let sttAvailable = false
   // STT span markers: pendingStart anchors this utterance's span; appended
   // is the span content as last rendered by STT (delta appends + partial
@@ -447,7 +452,63 @@ export function createInputBar(initial: {
     '<svg viewBox="0 0 24 24" class="w-full h-full"><line x1="4.5" y1="19.5" x2="19.5" y2="4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
   micBtn.appendChild(micSlash)
   micBtn.addEventListener('click', () => {
-    if (!micBtn.disabled) micToggleCb?.()
+    if (!micBtn.disabled) {
+      // A completed long-press owns the gesture: the synthesized click after
+      // pointerup must not ALSO start dictation.
+      if (micSuppressClick) {
+        micSuppressClick = false
+        return
+      }
+      micToggleCb?.()
+    }
+  })
+  // Long-press 350ms → voice route entry (chat page gesture, D7). Pointer
+  // events cover touch and mouse alike; a >12px move cancels (scrolling),
+  // desktop gets the contextmenu equivalent.
+  let micHoldTimer: ReturnType<typeof setTimeout> | null = null
+  let micSuppressClick = false
+  const micCancelHold = (): void => {
+    if (micHoldTimer !== null) {
+      clearTimeout(micHoldTimer)
+      micHoldTimer = null
+    }
+  }
+  micBtn.addEventListener('pointerdown', (e) => {
+    if (micBtn.disabled) return
+    // Primary button only: a macOS right-press parks on the button >350ms
+    // before contextmenu fires — that must not arm the hold timer and enter
+    // voice (the contextmenu path below owns right-click entry).
+    if (e.button !== 0) return
+    const startX = e.clientX
+    const startY = e.clientY
+    micCancelHold()
+    micHoldTimer = setTimeout(() => {
+      micHoldTimer = null
+      micSuppressClick = true
+      micHoldCb?.(true)
+    }, 350)
+    const onMove = (ev: PointerEvent): void => {
+      if (Math.abs(ev.clientX - startX) > 12 || Math.abs(ev.clientY - startY) > 12) {
+        micCancelHold()
+        window.removeEventListener('pointermove', onMove)
+      }
+    }
+    window.addEventListener('pointermove', onMove)
+    const onUp = (): void => {
+      micCancelHold()
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+    window.addEventListener('pointerup', onUp)
+    // System-interrupt cancel (call/notification) must clear the timer too,
+    // else it fires later and enters voice spuriously (voice_page/pointerup 判例).
+    window.addEventListener('pointercancel', onUp)
+  })
+  micBtn.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    micCancelHold()
+    if (!micBtn.disabled) micHoldCb?.(false)
   })
   // flex on the anchor: tailwind-merge strips `flex` from the button itself
   // (it conflicts with the initial `hidden`), so the bare button renders
@@ -1289,6 +1350,9 @@ export function createInputBar(initial: {
     },
     onMicToggle: (cb) => {
       micToggleCb = cb
+    },
+    onMicHold: (cb) => {
+      micHoldCb = cb
     },
     setConnected: (c: boolean) => {
       connected = c

@@ -69,11 +69,24 @@ type Config struct {
 	// STT holds the speech-to-text default ("provider/model"). Resolved by
 	// ResolveSTT; only audio-type providers are eligible.
 	STT STTConfig `json:"stt"`
+
+	// TTS holds the text-to-speech default ("provider/model"). Resolved by
+	// ResolveTTS; only audio-type providers are eligible. No voice field —
+	// the server's default_voice_preset applies (10-28 ruling).
+	TTS TTSConfig `json:"tts"`
 }
 
 // STTConfig configures the default speech-to-text model.
 type STTConfig struct {
 	Default string `json:"default,omitempty"` // "provider/model" or "model"
+}
+
+// TTSConfig configures the default text-to-speech model and voice. Voice is
+// a backend-specific speaker name (e.g. audio.cpp's "Serena"); empty means
+// the engine's own default preset applies.
+type TTSConfig struct {
+	Default string `json:"default,omitempty"` // "provider/model" or "model"
+	Voice   string `json:"voice,omitempty"`
 }
 
 // SessionNotesConfig configures the session memory sub-agent.
@@ -424,6 +437,47 @@ func (c *Config) ResolveSTT() (*Provider, string, error) {
 		matched := FindClosestMatch(modelName, p.ModelNames())
 		if matched == "" {
 			return nil, "", fmt.Errorf("stt: model %q not found in provider %q", modelName, p.Name)
+		}
+		return p, matched, nil
+	}
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if p.ProviderType() != ProviderTypeAudio {
+			continue
+		}
+		matched := FindClosestMatch(modelName, p.ModelNames())
+		if matched != "" {
+			return p, matched, nil
+		}
+	}
+	return nil, "", ErrNotAudioProvider
+}
+
+// ResolveTTS resolves Config.TTS.Default into an audio provider and model
+// name, mirroring ResolveSTT. Empty Default is an error (voice entry stays
+// gated off).
+func (c *Config) ResolveTTS() (*Provider, string, error) {
+	d := c.TTS.Default
+	if d == "" {
+		return nil, "", fmt.Errorf("tts: no default configured")
+	}
+	var providerName, modelName string
+	if before, after, ok := strings.Cut(d, "/"); ok {
+		providerName, modelName = before, after
+	} else {
+		modelName = d
+	}
+	if providerName != "" {
+		p := c.findProvider(providerName)
+		if p == nil {
+			return nil, "", fmt.Errorf("tts: provider %q not found", providerName)
+		}
+		if p.ProviderType() != ProviderTypeAudio {
+			return nil, "", ErrNotAudioProvider
+		}
+		matched := FindClosestMatch(modelName, p.ModelNames())
+		if matched == "" {
+			return nil, "", fmt.Errorf("tts: model %q not found in provider %q", modelName, p.Name)
 		}
 		return p, matched, nil
 	}
@@ -902,6 +956,93 @@ func SaveSTTDefault(provider, model string) error {
 	}
 	// See SaveProviders: chmod after WriteFile so a restrictive umask cannot
 	// defeat the preserved mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveTTSDefault sets tts.default and tts.voice in the user settings file,
+// preserving every other key (including the rest of the tts object)
+// verbatim. An empty voice removes the engine override (the backend's own
+// default preset applies). Same safety contract as SaveSTTDefault (see
+// there).
+func SaveTTSDefault(provider, model, voice string) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage)
+		}
+	}
+	var providers []Provider
+	if pj, ok := raw["providers"]; ok {
+		if err := json.Unmarshal(pj, &providers); err != nil {
+			providers = nil
+		}
+	}
+	known := false
+	for _, p := range providers {
+		if p.Name != provider {
+			continue
+		}
+		if p.ProviderType() != ProviderTypeAudio {
+			return ErrNotAudioProvider
+		}
+		if !p.Models.Has(model) {
+			return ErrUnknownModel
+		}
+		known = true
+		break
+	}
+	if !known {
+		return ErrUnknownProvider
+	}
+	tts := make(map[string]string)
+	if old, ok := raw["tts"]; ok {
+		_ = json.Unmarshal(old, &tts)
+	}
+	tts["default"] = provider + "/" + model
+	if voice == "" {
+		delete(tts, "voice")
+	} else {
+		tts["voice"] = voice
+	}
+	ttsJSON, err := json.Marshal(tts)
+	if err != nil {
+		return err
+	}
+	raw["tts"] = ttsJSON
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
 	if err := os.Chmod(tmpPath, mode); err != nil {
 		return err
 	}

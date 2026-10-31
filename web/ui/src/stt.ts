@@ -4,6 +4,7 @@
 // jsdom; the worklet source is a self-contained string (blob-URL addModule,
 // e3 omni-talk precedent) so no separate JS asset or route exists.
 import { t } from './i18n'
+import { rmsOf } from './voice_aura'
 
 export const STT_FRAME_SAMPLES = 512
 
@@ -173,6 +174,10 @@ export interface SttSessionOpts {
   onStatus(msg: string | null): void
   onUtteranceStart?(): void
   getPromptTexts(): string[]
+  // Voice-face mic leg: the start frame carries ptt:true — the server's
+  // endpointer drops the silence branch (the finger is the endpointer) and
+  // keeps the 60s cap. Dictation leaves it unset: identical start bytes.
+  ptt?: boolean
   deps?: SttDeps
 }
 
@@ -195,6 +200,12 @@ export class SttSession {
   private ctx: AudioContext | null = null
   private stream: MediaStream | null = null
   private worklet: SttWorkletHandle | null = null
+  // Listen-state aura volume source (voice face): a sink-only analyser
+  // tapping the same getUserMedia stream the capture worklet reads. Kept as
+  // a structural handle so jsdom fakes satisfy the reads without real nodes.
+  private micAnalyser: { getByteTimeDomainData(arr: Uint8Array): void } | null = null
+  private micTD: Uint8Array | null = null
+  private micTap: { disconnect(): void } | null = null
   private stopTimer: number | undefined
   private stopResolve: (() => void) | null = null
 
@@ -222,6 +233,38 @@ export class SttSession {
 
   get active(): boolean {
     return this.activeUtterance
+  }
+
+  // micRMS reads the live mic energy as [0,1] (time-domain RMS ×3.2, the
+  // aura readVol spec — fftSize 1024, smoothing 0.55) — the listen-state
+  // aura field's volume driver. 0 whenever the tap is not live.
+  micRMS(): number {
+    if (!this.micAnalyser || !this.micTD) return 0
+    this.micAnalyser.getByteTimeDomainData(this.micTD)
+    return rmsOf(this.micTD)
+  }
+
+  // Sink-only tap on the capture stream: source → analyser with NO
+  // destination connection — level probing can never loop back into the
+  // uplink or the speakers. Built right after getUserMedia so the aura
+  // field follows the voice from the first held frame.
+  private attachMicTap(ctx: AudioContext, stream: MediaStream): void {
+    const src = ctx.createMediaStreamSource(stream)
+    const analyser = ctx.createAnalyser()
+    src.connect(analyser)
+    this.micTap = {
+      disconnect(): void {
+        src.disconnect()
+        analyser.disconnect()
+      },
+    }
+    this.micAnalyser = analyser
+    // Aura readVol spec: 1024 time-domain frames, 0.55 smoothing. Structural
+    // fakes carry the props as plain assignments.
+    const sized = analyser as { fftSize?: number; smoothingTimeConstant?: number }
+    sized.fftSize = 1024
+    sized.smoothingTimeConstant = 0.55
+    this.micTD = new Uint8Array(1024)
   }
 
   private async defaultLoadWorklet(
@@ -278,6 +321,12 @@ export class SttSession {
     })
   }
 
+  // Hard teardown for external owners (the voice page close): aborts any
+  // live round immediately — no stop frame, no done wait, no onDone.
+  teardown(): void {
+    this.fullTeardown()
+  }
+
   // Diagnostic breadcrumbs through the whole assembly chain: console plus
   // the WUI log buffer via log.ts's console wrapping (mic grant ≠ green —
   // five more hops live between them), so a remote user can paste exactly
@@ -286,7 +335,10 @@ export class SttSession {
     console.log(`[stt] ${msg}`)
   }
 
-  private async start(): Promise<void> {
+  // Public start (not just via toggle): external PTT owners (the voice
+  // controller) begin a round directly — the round/assembly guards below
+  // keep the contract identical to the dictation path.
+  async start(): Promise<void> {
     // Reset at entry, not on success below: torn stays true after every
     // teardown, so a leftover would both neuter stop() racing this assembly
     // and trip the recheck below on a legitimate restart.
@@ -335,6 +387,7 @@ export class SttSession {
         await ctx.close().catch(() => {})
         return
       }
+      this.attachMicTap(ctx, stream)
       const sock = this.deps.connectSocket()
       this.socket = sock
       sock.onmessage = (ev) => this.onSocketMessage(ev.data)
@@ -386,7 +439,9 @@ export class SttSession {
         return
       }
       const prompt = extractPromptTerms(this.opts.getPromptTexts())
-      sock.send(JSON.stringify({ type: 'start', prompt }))
+      const startFrame: { type: string; prompt: string; ptt?: boolean } = { type: 'start', prompt }
+      if (this.opts.ptt) startFrame.ptt = true
+      sock.send(JSON.stringify(startFrame))
       this.activeUtterance = true
       this.opts.onStatus(null)
       this.opts.onUtteranceStart?.()
@@ -467,6 +522,10 @@ export class SttSession {
     }
     this.worklet?.disconnect()
     this.worklet = null
+    this.micTap?.disconnect()
+    this.micTap = null
+    this.micAnalyser = null
+    this.micTD = null
     this.stream?.getTracks().forEach((tr) => tr.stop())
     this.stream = null
     const sock = this.socket

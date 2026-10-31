@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"uuid"
 
 	"github.com/gorilla/websocket"
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/tool/fileread"
@@ -194,6 +196,10 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 				Text        string              `json:"text"`
 				Content     []inboundContent    `json:"content"`
 				Attachments []inboundAttachment `json:"attachments"`
+				// Voice is the wire-transient spoken flag: true on EVERY
+				// voice final. The connector swaps it for the
+				// VoiceMsgMarker text prefix at dispatch; never persisted.
+				Voice bool `json:"voice"`
 			}
 			if json.Unmarshal(data, &msg) == nil {
 				if len(msg.Attachments) > 0 {
@@ -208,12 +214,12 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 						c.sendWS(buildError(fmt.Errorf("attachment not found: %s", missing)))
 						continue
 					}
-					c.handleMessageInbound(msg.Text, contents)
+					c.handleMessageInbound(msg.Text, contents, msg.Voice)
 					continue
 				}
 				// Legacy path: callers that pass content[] directly (existing
 				// inbound_test.go fixtures). The new frontend never sends it.
-				c.handleMessageInbound(msg.Text, msg.Content)
+				c.handleMessageInbound(msg.Text, msg.Content, msg.Voice)
 			}
 		case "ask_response":
 			var msg struct {
@@ -448,6 +454,10 @@ var assembleGate func()
 // converted to a types.ContentBlock before reaching the engine. If the
 // engine is busy, the assembled blocks are enqueued as a single QueuedItem
 // (Content field overrides Value).
+// voice marks a spoken message (10-28 final ruling: voice mode retired, each
+// message self-marking): the connector prefixes ctxbuild.VoiceMsgMarker onto
+// the text, so the stored message carries the marker itself — compact-immune,
+// no session state, plain Query dispatch.
 //
 // Dispatch decision ordering (critical for correctness):
 //  1. c.appendInputHistory(text) — synchronous, fast
@@ -477,7 +487,7 @@ var assembleGate func()
 // call. Everything else (block assembly, fileread.Execute, engine dispatch)
 // runs in a goroutine so a slow 50MB PDF parse cannot block readLoop from
 // draining concurrent stop / ask_response / cancel_queued frames.
-func (c *WUIConnector) handleMessageInbound(text string, content []inboundContent) {
+func (c *WUIConnector) handleMessageInbound(text string, content []inboundContent, voice bool) {
 	slot := c.activeSlot()
 	if slot == nil || slot.engine == nil {
 		return
@@ -485,6 +495,14 @@ func (c *WUIConnector) handleMessageInbound(text string, content []inboundConten
 	eng := slot.engine
 	if text != "" {
 		c.appendInputHistory(text)
+	}
+	// The marker rides the text from here on: engine dispatch, queued items,
+	// and the stored message all see the prefixed form. Input history above
+	// keeps the clean transcript — recall should not paste the marker. The
+	// empty-text guard keeps a malformed voice frame from dispatching a
+	// marker-only message.
+	if voice && strings.TrimSpace(text) != "" {
+		text = ctxbuild.VoiceMsgMarker + text
 	}
 	// A new commit supersedes any pending rewind stash: the user moved on,
 	// so a later restore must not resurrect the aborted prompt's chips.

@@ -32,12 +32,15 @@ func frameRMS(pcm []byte) float64 {
 }
 
 // endpointer tracks per-utterance endpointing state. Single-goroutine use
-// (the bridge readLoop); no locks.
+// (the bridge readLoop); no locks. PTT mode (a /ws/stt start frame with
+// ptt=true, the voice-face mic leg) disables the silence branch — the finger
+// is the endpointer — leaving only the 60s forgot-to-stop insurance.
 type endpointer struct {
 	floor        float64
 	floorInit    bool
 	silentSec    float64
 	totalSamples int
+	PTT          bool
 }
 
 // observe processes one PCM frame of any length and reports whether the
@@ -68,5 +71,5 @@ func (e *endpointer) observe(pcm []byte) (stop bool) {
 		e.silentSec = 0
 	}
 
-	return float64(e.totalSamples) >= epdMaxStreamSec*epdSampleRate || e.silentSec >= epdSilenceMinSec
+	return float64(e.totalSamples) >= epdMaxStreamSec*epdSampleRate || (!e.PTT && e.silentSec >= epdSilenceMinSec)
 }

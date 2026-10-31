@@ -89,6 +89,13 @@ func (l smallRcvListener) Accept() (net.Conn, error) {
 	return c, nil
 }
 
+// sttStallHold bounds the fake "stall" handler's hold before it gives up and
+// returns (net/http only watches for client aborts after the body is read, so
+// an unread body needs a self-timer). Must outlast sttStallGrace — the hard
+// stall must declare before the hold expires and the write path fails. The
+// race build inflates both together (stt_race_test.go).
+var sttStallHold = 3 * time.Second
+
 func newSttFakeUpstream(t *testing.T) *sttFakeUpstream {
 	t.Helper()
 	f := &sttFakeUpstream{
@@ -230,7 +237,7 @@ func (f *sttFakeUpstream) handleLive(w http.ResponseWriter, r *http.Request) {
 		// client's abort and must time itself out.
 		select {
 		case <-r.Context().Done():
-		case <-time.After(3 * time.Second):
+		case <-time.After(sttStallHold):
 		}
 		return
 	case "stall-recover":
@@ -2034,5 +2041,203 @@ func TestSttWS_PlainGetRejected(t *testing.T) {
 	}
 	if string(body) != "Bad Request\n" {
 		t.Errorf("body = %q, want gorilla's handshake refusal", body)
+	}
+}
+
+// --- PTT mode (voice-face mic leg: start frame ptt:true) --------------------
+
+// sttFrameReader owns ALL reads on the conn from one goroutine. gorilla's
+// read error is sticky: a deadline timeout on a direct ReadMessage would
+// poison the conn for the rest of the test, so negative probes ("nothing may
+// arrive") poll this channel instead.
+type sttFrameReader struct {
+	ch chan string
+}
+
+func newSttFrameReader(c *websocket.Conn) *sttFrameReader {
+	r := &sttFrameReader{ch: make(chan string, 256)}
+	go func() {
+		for {
+			_ = c.SetReadDeadline(time.Now().Add(30 * time.Second)) // REAL-TIME
+			mt, data, err := c.ReadMessage()
+			if err != nil {
+				close(r.ch)
+				return
+			}
+			if mt == websocket.TextMessage {
+				r.ch <- string(data)
+			}
+		}
+	}()
+	return r
+}
+
+func (r *sttFrameReader) next(timeout time.Duration) (string, bool) {
+	select {
+	case f, ok := <-r.ch:
+		return f, ok
+	case <-time.After(timeout): // REAL-TIME
+		return "", false
+	}
+}
+
+func (r *sttFrameReader) expectNone(t *testing.T, window time.Duration) {
+	t.Helper()
+	if f, ok := r.next(window); ok {
+		t.Fatalf("unexpected frame within %v: %.100q", window, f)
+	}
+}
+
+// expectNoTerminal asserts no done/error frame arrives within the window —
+// the live fake legitimately emits mid-stream deltas while draining, so the
+// negative probe for PTT must target finalization, not silence on the wire.
+func (r *sttFrameReader) expectNoTerminal(t *testing.T, window time.Duration) {
+	t.Helper()
+	timeout := time.After(window) // REAL-TIME
+	for {
+		select {
+		case f, ok := <-r.ch:
+			if !ok {
+				return
+			}
+			var m struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal([]byte(f), &m) == nil && (m.Type == "done" || m.Type == "error") {
+				t.Fatalf("terminal frame %q within %v, want none (PTT: silence must not finalize)", f, window)
+			}
+		case <-timeout:
+			return
+		}
+	}
+}
+
+// readUntilDone consumes frames until the terminal done frame, failing on any
+// error frame or a closed socket first.
+func (r *sttFrameReader) readUntilDone(t *testing.T) string {
+	t.Helper()
+	for {
+		f, ok := r.next(30 * time.Second) // REAL-TIME
+		if !ok {
+			t.Fatal("socket closed before done")
+		}
+		var m struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(f), &m) != nil {
+			continue
+		}
+		switch m.Type {
+		case "done":
+			return m.Text
+		case "error":
+			t.Fatalf("error frame = %q, want done", m.Message)
+		}
+	}
+}
+
+// PTT: silence never auto-finalizes; the manual stop still does.
+func TestSttWS_PTT_SilenceDoesNotFinalize(t *testing.T) {
+	f := newSttFakeUpstream(t)
+	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
+	ws := dialSttWS(t, srv)
+	sttSendJSON(t, ws, map[string]any{"type": "start", "ptt": true})
+	sttExpectReady(t, ws, "live")
+	r := newSttFrameReader(ws)
+
+	// 3s of pure silence, no stop frame. The fake drains it (mid-stream
+	// deltas may arrive) but must never finalize.
+	sttSendFrames(t, ws, silencePCM(3*16000))
+	r.expectNoTerminal(t, 600*time.Millisecond)
+
+	// Manual stop finalizes.
+	sttSendJSON(t, ws, map[string]any{"type": "stop"})
+	if got := r.readUntilDone(t); got != "你好。 世界。" {
+		t.Errorf("done after manual stop = %q, want 你好。 世界。", got)
+	}
+}
+
+// PTT: the 60s forgot-to-stop insurance fires without any stop frame.
+func TestSttWS_PTT_SixtySecondCapAutoFinalizes(t *testing.T) {
+	f := newSttFakeUpstream(t)
+	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
+	ws := dialSttWS(t, srv)
+	sttSendJSON(t, ws, map[string]any{"type": "start", "ptt": true})
+	sttExpectReady(t, ws, "live")
+
+	// 61s of audio in 32KB (1.024s) blocks — no stop frame at any point.
+	pcm := speechPCM(61 * 16000)
+	blocks := make([][]byte, 0, len(pcm)/32000+1)
+	for i := 0; i+32000 <= len(pcm); i += 32000 {
+		blocks = append(blocks, pcm[i:i+32000])
+	}
+	if i := len(pcm) / 32000 * 32000; i < len(pcm) {
+		blocks = append(blocks, pcm[i:])
+	}
+	sttSendBinaries(t, ws, blocks)
+
+	r := newSttFrameReader(ws)
+	if got := r.readUntilDone(t); got != "你好。 世界。" {
+		t.Errorf("done after >60s of audio = %q, want 你好。 世界。 (PTT insurance must fire)", got)
+	}
+}
+
+// PTT in batch mode: silence never auto-transcribes either; stop does.
+func TestSttWS_PTT_BatchSilenceDoesNotFinalize(t *testing.T) {
+	f := newSttFakeUpstream(t)
+	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt"))
+	ws := dialSttWS(t, srv)
+	sttSendJSON(t, ws, map[string]any{"type": "start", "ptt": true})
+	sttExpectReady(t, ws, "batch")
+	r := newSttFrameReader(ws)
+
+	sttSendFrames(t, ws, silencePCM(3*16000))
+	r.expectNone(t, 600*time.Millisecond)
+
+	sttSendJSON(t, ws, map[string]any{"type": "stop"})
+	if got := r.readUntilDone(t); got != "你好" {
+		t.Errorf("batch done after manual stop = %q, want 你好", got)
+	}
+}
+
+// readUntilReady consumes frames until the ready frame and returns its mode.
+func (r *sttFrameReader) readUntilReady(t *testing.T) string {
+	t.Helper()
+	for {
+		f, ok := r.next(30 * time.Second) // REAL-TIME
+		if !ok {
+			t.Fatal("socket closed before ready")
+		}
+		var m struct {
+			Type string `json:"type"`
+			Mode string `json:"mode"`
+		}
+		if json.Unmarshal([]byte(f), &m) == nil && m.Type == "ready" {
+			return m.Mode
+		}
+	}
+}
+
+// stop with no live turn is silently ignored — no error frame, socket usable
+// afterwards (the voice page's release can race a failed round).
+func TestSttWS_StopWithoutStart(t *testing.T) {
+	f := newSttFakeUpstream(t)
+	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
+	ws := dialSttWS(t, srv)
+	r := newSttFrameReader(ws)
+
+	sttSendJSON(t, ws, map[string]any{"type": "stop"})
+	r.expectNone(t, 300*time.Millisecond)
+
+	sttSendJSON(t, ws, map[string]any{"type": "start"})
+	if mode := r.readUntilReady(t); mode != "live" {
+		t.Fatalf("ready mode = %q, want live", mode)
+	}
+	sttSendFrames(t, ws, speechPCM(2*epdFrameSamples))
+	sttSendJSON(t, ws, map[string]any{"type": "stop"})
+	if got := r.readUntilDone(t); got != "你好。 世界。" {
+		t.Errorf("done after late start = %q, want 你好。 世界。", got)
 	}
 }

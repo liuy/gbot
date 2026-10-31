@@ -339,3 +339,37 @@ func TestFrameRMS_EmptyAndTiny(t *testing.T) {
 		t.Errorf("frameRMS(2 samples) = %.9f, want %.9f", got, want)
 	}
 }
+
+// --- PTT mode (voice bridge): silence never stops, only the 60s cap fires ---
+
+// 3s of pure silence in PTT mode must NOT finalize — the user's finger is the
+// endpointer (v1 PTT ruling: no VAD auto-stop that kills thinking pauses).
+func TestEndpointer_PTT_SilenceNeverStops(t *testing.T) {
+	t.Parallel()
+	e := endpointer{PTT: true}
+	if stop := observeFrames(&e, framesOf(silencePCM(96*epdFrameSamples))); stop != 0 {
+		t.Errorf("PTT stop frame = %d, want 0 (silence must never stop in PTT)", stop)
+	}
+}
+
+// The 60s forgot-to-stop insurance still fires in PTT mode.
+func TestEndpointer_PTT_MaxStreamStillFires(t *testing.T) {
+	t.Parallel()
+	e := endpointer{PTT: true}
+	// 61s of speech-like audio: 61*16000 samples in 512-sample frames.
+	frames := framesOf(speechPCM(61 * 16000))
+	// 60s = 960,000 samples = exactly 1875 frames — the first frame whose
+	// cumulative total crosses the cap is #1875.
+	if got := observeFrames(&e, frames); got != 1875 {
+		t.Errorf("PTT stop frame = %d, want 1875 (the 60s crossing)", got)
+	}
+}
+
+// Non-PTT default is unchanged: zero-value endpointer still silence-stops.
+func TestEndpointer_NonPTTStillSilenceStops(t *testing.T) {
+	t.Parallel()
+	var e endpointer
+	if got := observeFrames(&e, framesOf(silencePCM(96*epdFrameSamples))); got != 63 {
+		t.Errorf("non-PTT stop frame = %d, want 63", got)
+	}
+}

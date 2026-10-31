@@ -695,3 +695,129 @@ model-viewer { --progress-bar-color: var(--color-blue); }
    unbounded card would drag domToPng into timeout/OOM territory. */
 .share-card-body { color: var(--color-t1); max-height: 4000px; overflow: hidden; }
 .share-card-offscreen-host { position: fixed; left: -10000px; top: 0; }
+
+/* ── Voice route page (prototype palette, theme-var'd) ─────────────────── */
+/* Body-level sibling of #root (D7): a real in-flow route page, 100dvh, not
+   a fixed overlay — the mobile address bar stays honest. #root is
+   display:none'd while the voice page is mounted, so this block IS the
+   viewport content. */
+.voice-page {
+  --voice-ink0: #0b0e14;
+  --voice-ink1: #11151d;
+  --voice-ink2: #171c26;
+  --voice-hairline: #232a38;
+  --voice-t1: #e7ecf3;
+  --voice-t2: #9aa5b5;
+  --voice-t3: #5c6675;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: radial-gradient(160% 120% at 50% 0%, var(--voice-ink1) 0%, var(--voice-ink0) 62%);
+  color: var(--voice-t1);
+  animation: voiceIn .45s cubic-bezier(.32,.72,.24,1) both;
+}
+@keyframes voiceIn { from { transform: translateY(100%); opacity: .4; } }
+[data-theme="light"] .voice-page {
+  --voice-ink0: #f5f7fa;
+  --voice-ink1: #eef1f6;
+  --voice-ink2: #ffffff;
+  --voice-hairline: #d8dee8;
+  --voice-t1: #1a2230;
+  --voice-t2: #4a5266;
+  --voice-t3: #8a93a6;
+}
+.voice-x {
+  position: absolute;
+  top: max(20px, calc(env(safe-area-inset-top, 0px) + 8px));
+  right: 20px;
+  z-index: 5;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--voice-hairline);
+  background: color-mix(in srgb, var(--voice-ink2) 85%, transparent);
+  color: var(--voice-t3);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.voice-top {
+  padding: max(28px, calc(env(safe-area-inset-top, 0px) + 16px)) 24px 0;
+  text-align: center; flex-shrink: 0;
+}
+.voice-engine { font-size: 13px; color: var(--voice-t3); letter-spacing: .1em; }
+.voice-engine span { color: var(--voice-t2); font-weight: 600; }
+.voice-stage {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  position: relative; overflow: hidden;
+}
+.voice-avatar-wrap {
+  position: relative; width: 260px; height: 300px;
+  display: flex; align-items: center; justify-content: center;
+}
+/* 111px = 0.37 × 300px canvas — the geometry the aura scale values were
+   tuned against (preview: 126/340). A larger avatar buries the idle field. */
+.voice-avatar {
+  width: 111px; height: 111px; border-radius: 50%;
+  position: relative; z-index: 2;
+  transition: transform .3s;
+}
+/* Aura field (WebGL shader visualizer, task-2 ruling): square canvas behind
+   the avatar; the 512 backing store renders, CSS scales. State + volume
+   drive it from voice_aura.ts — no per-state CSS needed here. */
+.voice-aura {
+  position: absolute; left: 50%; top: 50%;
+  width: 300px; height: 300px;
+  transform: translate(-50%, -50%);
+  z-index: 1; pointer-events: none;
+}
+.voice-partial {
+  margin-top: 10px; max-width: 320px; min-height: 20px;
+  font-size: 14px; color: var(--voice-t2); text-align: center;
+}
+.voice-vcontent {
+  margin-top: 26px; width: 300px; max-height: 240px;
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto; scrollbar-width: none;
+}
+.voice-vcontent::-webkit-scrollbar { display: none; }
+.voice-controls {
+  padding: 0 0 calc(44px + env(safe-area-inset-bottom, 0px));
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+/* ── PTT mic: filled energy orb (ptt-preview .micA, user pick A) ──────── */
+/* Hold feedback is STATIC (scale + glow + ring): the aura shader is the
+   only live waveform carrier — the button never subscribes to an analyser. */
+.voice-mic {
+  width: 92px; height: 92px; border-radius: 50%;
+  border: none; cursor: pointer; position: relative;
+  background: radial-gradient(circle at 32% 28%, #4dc8ff, #00B4FF 55%, #0072c8);
+  box-shadow: 0 6px 30px rgba(0,180,255,.28), inset 0 1px 1px rgba(255,255,255,.45);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .18s cubic-bezier(.34,1.56,.64,1), box-shadow .25s, opacity .25s;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+.voice-mic svg { width: 34px; height: 34px; filter: drop-shadow(0 1px 2px rgba(0,60,110,.35)); }
+/* Light = token swap, not a tint: --color-blue becomes ink #333 in light,
+   so the orb follows it (user ruling) — ink fill, white icon stays. */
+[data-theme="light"] .voice-mic {
+  background: radial-gradient(circle at 32% 28%, #555b66, #333333 55%, #1e2127);
+  box-shadow: 0 6px 26px rgba(30,38,50,.25), inset 0 1px 1px rgba(255,255,255,.25);
+}
+[data-theme="light"] .voice-mic .ring { border-color: rgba(51,51,51,.7); }
+[data-theme="light"] .voice-page[data-st="listen"] .voice-mic {
+  box-shadow: 0 8px 38px rgba(30,38,50,.35), inset 0 1px 1px rgba(255,255,255,.3);
+}
+.voice-mic .ring {
+  position: absolute; inset: -8px; border-radius: 50%; pointer-events: none;
+  border: 2.5px solid rgba(0,180,255,.85);
+  opacity: 0; transform: scale(.86); transition: opacity .15s;
+}
+/* Hold = the listen state (press starts the round): press confirmation. */
+.voice-page[data-st="listen"] .voice-mic {
+  transform: scale(1.06);
+  box-shadow: 0 8px 44px rgba(0,180,255,.5), inset 0 1px 1px rgba(255,255,255,.5);
+}
+.voice-page[data-st="listen"] .voice-mic .ring { opacity: 1; }
+/* speak: holds are suppressed (no barge-in) — dim the orb to say so. */
+.voice-page[data-st="speak"] .voice-mic { opacity: .45; }

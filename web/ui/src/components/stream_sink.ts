@@ -6,7 +6,7 @@
 // semantics but reads post-mutation block state — the store owns truth.
 
 import type { Block } from '../model'
-import { findBlock } from '../jobs_store'
+import { findBlock } from './event_blocks'
 import { isCollapsibleBlock } from '../utils'
 import { renderMarkdown } from '../markdown'
 import { morphHtml } from '../morph'

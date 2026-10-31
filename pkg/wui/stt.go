@@ -62,7 +62,10 @@ const sttBatchLimit = 20 << 20
 // declaring an upstream stall: burst-filled queues must give the writer time
 // to drain (and transport aborts time to win the terminal race), matching
 // the "≈2s unconsumed" semantics of the 64-frame queue at speech rate.
-const sttStallGrace = 500 * time.Millisecond
+// Var, not const: the -race test binary inflates it (stt_race_test.go) —
+// detector overhead alone can outgrow 500ms, which is test-environment
+// slowness, not an upstream stall.
+var sttStallGrace = 500 * time.Millisecond
 
 // sttReadLimit caps a single WS frame: one binary frame above the 20MB
 // transcription budget is protocol abuse, not audio.
@@ -135,13 +138,14 @@ func serveSttWS(ws *websocket.Conn) {
 		var msg struct {
 			Type   string `json:"type"`
 			Prompt string `json:"prompt"`
+			PTT    bool   `json:"ptt"`
 		}
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
 		switch msg.Type {
 		case "start":
-			c.handleStart(msg.Prompt)
+			c.handleStart(msg.Prompt, msg.PTT)
 		case "stop":
 			c.handleStop()
 		}
@@ -149,8 +153,11 @@ func serveSttWS(ws *websocket.Conn) {
 }
 
 // handleStart resolves the STT provider, probes the mode (live vs batch), and
-// launches the upstream request. Runs on readLoop.
-func (c *sttConn) handleStart(prompt string) {
+// launches the upstream request. Runs on readLoop. ptt=true (voice-face mic
+// leg) switches the endpointer to push-to-talk: silence never finalizes, only
+// the 60s cap and the manual stop do. Absent ptt (dictation) is the 10-25
+// production path — zero behavior change.
+func (c *sttConn) handleStart(prompt string, ptt bool) {
 	if c.active {
 		// Non-terminal refusal: the in-flight utterance is unaffected.
 		c.sendJSON(struct {
@@ -175,7 +182,7 @@ func (c *sttConn) handleStart(prompt string) {
 	c.prompt = prompt
 	c.active = true
 	c.finalizing = false
-	c.epd = endpointer{}
+	c.epd = endpointer{PTT: ptt}
 
 	live := c.probeLiveMode()
 	if !live {
@@ -244,15 +251,22 @@ func (c *sttConn) probeLiveMode() bool {
 		return c.modeLive
 	}
 	c.modeProbed = true
-	c.modeLive = false
+	c.modeLive = probeAudioLiveMode(c.baseURL, c.apiKey, c.model)
+	return c.modeLive
+}
+
+// probeAudioLiveMode reports whether the model entry at {base}/models
+// declares mode "streaming". Any failure reports false (callers fall back
+// to batch, which works for both entry modes).
+func probeAudioLiveMode(baseURL, apiKey, model string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
 		return false
 	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -272,12 +286,11 @@ func (c *sttConn) probeLiveMode() bool {
 		return false
 	}
 	for _, m := range list.Data {
-		if m.ID == c.model && m.Mode == "streaming" {
-			c.modeLive = true
-			break
+		if m.ID == model && m.Mode == "streaming" {
+			return true
 		}
 	}
-	return c.modeLive
+	return false
 }
 
 // pcmWriter drains pcmCh into the upstream request body. select on ctx.Done:

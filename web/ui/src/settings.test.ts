@@ -62,6 +62,7 @@ interface MockOptions {
   testResult?: { ok: boolean; latencyMs?: number; error?: string }
   putError?: string
   onPutStt?: (body: { provider: string; model: string }) => void
+    onPutTts?: (body: { provider: string; model: string }) => void
   logs?: string
   logsError?: boolean
   devices?: RemoteDevice[]
@@ -153,6 +154,13 @@ function makeFetchHandler(
     if (url === '/api/settings/stt' && method === 'PUT') {
       opts.onPutStt?.(JSON.parse(String(init?.body)) as { provider: string; model: string })
       return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    }
+    if (url === '/api/settings/tts' && method === 'PUT') {
+      opts.onPutTts?.(JSON.parse(String(init?.body)) as { provider: string; model: string; voice?: string })
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    }
+    if (url === '/api/tts/voices') {
+      return { ok: true, status: 200, json: async () => ({ voices: opts.ttsVoices ?? [] }) }
     }
     if (url.startsWith('/api/avatar/')) {
       if (method === 'HEAD') {
@@ -2519,6 +2527,55 @@ describe('STT settings surface', () => {
     })
   })
 
+  it('TTS third card: audio-only models, PUT /api/settings/tts on select, grey when unset', async () => {
+    let putBody: { provider: string; model: string } | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: { ...STT_PAYLOAD, tts: undefined },
+        onPutTts: (b) => (putBody = b),
+      }),
+      { ...STT_PAYLOAD, tts: undefined },
+    )
+    const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
+    expect(ttsCard).toBeTruthy()
+    expect(ttsCard.classList.contains('opacity-55')).toBe(true)
+    expect(ttsCard.textContent).toContain('Not configured')
+
+    ;(ttsCard.firstElementChild as HTMLElement).click()
+    const panel = page.root.querySelector('[data-tts-panel]') as HTMLElement
+    expect(panel.querySelectorAll('[data-tts-model="audiocpp/qwen3-tts-1.7b"]').length).toBe(0) // not in fixture models yet
+    const row = page.root.querySelector('[data-tts-model="audiocpp/stt"]') as HTMLElement
+    expect(row).toBeTruthy() // any audio model is selectable
+    row.click()
+    await vi.waitFor(() => expect(putBody).toEqual({ provider: 'audiocpp', model: 'stt', voice: '' }))
+    await vi.waitFor(() => {
+      expect(ttsCard.classList.contains('opacity-55')).toBe(false)
+      expect((ttsCard.querySelector('.font-mono') as HTMLElement).textContent).toBe('audiocpp / stt')
+    })
+  })
+
+  it('TTS voice dropdown: engine catalog fills the picker, selecting PUTs tts.voice', async () => {
+    let putBody: { provider: string; model: string; voice?: string } | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: { ...STT_PAYLOAD, tts: { provider: 'audiocpp', model: 'stt' } },
+        onPutTts: (b) => (putBody = b),
+        ttsVoices: ['Aiden', 'Serena', 'Ryan'],
+      }),
+      { ...STT_PAYLOAD, tts: { provider: 'audiocpp', model: 'stt' } },
+    )
+    const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
+    ;(ttsCard.firstElementChild as HTMLElement).click()
+    const sel = page.root.querySelector('[data-tts-voice]') as HTMLSelectElement
+    expect(sel).toBeTruthy()
+    await vi.waitFor(() => {
+      expect(Array.from(sel.options).map((o) => o.value)).toEqual(['', 'Aiden', 'Serena', 'Ryan'])
+    })
+    sel.value = 'Serena'
+    sel.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(putBody).toEqual({ provider: 'audiocpp', model: 'stt', voice: 'Serena' }))
+  })
+
   it('audio provider card shows an AUDIO badge; model rows carry the STT tag on the default, no disclosure', async () => {
     const page = await openPage(makeFetchHandler({ payload: STT_PAYLOAD }), STT_PAYLOAD)
     const audioCard = Array.from(page.root.querySelectorAll('[data-provider-card]')).find(
@@ -2564,6 +2621,103 @@ describe('STT settings surface', () => {
       expect(page.root.textContent).toContain('Voice models take no session params')
       expect(page.root.textContent).not.toContain('Context')
     })
+  })
+})
+
+// Audio model task metadata (audio.cpp /v1/models "task":"asr"|"tts" field):
+// opening an audio default card fetches the provider's model list and splits
+// it — asr models into the STT card, tts models into the TTS card, both
+// badged; models without task info stay listed everywhere (10-28 ruling: 有
+// task 就用，没有就不过滤). Fetch failure falls back to the config list.
+describe('audio model task badges', () => {
+  const TASK_PAYLOAD: SettingsPayload = {
+    ...PAYLOAD,
+    providers: [
+      ...PAYLOAD.providers,
+      {
+        name: 'audiocpp',
+        url: 'http://127.0.0.1:8082/v1',
+        type: 'audio',
+        keys: [],
+        models: { 'asr-m': {}, 'tts-m': {}, 'plain-m': {} },
+      },
+    ],
+    stt: { provider: 'audiocpp', model: 'asr-m' },
+    tts: { provider: 'audiocpp', model: 'tts-m' },
+  }
+  const TASK_MODELS: ModelsResult = {
+    mode: 'fetched',
+    models: [
+      { id: 'asr-m', task: 'asr' },
+      { id: 'tts-m', task: 'tts' },
+      { id: 'plain-m' },
+    ],
+  }
+
+  it('task metadata splits and badges both cards; taskless models stay unfiltered', async () => {
+    const page = await openPage(makeFetchHandler({ payload: TASK_PAYLOAD, models: TASK_MODELS }), TASK_PAYLOAD)
+
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    await vi.waitFor(() => {
+      const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
+      expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/asr-m"]').length).toBe(1)
+      expect(
+        sttPanel.querySelector('[data-stt-model="audiocpp/asr-m"] [data-task-badge="stt"]')!.textContent,
+      ).toBe('STT')
+      // tts model hidden from the STT card; taskless model stays listed
+      expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/tts-m"]').length).toBe(0)
+      expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/plain-m"]').length).toBe(1)
+      expect(sttPanel.querySelector('[data-stt-model="audiocpp/plain-m"] [data-task-badge]')).toBeNull()
+    })
+
+    const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
+    ;(ttsCard.firstElementChild as HTMLElement).click()
+    await vi.waitFor(() => {
+      const ttsPanel = page.root.querySelector('[data-tts-panel]') as HTMLElement
+      expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/tts-m"]').length).toBe(1)
+      expect(
+        ttsPanel.querySelector('[data-tts-model="audiocpp/tts-m"] [data-task-badge="tts"]')!.textContent,
+      ).toBe('TTS')
+      expect(ttsPanel.querySelectorAll('[data-stt-model="audiocpp/asr-m"]').length).toBe(0)
+      expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/asr-m"]').length).toBe(0)
+      expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/plain-m"]').length).toBe(1)
+    })
+  })
+
+  it('taskless /v1/models response → full config list, no badges', async () => {
+    const page = await openPage(
+      makeFetchHandler({
+        payload: TASK_PAYLOAD,
+        models: { mode: 'fetched', models: [{ id: 'asr-m' }, { id: 'tts-m' }, { id: 'plain-m' }] },
+      }),
+      TASK_PAYLOAD,
+    )
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    await vi.waitFor(() => {
+      const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
+      expect(sttPanel.querySelectorAll('[data-stt-model]').length).toBe(3)
+      expect(sttPanel.querySelector('[data-task-badge]')).toBeNull()
+    })
+  })
+
+  it('fetch failure → config-list fallback, silent (no toast)', async () => {
+    const mock = makeFetchHandler({ payload: TASK_PAYLOAD, models: { mode: 'error', error: 'HTTP 500' } })
+    const page = await openPage(mock, TASK_PAYLOAD)
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    ;(sttCard.firstElementChild as HTMLElement).click()
+    // The panel must render the full list immediately (fetch never blocks)
+    const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
+    expect(sttPanel.querySelectorAll('[data-stt-model]').length).toBe(3)
+    // ...and stay that way once the failed fetch settles — no toast either.
+    await vi.waitFor(() =>
+      expect(mock).toHaveBeenCalledWith('/api/settings/models', expect.objectContaining({ method: 'POST' })),
+    )
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(sttPanel.querySelectorAll('[data-stt-model]').length).toBe(3)
+    expect(sttPanel.querySelector('[data-task-badge]')).toBeNull()
+    expect((page.root.querySelector('[data-toast]') as HTMLElement).classList.contains('toast-show')).toBe(false)
   })
 })
 

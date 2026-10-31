@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -356,12 +357,17 @@ func Start(opts Options) (*Instance, error) {
 	// appear and disappear with a bash `cd`, breaking the whole prompt-cache
 	// prefix on every flip. A refresh re-reads the files behind this one dir,
 	// never a live cwd.
+	// The voice block rides in every user base system prompt unconditionally
+	// (10-28 ruling): a conditional lazy attach re-prefilled the whole context
+	// on the first voice turn of a long session, landing on the voice
+	// first-response latency. The block keys off the per-message [voice]
+	// marker prefix instead, so presence is behaviorally free.
 	buildSystemPrompt := func() string {
-		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, "")
+		return ctxbuild.AppendVoiceBlock(ctxbuild.BuildSystemPrompt(workingDir, projectDir, toolPrompts, skillListing, ""))
 	}
 	refreshContext := func() (string, map[string]string) {
 		env := holder.Load()
-		return ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, ""),
+		return ctxbuild.AppendVoiceBlock(ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, "")),
 			ctxbuild.LoadContextFiles(workingDir)
 	}
 	systemPrompt := buildSystemPrompt()
@@ -451,7 +457,16 @@ func Start(opts Options) (*Instance, error) {
 			refs.REPL.CleanSession(sessionID)
 		})
 		engine.WireEngine(newEng, refs, deps)
-		newEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, ""))
+		// The voice block is user-facing only. The factory also re-creates
+		// every PERSISTED engine on startup (restore.go), and the wechat
+		// connector's engines ("wechat-<account>") are text channels — the
+		// daemon-mode bare reset in wechat.go never runs under TUI, so the
+		// wrap itself must skip them here.
+		if base := ctxbuild.BuildSystemPrompt(workingDir, projectDir, env.ToolPrompts, env.SkillListing, ""); strings.HasPrefix(id, "wechat-") {
+			newEng.SetSystemPrompt(base)
+		} else {
+			newEng.SetSystemPrompt(ctxbuild.AppendVoiceBlock(base))
+		}
 		newEng.SetContextRefresher(refreshContext)
 		newEng.SetSkillListing(env.SkillListing)
 		newEng.SetAgentDefs(agent.ListAgentDefinitions())
@@ -638,6 +653,7 @@ func Start(opts Options) (*Instance, error) {
 	if needWS && wsMux != nil {
 		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
 		wc.SetSTTDefault(cfg.STT.Default)
+		wc.SetTTSDefault(cfg.TTS.Default)
 		if supervisedMode() {
 			supervisedClose.Store(func() { wc.CloseForUpgrade() })
 		}
@@ -680,6 +696,7 @@ func Start(opts Options) (*Instance, error) {
 		wui.RegisterRemoteDesktopRoutes(wsMux)
 		wui.RegisterVNCProxyRoutes(wsMux)
 		wui.RegisterSTTRoutes(wsMux)
+		wui.RegisterTTSRoutes(wsMux)
 		wui.RegisterLogRoutes(wsMux, logPath)
 		// TUI-mode processes are gated from hot-restart entirely (the child
 		// would die on raw-mode EIO after Ready — 2026-09-22 incident).

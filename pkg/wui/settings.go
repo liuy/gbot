@@ -26,6 +26,7 @@ var settingsHTTPTimeout = 10 * time.Second
 //   - PUT  /api/settings/providers  — replace the providers array (backup + atomic write)
 //   - PUT  /api/settings/default    — set the default model tier
 //   - PUT  /api/settings/stt        — set the default STT model (audio providers only)
+//   - PUT  /api/settings/tts        — set the default TTS model (audio providers only)
 //   - POST /api/settings/test       — live connection probe against one provider
 //   - POST /api/settings/models     — fetch the model id list from an endpoint
 //
@@ -37,6 +38,7 @@ func RegisterSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/settings/default", handleDefaultPut)
 	mux.HandleFunc("PUT /api/settings/providers", handlePutProviders)
 	mux.HandleFunc("PUT /api/settings/stt", handleSttDefaultPut)
+	mux.HandleFunc("PUT /api/settings/tts", handleTTSDefaultPut)
 	mux.HandleFunc("POST /api/settings/test", handleTestProvider)
 	mux.HandleFunc("POST /api/settings/models", handleFetchModels)
 }
@@ -47,11 +49,15 @@ type settingsPayload struct {
 	Providers []config.Provider `json:"providers"`
 	Default   settingsDefault   `json:"default"`
 	Stt       *settingsDefault  `json:"stt,omitempty"`
+	Tts       *settingsDefault  `json:"tts,omitempty"`
 }
 
 type settingsDefault struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Voice is TTS-only (the backend speaker name); empty means the
+	// engine's own default preset applies.
+	Voice string `json:"voice,omitempty"`
 }
 
 func handleGetProviders(w http.ResponseWriter, r *http.Request) {
@@ -70,11 +76,15 @@ func handleGetProviders(w http.ResponseWriter, r *http.Request) {
 	if p, m, err := cfg.ResolveSTT(); err == nil {
 		sttDef = &settingsDefault{Provider: p.Name, Model: m}
 	}
+	var ttsDef *settingsDefault
+	if p, m, err := cfg.ResolveTTS(); err == nil {
+		ttsDef = &settingsDefault{Provider: p.Name, Model: m, Voice: cfg.TTS.Voice}
+	}
 	if cfg.Providers == nil {
 		cfg.Providers = []config.Provider{}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def, Stt: sttDef})
+	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def, Stt: sttDef, Tts: ttsDef})
 }
 
 // handleGetRawSettings returns the on-disk settings.json verbatim for the
@@ -290,6 +300,9 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		ID      string   `json:"id"`
 		Context string   `json:"context,omitempty"`
 		Input   []string `json:"input,omitempty"`
+		// Task is the audio.cpp extension field ("asr"|"tts") that lets the
+		// UI split voice models across the STT/TTS cards.
+		Task string `json:"task,omitempty"`
 	}
 	if req.Free {
 		// Reuses the startup path verbatim (same filter, sort, cap) so the
@@ -348,7 +361,8 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	// through so the UI can pre-fill params instead of placeholders.
 	var list struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Task string `json:"task"`
 		} `json:"data"`
 		Models []struct {
 			Slug            string   `json:"slug"`
@@ -384,7 +398,7 @@ func handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		add(fm)
 	}
 	for _, m := range list.Data {
-		add(fetchedModel{ID: m.ID})
+		add(fetchedModel{ID: m.ID, Task: m.Task})
 	}
 	// An empty list is still a fetched list — the UI toasts "no models returned".
 	writeJSON(w, http.StatusOK, struct {
@@ -406,6 +420,32 @@ func handleSttDefaultPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := config.SaveSTTDefault(req.Provider, req.Model); err != nil {
+		switch {
+		case errors.Is(err, config.ErrUnknownProvider),
+			errors.Is(err, config.ErrUnknownModel),
+			errors.Is(err, config.ErrNotAudioProvider):
+			errorJSON(w, http.StatusBadRequest, err.Error())
+		default:
+			errorJSON(w, http.StatusInternalServerError, "save: "+err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleTTSDefaultPut sets tts.default in settings.json (same shape and
+// validation contract as handleSttDefaultPut).
+func handleTTSDefaultPut(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Voice    string `json:"voice"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if err := config.SaveTTSDefault(req.Provider, req.Model, req.Voice); err != nil {
 		switch {
 		case errors.Is(err, config.ErrUnknownProvider),
 			errors.Is(err, config.ErrUnknownModel),

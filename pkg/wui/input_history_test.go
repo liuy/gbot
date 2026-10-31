@@ -322,9 +322,13 @@ func TestHandleMessageInbound_AppendsHistory(t *testing.T) {
 	c.mock().isBusyFn = func() bool { return false }
 	c.mock().systemPromptFn = func() string { return "" }
 
-	c.handleMessageInbound("hello", nil)
+	c.handleMessageInbound("hello", nil, false)
+	// A voice message's input history keeps the clean transcript: the
+	// [voice] marker is prepended after appendInputHistory, so up-arrow
+	// recall must not paste the marker.
+	c.handleMessageInbound("spoken", nil, true)
 
-	// JSONL file should exist with one entry — synchronous, assert immediately.
+	// JSONL file should exist with the entries — synchronous, assert immediately.
 	path := filepath.Join(dir, "history", sid+".jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -332,6 +336,12 @@ func TestHandleMessageInbound_AppendsHistory(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"display":"hello"`) {
 		t.Errorf("file content = %q, want display hello", string(data))
+	}
+	if strings.Contains(string(data), "[voice]") {
+		t.Errorf("input history leaked the voice marker: %q", string(data))
+	}
+	if !strings.Contains(string(data), `"display":"spoken"`) {
+		t.Errorf("file content = %q, want display spoken", string(data))
 	}
 
 	// Query dispatched asynchronously.
@@ -353,7 +363,7 @@ func TestHandleMessageInbound_BusyStillAppendsHistory(t *testing.T) {
 	c.mock().engineIDFn = func() string { return sid }
 	c.mock().isBusyFn = func() bool { return true }
 
-	c.handleMessageInbound("queued", nil)
+	c.handleMessageInbound("queued", nil, false)
 
 	path := filepath.Join(dir, "history", sid+".jsonl")
 	data, err := os.ReadFile(path)

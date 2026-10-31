@@ -47,6 +47,7 @@ export interface SettingsPayload {
   providers: SettingsProvider[]
   default: { provider: string; model: string }
   stt?: { provider: string; model: string }
+  tts?: { provider: string; model: string; voice?: string }
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
@@ -208,6 +209,46 @@ export async function saveSttDefault(provider: string, model: string): Promise<v
   }
 }
 
+// Engine voice catalog (proxied /api/tts/voices), scoped per settings page:
+// cached across panel opens within the page, a failure clears it so the next
+// open retries. Empty list is normal (backend without a catalog) — the
+// picker then offers just the default.
+function makeTTSVoicesFetcher(): () => Promise<string[]> {
+  let cache: Promise<string[]> | null = null
+  return () => {
+    if (!cache) {
+      cache = fetch('/api/tts/voices')
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return ((await res.json()) as { voices?: string[] }).voices ?? []
+        })
+        .catch((err: unknown) => {
+          cache = null
+          throw err
+        })
+    }
+    return cache
+  }
+}
+
+export async function saveTTSDefault(provider: string, model: string, voice: string): Promise<void> {
+  const res = await fetch('/api/settings/tts', {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify({ provider, model, voice }),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body.error) msg = body.error
+    } catch {
+      // status text is enough
+    }
+    throw new Error(msg)
+  }
+}
+
 // Language is per-browser state in localStorage (same as theme/hljs), not
 // settings.json: "auto" removes the key so the locale follows the system.
 function saveLanguage(language: Locale | 'auto'): void {
@@ -225,7 +266,7 @@ export async function testProvider(p: SettingsProvider): Promise<TestResult> {
 }
 
 export type ModelsResult =
-  | { mode: 'fetched'; models: Array<string | { id: string; context?: string; input?: string[] }> }
+  | { mode: 'fetched'; models: Array<string | { id: string; context?: string; input?: string[]; task?: string }> }
   | { mode: 'manual' }
   | { mode: 'error'; error: string }
 
@@ -396,10 +437,38 @@ export function createSettingsPage(): SettingsPageHandles {
   // Default-model cards, one factory for both kinds: LLM lists non-audio
   // providers (chat), STT lists audio providers only — audio never mixes
   // into the chat picker.
-  const createDefaultCard = (kind: 'llm' | 'stt') => {
+  // Audio model task metadata: audio.cpp's /v1/models tags each entry with
+  // task:"asr"|"tts". Fetched lazily on the first audio panel open, cached
+  // per provider for the page session. Per-model ruling (10-28): a known
+  // task is used (badge + card split); a missing task — or a failed fetch —
+  // leaves the model listed everywhere unbadged. Never blocks the panel.
+  const audioTasks = new Map<string, Record<string, string>>() // provider name → model id → task
+  const audioTaskFetches = new Map<string, Promise<void>>()
+  const fetchTTSVoices = makeTTSVoicesFetcher()
+  const fetchAudioTasks = (p: SettingsProvider): Promise<void> => {
+    let inflight = audioTaskFetches.get(p.name)
+    if (!inflight) {
+      // Failures resolve to "no info" silently — the cards keep the config
+      // list; the probe/test affordance is where fetch errors surface.
+      inflight = fetchProviderModels(p.url, p.keys?.[0] ?? '', p.type ?? 'audio')
+        .then((res) => {
+          if (res.mode !== 'fetched') return
+          const map: Record<string, string> = {}
+          for (const entry of res.models) {
+            if (typeof entry === 'object' && entry.task) map[entry.id] = entry.task
+          }
+          audioTasks.set(p.name, map)
+        })
+        .catch(() => {})
+      audioTaskFetches.set(p.name, inflight)
+    }
+    return inflight
+  }
+  const createDefaultCard = (kind: 'llm' | 'stt' | 'tts') => {
     const card = createNode('div', {
       className: 'mx-3 mb-2.5 bg-ink2 border border-hairline rounded-xl overflow-hidden cursor-pointer select-none',
-      attrs: kind === 'llm' ? { 'data-default-card': '' } : { 'data-stt-card': '' },
+      attrs:
+        kind === 'llm' ? { 'data-default-card': '' } : kind === 'stt' ? { 'data-stt-card': '' } : { 'data-tts-card': '' },
     })
     const head = createElement('div', 'flex items-center gap-2 px-3.5 py-3')
     const kindBadge = createNode('span', {
@@ -411,23 +480,32 @@ export function createSettingsPage(): SettingsPageHandles {
     head.append(kindBadge, title, chev)
     const panel = createElement('div', 'hidden border-t border-hairline max-h-[260px] overflow-y-auto')
     if (kind === 'llm') panel.setAttribute('data-default-panel', '')
-    else panel.setAttribute('data-stt-panel', '')
-    const current = () => (kind === 'llm' ? payload.default : payload.stt ?? { provider: '', model: '' })
+    else if (kind === 'stt') panel.setAttribute('data-stt-panel', '')
+    else panel.setAttribute('data-tts-panel', '')
+    const current = () =>
+      kind === 'llm' ? payload.default : kind === 'stt' ? (payload.stt ?? { provider: '', model: '' }) : (payload.tts ?? { provider: '', model: '' })
     const renderPanel = () => {
       panel.replaceChildren()
-      const wantAudio = kind === 'stt'
+      const wantAudio = kind === 'stt' || kind === 'tts'
+      // Card's own task gate: stt ↔ asr, tts ↔ tts. A model with a KNOWN
+      // other-task stays off the card; a model with no task info is listed
+      // (no info, no filter).
+      const wantTask = kind === 'stt' ? 'asr' : 'tts'
       for (const p of payload.providers) {
         const isAudio = p.type === 'audio'
         if (isAudio !== wantAudio) continue
-        const group = createElement('div', 'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1')
-        group.textContent = p.name
-        panel.appendChild(group)
+        const tasks = audioTasks.get(p.name)
+        // Rows are buffered so a provider whose every model is task-gated
+        // off this card leaves no orphan group header behind.
+        const rows: HTMLElement[] = []
         for (const name of Object.keys(p.models ?? {})) {
+          const task = tasks?.[name]
+          if (wantAudio && task !== undefined && task !== wantTask) continue
           const cur = current()
           const isSel = p.name === cur.provider && name === cur.model
           const row = createElement('div', 'flex items-center gap-2.5 px-3.5 py-2 cursor-pointer')
           row.setAttribute(
-            kind === 'llm' ? 'data-default-model' : 'data-stt-model',
+            kind === 'llm' ? 'data-default-model' : kind === 'stt' ? 'data-stt-model' : 'data-tts-model',
             `${p.name}/${name}`,
           )
           const dot = createElement(
@@ -439,15 +517,28 @@ export function createSettingsPage(): SettingsPageHandles {
           const label = createElement('span', 'text-xs font-mono' + (isSel ? ' text-blue' : ''))
           label.textContent = name
           row.append(dot, label)
+          if (wantAudio && task === wantTask) {
+            // Same pill style as the model-row STT tag (data-stt-badge).
+            row.appendChild(
+              createNode('span', {
+                className: 'text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold',
+                text: kind.toUpperCase(),
+                attrs: { 'data-task-badge': kind },
+              }),
+            )
+          }
           row.addEventListener('click', async (e) => {
             e.stopPropagation()
             try {
               if (kind === 'llm') {
                 await saveDefaultModel(p.name, name)
                 payload.default = { provider: p.name, model: name }
-              } else {
+              } else if (kind === 'stt') {
                 await saveSttDefault(p.name, name)
                 payload.stt = { provider: p.name, model: name }
+              } else {
+                await saveTTSDefault(p.name, name, payload.tts?.voice ?? '')
+                payload.tts = { provider: p.name, model: name }
               }
               title.textContent = `${p.name} / ${name}`
               card.classList.remove('opacity-55')
@@ -457,20 +548,90 @@ export function createSettingsPage(): SettingsPageHandles {
               toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
             }
           })
-          panel.appendChild(row)
+          rows.push(row)
         }
+        if (rows.length === 0) continue
+        const group = createElement('div', 'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1')
+        group.textContent = p.name
+        panel.appendChild(group)
+        panel.append(...rows)
+      }
+      // TTS only: a voice picker fed by the engine's own catalog
+      // (/api/tts/voices proxies audio.cpp GET /audio/voices). The list is
+      // backend knowledge; empty selection falls back to the engine's
+      // default preset.
+      if (kind === 'tts') {
+        const cur = current() as { provider: string; model: string; voice?: string }
+        const row = createElement('div', 'flex items-center gap-2.5 px-3.5 py-2 border-t border-hairline')
+        const label = createElement('span', 'text-[11px] text-t3 font-medium shrink-0')
+        label.textContent = t('ttsVoice')
+        const sel = document.createElement('select')
+        sel.setAttribute('data-tts-voice', '')
+        sel.className = 'flex-1 bg-ink3 border border-hairline rounded-lg px-2 py-1 text-xs font-mono'
+        const defOpt = document.createElement('option')
+        defOpt.value = ''
+        defOpt.textContent = t('ttsVoiceDefault')
+        sel.appendChild(defOpt)
+        sel.disabled = !cur.provider
+        row.append(label, sel)
+        panel.appendChild(row)
+        fetchTTSVoices()
+          .then((voices) => {
+            for (const v of voices) {
+              const o = document.createElement('option')
+              o.value = v
+              o.textContent = v
+              sel.appendChild(o)
+            }
+            sel.value = cur.voice ?? ''
+          })
+          .catch(() => {
+            /* picker keeps just the default option; backend list is optional */
+          })
+        sel.addEventListener('change', async () => {
+          try {
+            const c = current() as { provider: string; model: string; voice?: string }
+            await saveTTSDefault(c.provider, c.model, sel.value)
+            payload.tts = { ...c, voice: sel.value }
+            toast(t('savedRestart'))
+          } catch (err) {
+            toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
+          }
+        })
       }
     }
     card.append(head, panel)
     head.addEventListener('click', () => {
       renderPanel()
+      if (kind === 'stt' || kind === 'tts') refreshAudioTasks()
       const open = panel.classList.toggle('hidden')
       chev.classList.toggle('rotate-90', !open)
     })
-    return { card, title }
+    // Async task knowledge arrives after the first open — re-render only
+    // still-open panels so the fetch never disturbs other UI state.
+    const rerenderIfOpen = () => {
+      if (!panel.classList.contains('hidden')) renderPanel()
+    }
+    return { card, title, rerenderIfOpen }
   }
   const llmDefaultCard = createDefaultCard('llm')
   const sttDefaultCard = createDefaultCard('stt')
+  const ttsDefaultCard = createDefaultCard('tts')
+
+  // Kick the /v1/models task fetch for every audio provider; once they all
+  // settle, refresh whichever audio panels are open with the new knowledge.
+  const refreshAudioTasks = () => {
+    const inflight: Array<Promise<void>> = []
+    for (const p of payload.providers) {
+      if (p.type !== 'audio') continue
+      inflight.push(fetchAudioTasks(p))
+    }
+    if (inflight.length === 0) return
+    void Promise.all(inflight).then(() => {
+      sttDefaultCard.rerenderIfOpen()
+      ttsDefaultCard.rerenderIfOpen()
+    })
+  }
 
   const segBtnStyle = (b: HTMLElement, selected: boolean) => {
     b.className =
@@ -1456,6 +1617,7 @@ export function createSettingsPage(): SettingsPageHandles {
     sectionLabel('defaultModelSection'),
     llmDefaultCard.card,
     sttDefaultCard.card,
+    ttsDefaultCard.card,
   )
   if (remoteBridge()) homeScreen.append(remoteSectionLabel, remoteCard)
   homeScreen.append(sectionLabel('remoteDesktopSection'), rdCard)
@@ -1907,13 +2069,20 @@ export function createSettingsPage(): SettingsPageHandles {
       provList.appendChild(createProviderCard(p))
     }
     llmDefaultCard.title.textContent = `${payload.default.provider} / ${payload.default.model}`
-    // Unconfigured STT greys the card instead of showing an empty picker.
+    // Unconfigured STT/TTS greys the card instead of showing an empty picker.
     if (payload.stt) {
       sttDefaultCard.title.textContent = `${payload.stt.provider} / ${payload.stt.model}`
       sttDefaultCard.card.classList.remove('opacity-55')
     } else {
       sttDefaultCard.title.textContent = t('sttNotConfigured')
       sttDefaultCard.card.classList.add('opacity-55')
+    }
+    if (payload.tts) {
+      ttsDefaultCard.title.textContent = `${payload.tts.provider} / ${payload.tts.model}`
+      ttsDefaultCard.card.classList.remove('opacity-55')
+    } else {
+      ttsDefaultCard.title.textContent = t('ttsNotConfigured')
+      ttsDefaultCard.card.classList.add('opacity-55')
     }
   }
 
@@ -2408,6 +2577,11 @@ export function createSettingsPage(): SettingsPageHandles {
     try {
       await saveSettings(next)
       payload = await fetchSettings()
+      // Providers may have been renamed/repointed — the cached task maps are
+      // keyed by name and would answer for the wrong shape. Refetch on next
+      // panel open.
+      audioTasks.clear()
+      audioTaskFetches.clear()
       renderHome()
       showScreen(true)
       toast(successMsg)

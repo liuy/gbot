@@ -410,6 +410,41 @@ func TestReload_UnchangedRun(t *testing.T) {
 	}
 }
 
+// TestReload_RebuiltPromptCarriesVoiceBlock pins the 10-31 ruling at the
+// reload pipeline: every prompt the orchestrator assembles is the primary
+// engine's prompt mirror, so it must carry the voice block exactly like the
+// engine-side refreshers do. A bare baseline would not only misreport what
+// engines hold — the next diff compares the (wrapped) refreshed reality
+// against it, so the two halves must be built the same way.
+func TestReload_RebuiltPromptCarriesVoiceBlock(t *testing.T) {
+	env := newReloadTestEnv(t, settingsA)
+	o := env.orchestrator()
+
+	// Startup baseline (captureBaseline) mirrors the primary engine's prompt.
+	if got := o.baseline.prompt; !strings.Contains(got, "# Voice Interaction") {
+		t.Errorf("startup baseline prompt lacks the voice block; got: %.200s", got)
+	}
+
+	writeSettingsFile(t, env.home, settingsB)
+	rep := o.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload must apply: %q", rep.Err)
+	}
+	if got := o.baseline.prompt; !strings.Contains(got, "# Voice Interaction") {
+		t.Errorf("post-reload baseline prompt lacks the voice block; got: %.200s", got)
+	}
+
+	// The diff prompt must equal the post-reload baseline, or every later
+	// no-op reload reports a spurious prompt change.
+	rep2 := o.Reload(context.Background())
+	if !rep2.Applied {
+		t.Fatalf("second reload must apply: %q", rep2.Err)
+	}
+	if rep2.PromptChanged {
+		t.Error("unchanged second reload reported PromptChanged — the diff prompt diverged from the stored baseline")
+	}
+}
+
 func TestReload_SkillsLoadFailureKeepsOldListing(t *testing.T) {
 	env := newReloadTestEnv(t, settingsA)
 	sentinelListing := "SENTINEL-SKILL-LISTING"

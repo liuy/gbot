@@ -1,5 +1,6 @@
 import type { Block } from './model'
 import type { JobWireItem, QueryEvent } from './types'
+import { applyStreamEvent, findBlock } from './components/event_blocks'
 
 export interface JobFeedState {
   blocks: Block[]
@@ -34,8 +35,6 @@ export interface JobsStoreHandle {
   feedVersion(jobID: string): number
 }
 
-type ToolBlock = Extract<Block, { kind: 'tool' }>
-
 // Mirror of the connector's jobFeedMaxBlocks (pkg/wui/jobs_panel.go).
 // The 400 cap still governs LIVE jobs: the server keeps the live region at
 // ≤400 blocks and the client must cap identically or the live view diverges
@@ -44,20 +43,6 @@ type ToolBlock = Extract<Block, { kind: 'tool' }>
 // job_terminated and freezes it, so a post-terminal reconnect hydrates with
 // ≤20 blocks by design — the client renders whatever the snapshot carries.
 const JOB_FEED_MAX_BLOCKS = 400
-
-// findBlock mirrors the connector's findBlock: depth-first search of the
-// block tree for a tool block by id. Sub-agent events address their parent
-// tool by id, wherever in the tree it lives.
-export function findBlock(blocks: Block[], id: string): ToolBlock | null {
-  for (const b of blocks) {
-    if (b.kind === 'tool') {
-      if (b.id === id) return b
-      const nested = findBlock(b.children, id)
-      if (nested) return nested
-    }
-  }
-  return null
-}
 
 export function createJobsStore(): JobsStoreHandle {
   let items = new Map<string, JobWireItem>()
@@ -102,124 +87,6 @@ export function createJobsStore(): JobsStoreHandle {
     for (const [toolID, jobID] of innerToolToJob) {
       if (!items.has(jobID)) innerToolToJob.delete(toolID)
     }
-  }
-
-  // applyStreamEvent mirrors the connector's updateStreamState for the event
-  // types that build blocks. target is the list to append to (null = the
-  // parent block vanished; the event is dropped, same as Go's nil targetList).
-  // Returns whether the feed content changed (drives onChange).
-  const applyStreamEvent = (feed: JobFeedState, target: Block[] | null, e: QueryEvent): boolean => {
-    switch (e.type) {
-      case 'text_delta': {
-        if (!target) return false
-        const last = target[target.length - 1]
-        if (last && last.kind === 'text') {
-          last.text += e.text ?? ''
-        } else {
-          target.push({ kind: 'text', id: '', text: e.text ?? '' })
-        }
-        return true
-      }
-      case 'tool_start': {
-        if (!target || !e.tool_use) return false
-        const tu = e.tool_use
-        target.push({
-          kind: 'tool',
-          id: tu.id,
-          name: tu.name,
-          summary: tu.summary ?? '',
-          isSearch: !!tu.is_search,
-          isRead: !!tu.is_read,
-          isList: !!tu.is_list,
-          isLsp: !!tu.is_lsp,
-          isTask: !!tu.is_task,
-          isWeb: tu.name === 'Web',
-          state: 'running',
-          timingNs: 0,
-          displayOutput: '',
-          startedAt: Date.now(),
-          children: [],
-        })
-        return true
-      }
-      case 'tool_param_delta': {
-        if (!e.partial_input) return false
-        const b = findBlock(feed.blocks, e.partial_input.id)
-        if (!b) return false
-        if (e.partial_input.summary) b.summary = e.partial_input.summary
-        if (e.partial_input.is_search) b.isSearch = true
-        if (e.partial_input.is_read) b.isRead = true
-        if (e.partial_input.is_list) b.isList = true
-        if (e.partial_input.is_lsp) b.isLsp = true
-        if (e.partial_input.is_task) b.isTask = true
-        return true
-      }
-      case 'tool_output_delta': {
-        if (!e.tool_result) return false
-        const b = findBlock(feed.blocks, e.tool_result.tool_use_id)
-        if (!b) return false
-        b.displayOutput = e.tool_result.display_output ?? ''
-        return true
-      }
-      case 'tool_end': {
-        if (!e.tool_result) return false
-        const b = findBlock(feed.blocks, e.tool_result.tool_use_id)
-        if (!b) return false
-        b.state = e.tool_result.is_error ? 'error' : 'done'
-        b.displayOutput = e.tool_result.display_output ?? ''
-        if (e.tool_result.is_search) b.isSearch = true
-        if (e.tool_result.is_read) b.isRead = true
-        if (e.tool_result.is_list) b.isList = true
-        if (e.tool_result.is_lsp) b.isLsp = true
-        if (e.tool_result.is_task) b.isTask = true
-        b.timingNs = (Date.now() - b.startedAt) * 1e6
-        // Agent tool: streamed children are superseded by the final result —
-        // the server cache clears them on tool_end, so the live path must
-        // too or a reconnect hydration would render differently.
-        b.children = []
-        return true
-      }
-      case 'thinking_start': {
-        if (!target) return false
-        target.push({ kind: 'thinking', id: '', text: '', durationNs: 0, active: true, startedAt: Date.now() })
-        return true
-      }
-      case 'thinking_delta': {
-        if (!target || !e.thinking) return false
-        const last = target[target.length - 1]
-        if (!last || last.kind !== 'thinking') return false
-        last.text += e.thinking.text ?? ''
-        return true
-      }
-      case 'thinking_end': {
-        if (!target || !e.thinking) return false
-        const last = target[target.length - 1]
-        if (!last || last.kind !== 'thinking') return false
-        last.active = false
-        last.durationNs = e.thinking.duration ?? 0
-        return true
-      }
-      case 'attachment': {
-        if (!target || !e.message) return false
-        // Mirrors Go updateStreamState: prompt-mode attachments carry the
-        // original user text in prompt; queued-message events carry only the
-        // reminder envelope in content — prefer the prompt to keep the echo
-        // unwrapped.
-        let text: string = ''
-        const att = e.message.attachment
-        if (att && att.mode === 'prompt' && att.prompt) {
-          text = att.prompt
-        } else {
-          for (const cb of e.message.content ?? []) {
-            if (cb.type === 'text' && cb.text) text += cb.text
-          }
-        }
-        if (!text) return false
-        target.push({ kind: 'user', id: '', text })
-        return true
-      }
-    }
-    return false
   }
 
   return {
@@ -287,7 +154,7 @@ export function createJobsStore(): JobsStoreHandle {
       const target = toRoot
         ? feed.blocks
         : findBlock(feed.blocks, parent)?.children ?? null
-      const changed = applyStreamEvent(feed, target, e)
+      const changed = applyStreamEvent(feed.blocks, target, e)
       // Mirror of Go's per-event cap in applyAgentEventLocked: drop the head,
       // the tail is the interesting end.
       let dropped: Block[] | null = null

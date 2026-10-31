@@ -56,12 +56,25 @@ class MockWebSocket {
 
 // Fake capture-chain collaborators. Every SttSession test injects all four
 // deps; jsdom has no real AudioContext/AudioWorklet/getUserMedia.
+type FakeAnalyser = {
+  data: Uint8Array
+  fftSize?: number
+  smoothingTimeConstant?: number
+  connectedTo: unknown
+  connect(target: unknown): void
+  disconnect(): void
+  getByteTimeDomainData(arr: Uint8Array): void
+}
+
 function makeDeps(capture: { onFrame?: (f: Float32Array) => void } = {}): {
   deps: SttDeps
   state: {
     ctxClosed: boolean
     tracksStopped: boolean
     workletDisconnected: boolean
+    micSourceConnected: boolean
+    micSourceDisconnected: boolean
+    analyser: FakeAnalyser | null
     frame: (f: Float32Array) => void
   }
 } {
@@ -69,6 +82,9 @@ function makeDeps(capture: { onFrame?: (f: Float32Array) => void } = {}): {
     ctxClosed: false,
     tracksStopped: false,
     workletDisconnected: false,
+    micSourceConnected: false,
+    micSourceDisconnected: false,
+    analyser: null as FakeAnalyser | null,
     frame: (f: Float32Array) => capture.onFrame?.(f),
   }
   const deps: SttDeps = {
@@ -78,6 +94,25 @@ function makeDeps(capture: { onFrame?: (f: Float32Array) => void } = {}): {
         close: () => {
           state.ctxClosed = true
           return Promise.resolve()
+        },
+        createMediaStreamSource: (_stream: MediaStream) => ({
+          connect: (_t: unknown) => (state.micSourceConnected = true),
+          disconnect: () => (state.micSourceDisconnected = true),
+        }),
+        createAnalyser: () => {
+          const analyser: FakeAnalyser = {
+            data: new Uint8Array(1024).fill(128),
+            connectedTo: null,
+            connect(target: unknown) {
+              this.connectedTo = target
+            },
+            disconnect() {},
+            getByteTimeDomainData(arr: Uint8Array) {
+              arr.set(this.data.subarray(0, arr.length))
+            },
+          }
+          state.analyser = analyser
+          return analyser
         },
       }) as unknown as AudioContext,
     getUserMedia: () =>
@@ -353,6 +388,60 @@ describe('SttSession', () => {
     expect(opts.onListening).toHaveBeenCalledWith(false)
     expect(s.active).toBe(false)
     expect(ws.closed).toBe(true)
+  })
+
+  // Voice-face mic leg: ptt rides the start frame. The dictation default
+  // (no ptt opt) must stay byte-identical — {type,prompt} with no extra key.
+  it('ptt start frame carries ptt:true; the default start frame stays bare', async () => {
+    const bare = await startedSession({ getPromptTexts: () => ['bias'] })
+    expect(JSON.parse(bare.ws.sentText[0])).toEqual({ type: 'start', prompt: 'bias' })
+
+    const pttOpts = makeOpts({ ptt: true, getPromptTexts: () => ['bias'] })
+    const { deps } = makeDeps()
+    const pttSession = new SttSession({ ...pttOpts, deps })
+    await pttSession.toggle()
+    const pttWs = MockWebSocket.instances.at(-1)!
+    expect(JSON.parse(pttWs.sentText[0])).toEqual({ type: 'start', prompt: 'bias', ptt: true })
+    const stop = pttSession.stop()
+    pttWs.dispatch('{"type":"done","text":"ok"}')
+    await stop
+  })
+
+  // Listen-state aura volume source (⑤): a sink-only analyser taps the same
+  // getUserMedia stream the capture worklet reads; micRMS() turns live
+  // time-domain energy into the [0,1] the aura field consumes (readVol spec:
+  // fftSize 1024, smoothing 0.55, RMS ×3.2 clamp 1). You speak, the field
+  // swells; you go quiet, it settles to zero.
+  it('mic analyser: sink-only tap, live RMS reads, teardown release', async () => {
+    const opts = makeOpts({ ptt: true })
+    const { deps, state } = makeDeps()
+    const s = new SttSession({ ...opts, deps })
+    await s.start()
+    // The tap exists and connects ONLY source → analyser: probing the level
+    // must never loop back into the uplink or the speakers.
+    expect(state.micSourceConnected).toBe(true)
+    expect(state.analyser).not.toBe(null)
+    expect((state.analyser as unknown as { connectedTo: unknown }).connectedTo).toBe(null)
+    // The tap is configured for the aura's readVol, not the raw default.
+    expect(state.analyser!.fftSize).toBe(1024)
+    expect(state.analyser!.smoothingTimeConstant).toBeCloseTo(0.55, 5)
+    // Speech: ±18 around 128 → RMS 0.140625 ×3.2 = 0.45.
+    for (let i = 0; i < state.analyser!.data.length; i++) {
+      state.analyser!.data[i] = i % 2 === 0 ? 146 : 110
+    }
+    expect(s.micRMS()).toBeCloseTo(0.45, 5)
+    // Louder speech reads clamped 1.
+    for (let i = 0; i < state.analyser!.data.length; i++) {
+      state.analyser!.data[i] = i % 2 === 0 ? 192 : 64
+    }
+    expect(s.micRMS()).toBe(1)
+    // Silence (all 128) reads zero.
+    state.analyser!.data.fill(128)
+    expect(s.micRMS()).toBe(0)
+    // Teardown releases the branch and the level reads dead.
+    s.teardown()
+    expect(state.micSourceDisconnected).toBe(true)
+    expect(s.micRMS()).toBe(0)
   })
 
   it('sends captured frames as exact floatTo16Le bytes in order', async () => {

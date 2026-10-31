@@ -950,3 +950,102 @@ describe('createInputBar — STT rendering', () => {
     expect(ib.textarea.value).toBe('保留文字')
   })
 })
+
+// --- mic long-press → voice route (350ms), tap stays dictation -----------
+
+describe('mic long-press (voice entry)', () => {
+  function micOf(ib: ReturnType<typeof createInputBar>): HTMLButtonElement {
+    return ib.root.querySelector('button[aria-label="Voice input"]')! as HTMLButtonElement
+  }
+  const pd = (el: HTMLElement, x = 10, y = 10) =>
+    el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+  const pu = (el: HTMLElement, x = 10, y = 10) =>
+    el.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+  const mv = (el: HTMLElement, x: number, y: number) =>
+    el.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+
+  it('350ms hold fires onMicHold once and never the click toggle', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    pd(mic)
+    vi.advanceTimersByTime(349)
+    expect(hold).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(hold).toHaveBeenCalledTimes(1)
+    expect(hold).toHaveBeenCalledWith(true)
+    pu(mic)
+    mic.click()
+    expect(hold).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  it('release before 350ms keeps the dictation toggle', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    const toggle = vi.fn()
+    ib.onMicHold(hold)
+    ib.onMicToggle(toggle)
+    const mic = micOf(ib)
+    ib.setSttAvailable(true)
+    pd(mic)
+    vi.advanceTimersByTime(200)
+    pu(mic)
+    vi.advanceTimersByTime(500)
+    expect(hold).not.toHaveBeenCalled()
+    mic.click()
+    expect(toggle).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  it('moving >12px cancels the hold timer', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    const mic = micOf(ib)
+    pd(mic, 10, 10)
+    mv(mic, 25, 10) // 15px
+    vi.advanceTimersByTime(600)
+    expect(hold).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('contextmenu (desktop right-click) enters voice WITHOUT a hold gesture', () => {
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    mic.dispatchEvent(ev)
+    expect(hold).toHaveBeenCalledTimes(1)
+    // Right-click has no finger to release: the entry must not start
+    // recording (holds=false), only open the page.
+    expect(hold).toHaveBeenCalledWith(false)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('right-button pointerdown does not arm the hold timer (macOS right-press >350ms must not enter voice)', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    mic.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10, button: 2 }),
+    )
+    vi.advanceTimersByTime(600)
+    expect(hold).not.toHaveBeenCalled()
+    // The contextmenu path on the same gesture still enters (enter-only).
+    mic.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(hold).toHaveBeenCalledTimes(1)
+    expect(hold).toHaveBeenCalledWith(false)
+    vi.useRealTimers()
+  })
+})

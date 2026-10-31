@@ -967,6 +967,31 @@ func TestTakeover_DrainRunWithInlineSubagentCarriesQueryStartMs(t *testing.T) {
 	}
 }
 
+// TestTakeover_DrainRunWithoutQueryStartIdxReportsIdle pins the
+// QueryStartMsgIdx>=0 conjunct of the busy gate: an auto-turn's live root
+// region (turn_start opened it, no engine query behind it) must report
+// busy:false — the client arms the bar from the live turn_start instead.
+func TestTakeover_DrainRunWithoutQueryStartIdxReportsIdle(t *testing.T) {
+	c := newTestConnector(t)
+	ws1 := dialAndStore(t, c)
+	t.Cleanup(func() { _ = ws1.Close() })
+	c.mock().SetQueryStartMsgIdxFn(func() int { return -1 })
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
+	mux2 := http.NewServeMux()
+	RegisterChatWS(mux2, c)
+	srv2 := httptest.NewServer(mux2)
+	t.Cleanup(srv2.Close)
+	ws2 := dialChatWS(t, "ws"+strings.TrimPrefix(srv2.URL, "http")+"/ws/chat")
+	meta := readMetadata(t, ws2)
+	if meta.Busy != nil && *meta.Busy {
+		t.Error("metadata busy = true, want absent/false — a live root region with QueryStartMsgIdx<0 (auto-turn drain, no engine query) must not report busy")
+	}
+	page := parseHistPage(t, requestHistory(t, ws2, "", 30, 1))
+	if page.Busy {
+		t.Error("page busy = true, want false — the same conjunct on the buildHistory producer")
+	}
+}
+
 // TestTakeover_SnapshotQueryEndAttachmentPath verifies the idle-region half
 // of the two-region contract when a queued attachment is drained AFTER
 // query_end (processAttachments path — the auto-turn emits attachment events
@@ -1110,6 +1135,9 @@ func TestTakeover_PrefillBusyPage(t *testing.T) {
 	// engine enters the prefill window: one user message, query in flight,
 	// zero streamed blocks.
 	_ = dialAndStore(t, c)
+	// The root region must be open for busy to mean "a query is live"; this
+	// frame goes to ws1, the then-active client, so ws2 below stays frame-silent.
+	c.Handle(types.QueryEvent{Type: types.EventTurnStart})
 	c.mock().SetMessagesFn(func() []types.Message {
 		return []types.Message{
 			{ID: "u1", Role: types.RoleUser, Timestamp: time.Unix(1000, 0),

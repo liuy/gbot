@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, formatTokenCount, type ReminderRow } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, formatTokenCount, VOICE_MSG_MARKER, stripVoiceMarker, type ReminderRow } from './utils'
 import { initShareMenu, extractShareText, type ShareSource } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -64,13 +64,16 @@ import { createVNCSheet } from './vnc_console'
 import { createSettingsPage } from './settings'
 import { t } from './i18n'
 import { SttSession } from './stt'
+import { createVoiceController } from './voice_controller'
+import { createVoicePage, type VoiceState } from './voice_page'
+import { createEventBlockStore } from './components/event_blocks'
 import { getConnection } from './ws'
 import { createUpgradeCapsule, setStreamFreeze } from './upgrade_mode'
 import { notifyCapsule } from './capsule'
 import { TokenRate } from './token_rate'
 import { History } from './history'
 import { initTheme } from './theme'
-import { uploadAttachment, attachmentMeta, pooled } from './upload'
+import { uploadAttachment, attachmentMeta, pooled, type AttachmentMeta } from './upload'
 import {
   errorBox,
   compactDividerContainer,
@@ -828,6 +831,89 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   })
   inputBar.onMicToggle(() => void sttSession.toggle())
 
+  // ── Voice face (second interaction surface, voice-ui plan) ─────────────
+  // Long-press on the mic opens the voice overlay (pure show/hide, URL
+  // untouched — 10-28 ruling); the entry is gated on
+  // stt AND tts both resolving (the button itself stays slash-disabled on
+  // stt alone; a tts-less config keeps dictation but never the face).
+  let voiceReady = false
+  // Shared event→Block truth for the voice face: the controller reduces the
+  // engine's think/tool events into it, the page renders it through the same
+  // feed sink the task panel uses (user ruling: one pipeline, no per-face
+  // rendering code).
+  const voiceBlockStore = createEventBlockStore()
+  const voiceController = createVoiceController({
+    // The closure body runs on a mic final, long after sendUserMessage's const
+    // initializes below (same TDZ shape as taskPanel's onStopJob).
+    sendUtterance: (text: string) => sendUserMessage(text, [], { voice: true }),
+    // Server text verbatim, same policy as appendError for a chat-level error.
+    onTTSError: (message) => notifyCapsule(message, { durationMs: 6000 }),
+    getPromptTexts: () =>
+      messages
+        .slice(-10)
+        .flatMap((m) =>
+          m.blocks.filter((b) => b.kind === 'text').map((b) => (b as { text: string }).text),
+        ),
+    currentSessionID: () => currentSessionID || undefined,
+    onTeardown: () => closeVoiceFace(),
+    blockStore: voiceBlockStore,
+    onState: (s) => voiceFace?.setState(s),
+    onPartial: (text) => voiceFace?.setPartial(text),
+  })
+
+  interface VoiceFaceHandle {
+    setState(s: VoiceState): void
+    setPartial(text: string): void
+    destroy(): void
+  }
+  let voiceFace: VoiceFaceHandle | null = null
+
+  const closeVoiceFace = (): void => {
+    if (voiceFace) {
+      const rootEl = document.getElementById('root')
+      if (rootEl) {
+        rootEl.removeAttribute('aria-hidden')
+        rootEl.style.display = ''
+      }
+      voiceFace.destroy()
+    }
+    voiceController.teardown()
+    voiceFace = null
+  }
+
+  // Mounts the page as a body-level sibling of #root and hides #root.
+  // No AudioContext here — contexts are created inside the first hold
+  // gesture (D8). The aura canvas owns its draw loop; the page only needs
+  // the controller's live RMS level.
+  const mountVoicePage = (): void => {
+    const page = createVoicePage({
+      engineName: voiceEngineName,
+      level: () => voiceController.level(),
+      blocks: voiceBlockStore,
+      onHold: (held) => voiceController.hold(held),
+      onClose: () => closeVoiceFace(),
+    })
+    renderAvatarInto(page.root.querySelector('.voice-avatar') as HTMLElement, 'agent')
+    document.body.appendChild(page.root)
+    const rootEl = document.getElementById('root')
+    if (rootEl) {
+      rootEl.setAttribute('aria-hidden', 'true')
+      rootEl.style.display = 'none'
+    }
+    voiceFace = page
+    voiceController.open({ autoListen: false })
+  }
+
+  inputBar.onMicHold((holds) => {
+    if (!voiceReady) return
+    if (sttSession.active) void sttSession.stop()
+    if (!voiceFace) mountVoicePage()
+    // Entry gesture only opens the page (10-28 ruling): recording starts
+    // solely on the voice page's big mic. The `holds` flag remains for the
+    // contextmenu path (false) and future callers; long-press never records.
+    void holds
+  })
+
   const taskPanel = createTaskPanel({
     // conn is assigned below the panel construction; the closures only run
     // on user interaction, long after initialization.
@@ -1047,6 +1133,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // Prefetch when fewer than REMAINING_THRESHOLD messages are above the viewport.
   const REMAINING_THRESHOLD = 10
   function maybePrefetchHistory() {
+    // Behind the voice face the chat tree is display:none — every layout
+    // read is zero, so "how much is above the viewport" would answer 0
+    // forever and each loaded page would self-feed the next fetch.
+    if (voiceFace) return
     if (!hasMore || loadingMore || !nextCursor) return
     const scrollTop = scroll.scrollTop
     // Count messages above the viewport top. In jsdom offsetTop/offsetHeight
@@ -1515,6 +1605,14 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
+  // The stuck-STOP reports have no trace of WHERE a query_end went. Every frame
+  // the page's seq watermark swallows must name itself, plus the one deferral
+  // (page0 buffering) that is not a drop — otherwise the phone log cannot tell
+  // the follow-up branches apart.
+  const absorbBreadcrumb = (where: string, type: string | undefined, seq: unknown, watermark: number): void => {
+    console.debug(`[chat] event absorbed${where} type=${type ?? '?'} seq=${seq} watermark=${watermark}`)
+  }
+
   function initStreaming(reason: string) {
     const { outer, content } = buildShell('assistant')
     const m: MessageState = {
@@ -1602,7 +1700,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     appliedPageSeq = msg.seq ?? 0
     for (const buffered of pendingEvents) {
-      if (buffered.type === 'event' && buffered.seq !== undefined && buffered.seq <= appliedPageSeq) continue
+      if (buffered.type === 'event' && buffered.seq !== undefined && buffered.seq <= appliedPageSeq) {
+        absorbBreadcrumb('(replay)', buffered.event?.type, buffered.seq, appliedPageSeq)
+        continue
+      }
       handleServerMessage(buffered)
     }
     pendingEvents = []
@@ -1757,7 +1858,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
                 // textBlock fallback covers the legacy no-field path.
                 const restoreText = rewoundText || textBlock?.text
                 if (restoreText) {
-                  inputBar.setInputText(restoreText)
+                  inputBar.setInputText(stripVoiceMarker(restoreText))
                 }
                 // The popped prompt's attachments still live server-side
                 // (engine history / media cache); ask the connector to
@@ -1777,7 +1878,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               // No local copy of the rewound prompt (queue misroute /
               // observer tab / takeover): touch no history — restoring the
               // text only keeps old turns intact and recovers the prompt.
-              inputBar.setInputText(rewoundText)
+              inputBar.setInputText(stripVoiceMarker(rewoundText))
             }
           }
         } else {
@@ -2322,6 +2423,54 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     messages.push(m)
   }
 
+  // The single commit point for every user message — typed, spoken, or from a
+  // future surface. Owns the client-side per-query bookkeeping (input history,
+  // optimistic bubble or queued bubble) and the wire frame. Nothing else may
+  // put a user message on the wire: a second path skips this state and the
+  // timeline / busy flag desync from the engine.
+  const sendUserMessage = (
+    fullText: string,
+    files: Exclude<AttachmentRef, { kind: 'paste' }>[] = [],
+    opts?: { voice?: boolean },
+  ): void => {
+    inputHistory.add(fullText)
+    const metas: AttachmentMeta[] = files.map((ref) => attachmentMeta(ref.file, ref.uploadedID!, ref.restoredSize))
+    const frame: { type: 'message'; text: string; attachments?: AttachmentMeta[]; voice?: boolean } = {
+      type: 'message',
+      text: fullText,
+    }
+    if (metas.length > 0) frame.attachments = metas
+    if (opts?.voice) frame.voice = true
+    // The marker rides the rendered text so a live row and its replayed row are
+    // byte-identical and the rewind matcher (rewound_text) matches for free.
+    const shown = opts?.voice ? VOICE_MSG_MARKER + fullText : fullText
+    if (streaming) {
+      const entry: QueuedMsg = { uuid: '', text: shown }
+      if (metas.length > 0) {
+        entry.attachments = metas.map((a, i) => {
+          const ref = files[i]
+          return {
+            name: a.name,
+            mime: a.mime,
+            size: a.size,
+            previewURL: ref && ref.kind === 'image' ? ref.previewURL : undefined,
+          }
+        })
+      }
+      // The queued push runs BEFORE the wire frame: the 'queued' uuid ack is
+      // asynchronous (server marshals + sends it after EnqueueAttachment), so
+      // the uuid backfill can only pair with an entry that already exists.
+      // removeAttachments (the caller's next step) never revokes blobs, so the
+      // bubble's thumbnails stay alive.
+      queuedMsgs = [...queuedMsgs, entry]
+      inputBar.setQueuedMsgs(queuedMsgs)
+      conn.send(frame)
+      return
+    }
+    renderUserMessage(shown, files)
+    conn.send(frame)
+  }
+
   const onSend = async (text: string) => {
     const all = inputBar.getAttachments()
     const pastes = all.filter((r): r is Extract<AttachmentRef, { kind: 'paste' }> => r.kind === 'paste')
@@ -2337,20 +2486,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
     if (files.length === 0) {
       if (fullText.trim() === '' && pastes.length === 0) return
-      inputHistory.add(fullText)
-      if (streaming) {
-        // Mid-turn queued message: rides the server queue until the turn
-        // boundary attaches it, so show the cancellable queue bubble. The
-        // 'queued' ack stamps the uuid; the attachment event later removes
-        // the bubble when the message is attached.
-        queuedMsgs = [...queuedMsgs, { uuid: '', text: fullText }]
-        inputBar.setQueuedMsgs(queuedMsgs)
-        conn.send({ type: 'message', text: fullText })
-        inputBar.removeAttachments(all)
-        return
-      }
-      renderUserMessage(fullText, [])
-      conn.send({ type: 'message', text: fullText })
+      sendUserMessage(fullText)
       inputBar.removeAttachments(all)
       return
     }
@@ -2408,38 +2544,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       inputBar.setInputText(text)
       return
     }
-    // inputHistory.add AFTER upload succeeded but BEFORE commit send — that
-    // way a failed upload does NOT pollute history with a duplicate entry
-    // when the user retries.
-    inputHistory.add(fullText)
-    const metas = files.map((ref) => attachmentMeta(ref.file, ref.uploadedID!, ref.restoredSize))
-    conn.send({
-      type: 'message',
-      text: fullText,
-      attachments: metas,
-    })
+    // Commit only after every upload succeeded: a failed one must not pollute
+    // history with a duplicate entry when the user retries (sendUserMessage
+    // owns the inputHistory.add).
+    sendUserMessage(fullText, files)
     inputBar.removeAttachments(all)
-    if (streaming) {
-      queuedMsgs = [...queuedMsgs, {
-        uuid: '',
-        text: fullText,
-        // Keep each image's blob URL and every meta alive on the bubble:
-        // removeAttachments never revokes blobs, so a cancel-restore can
-        // rebuild the chip thumbnail and original filename locally.
-        attachments: metas.map((a, i) => {
-          const ref = files[i]
-          return {
-            name: a.name,
-            mime: a.mime,
-            size: a.size,
-            previewURL: ref && ref.kind === 'image' ? ref.previewURL : undefined,
-          }
-        }),
-      }]
-      inputBar.setQueuedMsgs(queuedMsgs)
-      return
-    }
-    renderUserMessage(fullText, files)
   }
 
   const onStop = () => {
@@ -2512,6 +2621,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   inputBar.onHistoryPicker(() => inputHistory.getAll())
 
   let currentSessionID = ''
+  let voiceEngineName = ''
 
   // Boot snapshot of the served bundle's fingerprint (metadata connect
   // wuiHash). Daemon upgrades via tableflip/REUSEPORT keep the WS session
@@ -2600,6 +2710,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         taskPanel.setJobs([])
         scrollBtn.classList.add('opacity-0', 'pointer-events-none')
         if (c.sessionID) currentSessionID = c.sessionID
+        voiceEngineName = c.engineName || c.agent || ''
         page0CacheKey = `${c.engineID ?? ''}/${c.sessionID ?? ''}`
         conn.send({ type: 'session_list_request' })
 
@@ -2607,6 +2718,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setEngines(msg.engines.engines, msg.engines.activeID)
         inputBar.setThinking(msg.config.thinking ?? 'auto')
         inputBar.setSttAvailable(!!msg.config.stt)
+        voiceReady = !!msg.config.stt && !!msg.config.tts
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
         if (msg.jobs) {
           const hydrated = new Map<string, { blocks?: Block[]; tail?: string }>()
@@ -2723,6 +2835,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         header.setModels(msg.models, msg.current.provider, msg.current.model)
         inputBar.setThinking(msg.thinking ?? 'auto')
         inputBar.setSttAvailable(!!msg.stt)
+        voiceReady = !!msg.stt && !!msg.tts
         return
       case 'model_switched':
         contextTotal = msg.contextTotal
@@ -2751,7 +2864,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           | { uuid?: string; text: string; attachments?: { id: string; name?: string; mime: string; size?: number }[] }[]
           | undefined
         if (restored && restored.length > 0) {
-          const joined = restored.map((m) => m.text).filter(Boolean).join('\n')
+          // Per-entry strip: the server's restored text carries the voice
+          // marker, and the next send re-prefixes it — joined raw, two
+          // restored prompts would re-send as "[voice] [voice] …".
+          const joined = restored.map((m) => stripVoiceMarker(m.text)).filter(Boolean).join('\n')
           if (joined) inputBar.appendQueuedText(joined)
           for (const m of restored) {
             const local = m.uuid ? localByUUID.get(m.uuid) : undefined
@@ -2898,6 +3014,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // page RTT of delay is harmless). The page rebuilds the DOM from a
         // frozen view; applying deltas around it would double or drop text.
         if (pendingPageZero) {
+          console.debug('[chat] event buffered type=' + (msg.event?.type ?? '?') + ' seq=' + msg.seq)
           pendingEvents.push(msg)
           return
         }
@@ -2905,6 +3022,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // (the freeze numbered below the page's seq). Frames without a seq
         // (test injections, legacy fixtures) always pass.
         if (msg.seq !== undefined && appliedPageSeq !== 0 && msg.seq <= appliedPageSeq) {
+          absorbBreadcrumb('', msg.event?.type, msg.seq, appliedPageSeq)
           return
         }
         handleEvent(msg.event)

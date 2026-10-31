@@ -48,7 +48,7 @@ func TestHandleMessageInbound_ImageContent_ConvertedToBase64Block(t *testing.T) 
 
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: imgPath, Mime: "image/png"}},
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -92,7 +92,7 @@ func TestHandleMessageInbound_DocumentContent_ConvertedToDocumentBlock(t *testin
 
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "document", Source: inboundSource{Type: "file", Path: docPath, Name: "foo.txt", Mime: "text/plain", Size: 15}},
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -141,7 +141,7 @@ func TestHandleMessageInbound_InvalidPath_Skipped_SilentWhenTextEmpty(t *testing
 	// no media cache at all on this connector).
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: "/etc/passwd"}},
-	})
+	}, false)
 
 	// Poll briefly to give the goroutine launched by handleMessageInbound
 	// time to land (or, in this case, NOT land) any calls. We use waitFor
@@ -176,7 +176,7 @@ func TestHandleMessageInbound_InvalidPath_WithText_StillSendsText(t *testing.T) 
 	// as the sole ContentBlock.
 	c.handleMessageInbound("hi", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: "/etc/passwd"}},
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -212,7 +212,7 @@ func TestHandleMessageInbound_TextAndImage_BothSent(t *testing.T) {
 
 	c.handleMessageInbound("see this", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: imgPath, Mime: "image/png"}},
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -245,7 +245,7 @@ func TestHandleMessageInbound_EngineBusy_EnqueuesWithContent(t *testing.T) {
 
 	c.handleMessageInbound("hi", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: imgPath, Mime: "image/png"}},
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -356,7 +356,7 @@ func TestHandleMessageInbound_AllRejectedSendsError(t *testing.T) {
 
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: "/x/y.png"}},
-	})
+	}, false)
 
 	// The error frame is pushed by an async assemble goroutine; wait for it
 	// to land in the queue.
@@ -382,7 +382,7 @@ func TestHandleMessageInbound_DocumentUsesPathBasenameWhenNameEmpty(t *testing.T
 
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "document", Source: inboundSource{Type: "file", Path: docPath}}, // no Name
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
@@ -416,7 +416,7 @@ func TestHandleMessageInbound_ImageMimeResniff(t *testing.T) {
 
 	c.handleMessageInbound("", []inboundContent{
 		{Type: "image", Source: inboundSource{Type: "file", Path: imgPath}}, // no Mime
-	})
+	}, false)
 
 	if !waitFor(time.Second, func() bool {
 		mock.mu.Lock()
