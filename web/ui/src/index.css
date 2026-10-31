@@ -353,8 +353,9 @@ body {
 .artifact-card:hover { border-color: color-mix(in srgb, var(--color-blue) 40%, transparent); }
 .artifact-card.stale { border-color: color-mix(in srgb, var(--color-blue) 50%, transparent); }
 
-/* Live thumbnail: the real page rendered in a phone-viewport iframe, scaled
-   down via CSS — shows the actual content, not a screenshot. */
+/* Static thumbnail: the real page rendered in a phone-viewport iframe without
+   scripts (sandbox attr) and scaled down via CSS — shows the actual content,
+   not a screenshot; JS stays exclusive to the sheet. */
 .card-preview {
   height: 130px;
   background: var(--color-ink2);

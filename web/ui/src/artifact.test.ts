@@ -192,6 +192,10 @@ describe('createArtifactCard', () => {
     // jsdom absolutizes the .src IDL property — the attribute keeps the literal.
     expect(iframe.getAttribute('src')).toBe('/artifacts/game.html')
     expect(iframe.getAttribute('loading')).toBe('lazy')
+    // No-scripts sandbox: a thumbnail iframe page would otherwise run its
+    // JS/WebGL forever (offscreen iframes are not throttled), one live page
+    // per card in the chat.
+    expect(iframe.getAttribute('sandbox')).toBe('')
     expect(iframe.getAttribute('tabindex')).toBe('-1')
     expect((card.querySelector('.card-title') as HTMLElement).textContent).toBe('game.html')
     await vi.waitFor(() => {
@@ -461,14 +465,38 @@ describe('createArtifactSheet', () => {
     spy.restore()
   })
 
+  it('reload on a collapsed sheet is a no-op (no GPU resurrection at 0px)', async () => {
+    stubViewportHeight(768)
+    const { sheet, frame } = makeSheet()
+    sheet.open('model.glb')
+    sheet.close()
+    const spy = spyFrameSrcSetter(frame)
+    sheet.reload()
+    // Deterministic microtask drain: the pending bundle import continuation
+    // must not mount either (close-during-import guard).
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(sheet.root.querySelector('model-viewer')).toBeNull()
+    expect(sheet.root.style.height).toBe('0px')
+    // The HTML branch self-assign is suppressed too.
+    sheet.open('game.html')
+    sheet.close()
+    const htmlSpy = spyFrameSrcSetter(frame)
+    sheet.reload()
+    expect(htmlSpy.calls).toEqual([])
+    htmlSpy.restore()
+  })
+
   it('single click on handle (no movement) collapses the sheet', () => {
     stubViewportHeight(768)
-    const { sheet, handle, pointer } = makeSheet()
+    const { sheet, handle, pointer, frame } = makeSheet()
     sheet.open('game.html')
     pointer(handle, 'pointerdown', 100)
     pointer(handle, 'pointerup', 100)
     expect(sheet.root.style.height).toBe('0px')
     expect(sheet.isOpen()).toBe(false)
+    // Collapse unloads the embedded page: a collapsed sheet keeps its iframe
+    // alive, and the page's JS/WebGL would keep running at zero height.
+    expect(frame.getAttribute('src')).toBe('about:blank')
   })
 
   it('dragging down grows height continuously and stays open on release', () => {

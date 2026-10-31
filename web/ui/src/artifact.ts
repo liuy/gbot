@@ -107,6 +107,12 @@ export function createArtifactCard(
     const frame = createElement('iframe')
     frame.src = artifactURL(write.name)
     frame.setAttribute('loading', 'lazy')
+    // Thumbnails run NO scripts: an iframe page keeps running its JS/WebGL
+    // forever after load (offscreen iframes are not throttled), so a chat
+    // full of artifact cards would hold one live page — and GPU context —
+    // per card. Sandbox without allow-scripts renders the page statically;
+    // the sheet stays the one interactive surface (≤1 live artifact page).
+    frame.setAttribute('sandbox', '')
     // Thumbnail is decorative — keep it out of the tab order; preview is not
     // interactive either (pointer-events:none in CSS), the whole card clicks.
     frame.setAttribute('tabindex', '-1')
@@ -445,6 +451,10 @@ export function createArtifactSheet(): ArtifactSheetHandles {
     opened = false
     root.classList.remove('dragging')
     setHeight(0)
+    // Unload the embedded page: a collapsed sheet keeps its iframe alive, and
+    // the page's JS/WebGL would keep running at zero height (same idiom as
+    // the glTF branch in open()).
+    frame.src = 'about:blank'
     // Covers the drag-to-collapse path: the viewer must not keep GPU
     // resources or an in-flight fetch while collapsed.
     modelHost.replaceChildren()
@@ -502,6 +512,10 @@ export function createArtifactSheet(): ArtifactSheetHandles {
   handle.addEventListener('pointercancel', endDrag)
 
   const reload = () => {
+    // A collapsed sheet must not resurrect GPU work: without this guard a
+    // reload() after close() on a glTF current would remount the model-viewer
+    // into the 0px sheet.
+    if (!opened) return
     if (isGLTFArtifactName(currentName)) {
       // Reload always lands in orbit: the fresh element mounts without the
       // walk attribute, and the sheetUi overlay survives the remount as a
