@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -15,9 +16,12 @@ import (
 // spawnGroupTree mirrors newStdioTransport's spawn (own process group) with a
 // two-level tree: a top shell plus a backgrounded grandchild — the shape
 // npx → node → chromium has. Children are marker-commented sh loops so pgrep
-// can find them and so they survive until signalled.
+// can find them and so they survive until signalled. Markers carry the test
+// binary's pid: parallel go test invocations (mutate reruns) must not see or
+// kill each other's trees.
 func spawnGroupTree(t *testing.T, top, bg string) (*exec.Cmd, int) {
 	t.Helper()
+	top, bg = pidMarker(top), pidMarker(bg)
 	cmd := exec.Command("sh", "-c", fmt.Sprintf(
 		"sh -c 'while :; do sleep 1; done # %s' & exec sh -c 'while :; do sleep 1; done # %s'", bg, top))
 	SetProcessGroup(cmd)
@@ -26,6 +30,9 @@ func spawnGroupTree(t *testing.T, top, bg string) (*exec.Cmd, int) {
 	}
 	grandchild := waitPidOf(t, bg)
 	return cmd, grandchild
+}
+func pidMarker(name string) string {
+	return fmt.Sprintf("gbot-grp-%d-%s", os.Getpid(), name)
 }
 
 func waitPidOf(t *testing.T, marker string) int {
@@ -52,14 +59,14 @@ func procAlive(pid int) bool {
 }
 
 func cleanupMarkers() {
-	_ = exec.Command("pkill", "-9", "-f", "gbot-grp-").Run()
+	_ = exec.Command("pkill", "-9", "-f", fmt.Sprintf("gbot-grp-%d-", os.Getpid())).Run()
 }
 
 // The orphan mechanism from the 2026-10-18 incident: a mid-tree crash (SIGKILL
 // to the top process) leaves the grandchild parentless but alive and inside
 // the group. Cleanup called afterwards must reap it via the group signal.
 func TestCleanupReapsCrashOrphanedGrandchild(t *testing.T) {
-	cmd, grandchild := spawnGroupTree(t, "gbot-grp-orphan-top", "gbot-grp-orphan-bg")
+	cmd, grandchild := spawnGroupTree(t, "orphan-top", "orphan-bg")
 	t.Cleanup(cleanupMarkers)
 
 	if err := cmd.Process.Kill(); err != nil {
@@ -83,7 +90,7 @@ func TestCleanupReapsCrashOrphanedGrandchild(t *testing.T) {
 // process AND the grandchild together, and return only after the whole group
 // is gone (a caller respawns immediately after).
 func TestCleanupKillsWholeTreeSynchronously(t *testing.T) {
-	cmd, grandchild := spawnGroupTree(t, "gbot-grp-sync-top", "gbot-grp-sync-bg")
+	cmd, grandchild := spawnGroupTree(t, "sync-top", "sync-bg")
 	t.Cleanup(cleanupMarkers)
 
 	start := time.Now() // REAL-TIME: escalation ladder timing
@@ -105,13 +112,13 @@ func TestCleanupKillsWholeTreeSynchronously(t *testing.T) {
 // SIGKILL step.
 func TestCleanupEscalatesPastStubbornProcesses(t *testing.T) {
 	cmd := exec.Command("sh", "-c",
-		"sh -c 'trap \"\" TERM INT; while :; do sleep 1; done # gbot-grp-stub-bg' & exec sh -c 'trap \"\" TERM INT; while :; do sleep 1; done # gbot-grp-stub-top'")
+		fmt.Sprintf("sh -c 'trap \"\" TERM INT; while :; do sleep 1; done # %s' & exec sh -c 'trap \"\" TERM INT; while :; do sleep 1; done # %s'", pidMarker("stub-bg"), pidMarker("stub-top")))
 	SetProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	t.Cleanup(cleanupMarkers)
-	grandchild := waitPidOf(t, "gbot-grp-stub-bg")
+	grandchild := waitPidOf(t, pidMarker("stub-bg"))
 
 	ProcessCleanupEscalation(cmd.Process, "test")
 
@@ -122,7 +129,7 @@ func TestCleanupEscalatesPastStubbornProcesses(t *testing.T) {
 
 // Concurrent cleanups of the same tree must not deadlock or misfire.
 func TestConcurrentCleanupSameTree(t *testing.T) {
-	cmd, grandchild := spawnGroupTree(t, "gbot-grp-conc-top", "gbot-grp-conc-bg")
+	cmd, grandchild := spawnGroupTree(t, "conc-top", "conc-bg")
 	t.Cleanup(cleanupMarkers)
 
 	var wg sync.WaitGroup

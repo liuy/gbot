@@ -432,7 +432,7 @@ func TestReadMcpResource_MultipleContentBlocks(t *testing.T) {
 func TestPersistBinaryContent_Success(t *testing.T) {
 	data := []byte("hello world")
 
-	fp, size, err := persistBinaryContent(data, "application/pdf", "test-id")
+	fp, size, err := persistBinaryContent(data, "application/pdf", fmt.Sprintf("test-id-%d", os.Getpid()))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,11 +455,11 @@ func TestPersistBinaryContent_Success(t *testing.T) {
 }
 
 func TestPersistBinaryContent_PersistIDFormat(t *testing.T) {
-	id := fmt.Sprintf("mcp-resource-%d-0-abc123", 1000000)
+	id := fmt.Sprintf("mcp-resource-%d-0-abc123-%d", 1000000, os.Getpid())
 	fp, _, _ := persistBinaryContent([]byte("x"), "text/plain", id)
 	defer func() { _ = os.Remove(fp) }()
 
-	expected := filepath.Join(os.TempDir(), "mcp-resource-1000000-0-abc123.txt")
+	expected := filepath.Join(os.TempDir(), fmt.Sprintf("mcp-resource-1000000-0-abc123-%d.txt", os.Getpid()))
 	if fp != expected {
 		t.Errorf("filepath = %q, want %q", fp, expected)
 	}

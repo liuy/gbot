@@ -86,11 +86,8 @@ func (t *wsTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		WriteBufferSize: 4096,
 	}
 
-	conn, resp, err := dialer.DialContext(ctx, t.url, t.headers)
+	conn, _, err := dialer.DialContext(ctx, t.url, t.headers)
 	if err != nil {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
 		return nil, fmt.Errorf("mcp: websocket dial %q: %w", t.url, err)
 	}
 
@@ -184,10 +181,10 @@ func (c *wsConn) readLoop() {
 }
 
 // wrapReadErr converts WebSocket close errors to io.EOF.
+// IsUnexpectedCloseError with no expected codes matches every *CloseError
+// (gorilla/websocket v1.5.3 IsUnexpectedCloseError), so one guard covers
+// normal/going-away too.
 func (c *wsConn) wrapReadErr(err error) error {
-	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		return io.EOF
-	}
 	if websocket.IsUnexpectedCloseError(err) {
 		return io.EOF
 	}

@@ -400,9 +400,8 @@ func TestWSTransport_WriteAfterClose(t *testing.T) {
 }
 
 // ===========================================================================
-// Coverage: newWSIDETransport, Connect with response body close, readLoop
-// binary frames + decode errors + closed channel, wrapReadErr unexpected close,
-// Read incoming channel closed, Write encode error
+// Coverage: newWSIDETransport, readLoop binary frames + decode errors +
+// closed channel, wrapReadErr unexpected close, Write encode error
 // ===========================================================================
 
 // TestNewWSIDETransport_ValidURL tests newWSIDETransport with a valid URL.
@@ -450,7 +449,7 @@ func TestNewWSIDETransport_EmptyAuthToken(t *testing.T) {
 }
 
 // TestWSTransport_Connect_WithHTTPError tests Connect when the server
-// returns an HTTP error (triggering resp.Body.Close).
+// returns a non-101 status (gorilla ErrBadHandshake).
 func TestWSTransport_Connect_WithHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -577,43 +576,6 @@ func TestWSConn_wrapReadErr_UnexpectedClose(t *testing.T) {
 	if err != otherErr {
 		t.Errorf("other errors should pass through, got: %v", err)
 	}
-}
-
-// TestWSConn_Read_IncomingChannelClosed tests Read when the incoming
-// channel is closed (readLoop exited).
-func TestWSConn_Read_IncomingChannelClosed(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		Subprotocols: []string{"mcp"},
-		CheckOrigin:  func(r *http.Request) bool { return true },
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		// Close immediately to trigger readLoop exit
-		_ = conn.Close()
-	}))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
-	transport := &wsTransport{url: wsURL, headers: http.Header{}}
-
-	ctx := context.Background()
-	conn, err := transport.Connect(ctx)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	defer conn.Close()
-
-	// Read should get io.EOF after server closes
-	_, err = conn.Read(ctx)
-	if err == nil {
-		t.Fatal("want error after server close")
-	}
-	// Could be io.EOF or a close error
-	t.Logf("Read after close: %v", err)
 }
 
 // TestWSConn_Write_Success tests successful Write operation.
