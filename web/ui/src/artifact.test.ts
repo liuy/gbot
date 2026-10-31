@@ -470,7 +470,6 @@ describe('createArtifactSheet', () => {
     const { sheet, frame } = makeSheet()
     sheet.open('model.glb')
     sheet.close()
-    const spy = spyFrameSrcSetter(frame)
     sheet.reload()
     // Deterministic microtask drain: the pending bundle import continuation
     // must not mount either (close-during-import guard).
