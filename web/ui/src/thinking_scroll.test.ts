@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createChat } from './chat'
+import { stopStatusSweep } from './components/status_sweep'
 
 class MockIntersectionObserver {
   observe() {}
@@ -44,6 +45,12 @@ function send(text: string) {
 describe('thinking_delta scroll', () => {
   beforeEach(() => {
     mount()
+  })
+  afterEach(() => {
+    // query_start arms the status sweep's real timer chain; without this it
+    // keeps firing after the jsdom environment is torn down (window is
+    // not defined).
+    stopStatusSweep()
   })
 
   it('auto-scrolls during thinking_delta when near bottom', async () => {
