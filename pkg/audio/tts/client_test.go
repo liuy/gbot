@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,9 +79,8 @@ func TestStream_DeliversPCMInOrder(t *testing.T) {
 func TestStream_SendsBodyParams(t *testing.T) {
 	var body string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, 4096)
-		n, _ := r.Body.Read(buf)
-		body = string(buf[:n])
+		data, _ := io.ReadAll(r.Body)
+		body = string(data)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -91,11 +91,16 @@ func TestStream_SendsBodyParams(t *testing.T) {
 
 	for _, want := range []string{
 		`"model":"m"`, `"input":"hi"`, `"response_format":"pcm"`,
-		`"stream_format":"sse"`, `"seed":123`,
+		`"stream_format":"sse"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("request body %q lacks %q", body, want)
 		}
+	}
+	// Unset Seed must omit the field so the engine draws its own random
+	// seed; a fixed default locks the cloned voice onto one sampling path.
+	if strings.Contains(body, `"seed"`) {
+		t.Errorf("request body %q must not carry a seed field when Seed is unset", body)
 	}
 	if strings.Contains(body, `"voice"`) {
 		t.Errorf("request body %q must not carry a voice field (server default preset applies)", body)
@@ -231,9 +236,8 @@ func TestStream_HeadersAndAuth(t *testing.T) {
 func TestStream_SeedOverride(t *testing.T) {
 	var body string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, 4096)
-		n, _ := r.Body.Read(buf)
-		body = string(buf[:n])
+		data, _ := io.ReadAll(r.Body)
+		body = string(data)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))

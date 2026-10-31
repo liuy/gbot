@@ -18,10 +18,6 @@ import (
 // SampleRate pins the wire contract: audio.cpp speech PCM is s16le mono 24kHz.
 const SampleRate = 24000
 
-// defaultSeed mirrors the voice-demo convention the upstream was validated
-// with; the server accepts any int.
-const defaultSeed = 123
-
 // Request is one synthesis call. Voice is optional: when empty the field is
 // omitted and the server's default_voice_preset applies.
 type Request struct {
@@ -29,7 +25,8 @@ type Request struct {
 	Model   string
 	APIKey  string
 	Text    string
-	// Seed defaults to 123 when zero.
+	// Seed pins codec sampling when non-zero; zero omits the field and the
+	// engine draws a random seed — the clone path's stable setting.
 	Seed int
 	// Voice is a backend speaker name; empty omits the field so the
 	// engine's default preset applies.
@@ -45,24 +42,20 @@ type Client struct {
 // arrival order. The stream ends after speech.audio.done (or [DONE]); an
 // upstream error event or non-2xx status fails the call.
 func (c *Client) Stream(ctx context.Context, req Request, onPCM func([]byte)) error {
-	seed := req.Seed
-	if seed == 0 {
-		seed = defaultSeed
-	}
 	body, err := json.Marshal(struct {
 		Model          string `json:"model"`
 		Input          string `json:"input"`
 		Voice          string `json:"voice,omitempty"`
 		ResponseFormat string `json:"response_format"`
 		StreamFormat   string `json:"stream_format"`
-		Seed           int    `json:"seed"`
+		Seed           int    `json:"seed,omitempty"`
 	}{
 		Model:          req.Model,
 		Input:          req.Text,
 		Voice:          req.Voice,
 		ResponseFormat: "pcm",
 		StreamFormat:   "sse",
-		Seed:           seed,
+		Seed:           req.Seed,
 	})
 	if err != nil {
 		return fmt.Errorf("tts: encode body: %w", err)
