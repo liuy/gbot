@@ -1606,14 +1606,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
   }
 
-  // The stuck-STOP reports have no trace of WHERE a query_end went. Every frame
-  // the page's seq watermark swallows must name itself, plus the one deferral
-  // (page0 buffering) that is not a drop — otherwise the phone log cannot tell
-  // the follow-up branches apart.
-  const absorbBreadcrumb = (where: string, type: string | undefined, seq: unknown, watermark: number): void => {
-    console.debug(`[chat] event absorbed${where} type=${type ?? '?'} seq=${seq} watermark=${watermark}`)
-  }
-
   function initStreaming(reason: string) {
     const { outer, content } = buildShell('assistant')
     const m: MessageState = {
@@ -1702,7 +1694,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     appliedPageSeq = msg.seq ?? 0
     for (const buffered of pendingEvents) {
       if (buffered.type === 'event' && buffered.seq !== undefined && buffered.seq <= appliedPageSeq) {
-        absorbBreadcrumb('(replay)', buffered.event?.type, buffered.seq, appliedPageSeq)
         continue
       }
       handleServerMessage(buffered)
@@ -3015,8 +3006,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // page RTT of delay is harmless). The page rebuilds the DOM from a
         // frozen view; applying deltas around it would double or drop text.
         if (pendingPageZero) {
-          console.debug('[chat] event buffered type=' + (msg.event?.type ?? '?') + ' seq=' + msg.seq)
-          console.debug('[chat] event buffered type=' + (msg.event?.type ?? '?') + ' seq=' + msg.seq)
           pendingEvents.push(msg)
           return
         }
@@ -3024,7 +3013,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // (the freeze numbered below the page's seq). Frames without a seq
         // (test injections, legacy fixtures) always pass.
         if (msg.seq !== undefined && appliedPageSeq !== 0 && msg.seq <= appliedPageSeq) {
-          absorbBreadcrumb('', msg.event?.type, msg.seq, appliedPageSeq)
           return
         }
         handleEvent(msg.event)
