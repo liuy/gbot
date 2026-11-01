@@ -5209,6 +5209,9 @@ describe('voice face integration', () => {
     expect(voicePage()).toBeTruthy()
     expect(document.getElementById('root')?.getAttribute('aria-hidden')).toBe('true')
     expect(document.getElementById('root')?.style.display).toBe('none')
+    // Fullscreen page owns the viewport: the body itself never scrolls,
+    // whatever the phone's dvh/inset arithmetic does to the document box.
+    expect(document.body.style.overflow).toBe('hidden')
     // Voice mode is retired (10-28): entry sends NOTHING voice-related — no
     // message; the marker rides every voice final below.
     expect(sent.filter((m) => ['voice_mode', 'message'].includes((m as { type?: string }).type ?? ''))).toEqual([])
@@ -5357,6 +5360,8 @@ describe('voice face integration', () => {
     const rootEl = document.getElementById('root') as HTMLElement
     expect(rootEl.getAttribute('aria-hidden')).toBe(null)
     expect(rootEl.style.display).toBe('')
+    // The viewport lock releases with the face.
+    expect(document.body.style.overflow).toBe('')
     // Voice mode is retired: this speech-less session sent nothing, and the
     // close sends nothing either — the wire footprint is empty.
     expect(sent.filter((m) => (m as { type?: string }).type === 'voice_mode')).toEqual([])

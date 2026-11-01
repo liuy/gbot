@@ -875,6 +875,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         rootEl.removeAttribute('aria-hidden')
         rootEl.style.display = ''
       }
+      document.body.style.overflow = ''
       voiceFace.destroy()
     }
     voiceController.teardown()
@@ -901,6 +902,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       rootEl.setAttribute('aria-hidden', 'true')
       rootEl.style.display = 'none'
     }
+    // Fullscreen page owns the viewport: whatever the phone's dvh/inset
+    // arithmetic does to the document box, the body itself never scrolls.
+    // Phone WebView drag reported 2026-11-01 — desktop repros clean, so the
+    // overflow source is device-side; one metrics line pins it when seen.
+    document.body.style.overflow = 'hidden'
+    console.debug(`[voice] doc metrics scrollH=${document.documentElement.scrollHeight} clientH=${document.documentElement.clientHeight} innerH=${window.innerHeight} vpH=${Math.round(page.root.getBoundingClientRect().height)}`)
     voiceFace = page
     voiceController.open({ autoListen: false })
   }
