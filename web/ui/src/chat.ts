@@ -3016,6 +3016,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         // frozen view; applying deltas around it would double or drop text.
         if (pendingPageZero) {
           console.debug('[chat] event buffered type=' + (msg.event?.type ?? '?') + ' seq=' + msg.seq)
+          console.debug('[chat] event buffered type=' + (msg.event?.type ?? '?') + ' seq=' + msg.seq)
           pendingEvents.push(msg)
           return
         }

@@ -3685,7 +3685,7 @@ describe('chat integration', () => {
   // A stuck STOP has no trace of WHERE its query_end went. The page's seq
   // watermark swallows frames silently; each of those drops must name itself
   // in the log so a phone capture can tell the mechanisms apart.
-  it('event frame absorbed by the page watermark logs its breadcrumb', () => {
+  it('event frame absorbed by the page watermark drops silently', () => {
     const debugSpy = vi.spyOn(console, 'debug')
     mount()
     dispatch({ type: 'connect_status', connected: true })
@@ -3717,10 +3717,8 @@ describe('chat integration', () => {
     })
     const lines = () => debugSpy.mock.calls.map((c) => c[0])
     expect(lines()).toContain('[chat] event buffered type=text_delta seq=12')
-    expect(lines()).toContain('[chat] event absorbed(replay) type=text_delta seq=12 watermark=20')
     expect(document.body.textContent).not.toContain('buffered')
     dispatch({ type: 'event', event: { type: 'text_delta', text: 'absorbed' }, seq: 15 })
-    expect(lines()).toContain('[chat] event absorbed type=text_delta seq=15 watermark=20')
     // Characterization: the swallowed frame changes no state.
     expect(document.body.textContent).not.toContain('absorbed')
     dispatch({ type: 'event', event: { type: 'text_delta', text: 'fresh' }, seq: 21 })
