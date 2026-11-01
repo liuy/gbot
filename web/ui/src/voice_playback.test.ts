@@ -220,7 +220,7 @@ const events = (h: WorkletHost, kind: string): unknown[] =>
   h.posted.filter((m) => m.event === kind)
 
 describe('worklet jitter buffer (hf-realtime-voice PR #13 port)', () => {
-  it('does not start playback on the first chunk — prebuffer holds 250ms', () => {
+  it('does not start playback on the first chunk — prebuffer holds 500ms', () => {
     const h = new WorkletHost(PLAYBACK_WORKLET_SRC)
     h.write(tone(0.25, 2400)) // 100ms
     const outs = h.tick(4)
@@ -228,44 +228,47 @@ describe('worklet jitter buffer (hf-realtime-voice PR #13 port)', () => {
     expect(everySilent(outs)).toBe(true)
   })
 
-  it('starts once 250ms is queued, fading in from zero amplitude', () => {
+  it('starts once 500ms is queued, fading in from zero amplitude', () => {
     const h = new WorkletHost(PLAYBACK_WORKLET_SRC)
     h.write(tone(0.25, 2400)) // 100ms — under the floor
     const wait = h.tick(2)
     expect(everySilent(wait)).toBe(true)
-    h.write(tone(0.25, 3600)) // +150ms → 250ms queued
+    h.write(tone(0.25, 9600)) // +400ms → 500ms queued
     const start = h.tick(1)[0]
     expect(start[0]).toBe(0) // fade-in frame 0: gain 0
     expect(start[1]).toBeCloseTo(0.25 / 96, 5) // gain 1/96
     expect(Math.abs(start[96])).toBeGreaterThan(0.2) // ramp done: full amplitude
   })
 
-  it('flushes via max-wait after 500ms even under the floor', () => {
+  it('no time-based flush: under the floor it waits for the floor, however long', () => {
+    // A forced thin start is what turned the cold first sentence into a
+    // cascade of underrun pops — waiting for the floor is the whole point.
     const h = new WorkletHost(PLAYBACK_WORKLET_SRC)
-    h.write(tone(0.25, 2400)) // 100ms only — the 250ms floor is never met
-    const outs = h.tick(96) // 12288 frames; wait hits 12000 at frame 11999
-    expect(outs.length).toBe(96)
-    expect(everySilent([outs[92]])).toBe(true) // frames 11776..11903: still waiting
-    expect(everySilent([outs[93].subarray(0, 95)])).toBe(true) // pre-start frames
-    expect(outs[93][95]).toBe(0) // start frame 11999: gain 0, no step out of silence
-    expect(outs[93][96]).toBeCloseTo(0.25 / 96, 5) // first audible frame: gain 1/96
-    expect(Math.abs(outs[94][70])).toBeGreaterThan(0.2) // ramp completed by frame 12102
+    h.write(tone(0.25, 2400)) // 100ms only — the 500ms floor is never met
+    const waits = h.tick(160) // 20480 frames ≈ 850ms of waiting: still silent
+    expect(everySilent(waits)).toBe(true)
+    // Crossing the floor resumes with a fade-in.
+    h.write(tone(0.25, 9600)) // +400ms → 500ms queued
+    const resume = h.tick(1)[0]
+    expect(resume[0]).toBe(0)
+    expect(resume[1]).toBeCloseTo(0.25 / 96, 5)
+    expect(Math.abs(resume[96])).toBeGreaterThan(0.2)
   })
 
   it('underrun mid-playback: ramps out, re-arms prebuffer, ramps back in', () => {
     const h = new WorkletHost(PLAYBACK_WORKLET_SRC)
-    h.write(tone(0.25, 7200)) // 300ms
+    h.write(tone(0.25, 12000)) // 500ms — the floor exactly
     const start = h.tick(1)[0]
     expect(start[0]).toBe(0) // fade-in from zero
-    const mid = h.tick(57) // underrun at frame 7200 (quantum 56 index 32), ramp ends frame 7295
-    const u = mid[55] // quantum 56 = frames 7168..7295
-    expect(Math.abs(u[31])).toBeGreaterThan(0.2) // last real sample
-    expect(u[32]).toBeCloseTo(0.25, 5) // ramp frame 0 CONTINUES the last sample — no step
-    expect(u[33]).toBeCloseTo((0.25 * 95) / 96, 5) // linear decay begins
-    expect(Math.abs(u[127])).toBeLessThan(0.01) // ramp tail near zero
-    for (let i = 33; i < 127; i++) {
-      expect(Math.abs(u[i + 1])).toBeLessThanOrEqual(Math.abs(u[i]) + 1e-9) // monotone decay
-    }
+    // Playback consumes 12000 real frames; dry at frame 12000, ramp 12000..12095.
+    const mid = h.tick(93) // quanta 1..93 = frames 128..12031
+    const u = mid[92] // quantum 93 = frames 11904..12031
+    expect(Math.abs(u[95])).toBeGreaterThan(0.2) // last real sample (frame 11999)
+    expect(u[96]).toBeCloseTo(0.25, 5) // ramp frame 0 CONTINUES the last sample — no step
+    expect(u[97]).toBeCloseTo((0.25 * 95) / 96, 5) // linear decay begins
+    const tail = h.tick(1)[0] // quantum 94 = frames 12032..12159
+    expect(tail[63]).toBeCloseTo(0.25 / 96, 5) // ramp tail (frame 12095)
+    expect(tail[64]).toBe(0) // silence after the ramp
     expect(events(h, 'underrun')).toHaveLength(1)
     expect(events(h, 'stop')).toHaveLength(0) // an underrun is not a drain
     // Re-arm: 100ms more does not resume…
@@ -273,8 +276,8 @@ describe('worklet jitter buffer (hf-realtime-voice PR #13 port)', () => {
     const stillWaiting = h.tick(3)
     expect(stillWaiting.length).toBe(3)
     expect(everySilent(stillWaiting)).toBe(true)
-    // …another 150ms crosses the 250ms floor and resumes with a fade-in.
-    h.write(tone(0.25, 3600))
+    // …another 400ms crosses the 500ms floor and resumes with a fade-in.
+    h.write(tone(0.25, 9600))
     const resume = h.tick(1)[0]
     expect(resume[0]).toBe(0)
     expect(resume[1]).toBeCloseTo(0.25 / 96, 5)
@@ -338,11 +341,11 @@ describe('JitterBufferCore', () => {
     return all
   }
 
-  it('holds playback one sample short of the 250ms floor, then fades in exactly', () => {
+  it('holds playback one sample short of the 500ms floor, then fades in exactly', () => {
     const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(5999).fill(0.5))
+    core.write(new Float32Array(11999).fill(0.5))
     expect(run(core, 256).every((s) => s === 0)).toBe(true)
-    core.write(new Float32Array(1).fill(0.5)) // 6000 queued = the floor
+    core.write(new Float32Array(1).fill(0.5)) // 12000 queued = the floor
     const start = run(core, 128)
     expect(start[0]).toBe(0) // gain 0/96
     expect(start[1]).toBeCloseTo(0.5 / 96, 6)
@@ -351,45 +354,40 @@ describe('JitterBufferCore', () => {
     expect(start[127]).toBe(0.5)
   })
 
-  it('flushes at exactly the 500ms max-wait with a zero-amplitude first frame', () => {
+  it('EOS is the only bypass: under the floor, end() plays the short tail out', () => {
     const core = new JitterBufferCore(24000, () => {})
     core.write(new Float32Array(100).fill(0.5))
-    const out = run(core, 12098) // wait counter hits 12000 at frame 11999
-    expect(out[11998]).toBe(0)
-    expect(out[11999]).toBe(0) // start frame: gain 0, no step out of silence
-    expect(out[12000]).toBeCloseTo(0.5 / 96, 6)
-    expect(out[12095]).toBe(0.5) // ramp done (11999 + 96)
-    expect(out[12097]).toBe(0.5)
-  })
-
-  it('resets the max-wait timer on every chunk while waiting', () => {
-    const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(100).fill(0.3))
-    run(core, 11000) // 11000 < 12000 — no flush yet
-    core.write(new Float32Array(100).fill(0.3)) // timer restarts at this chunk
-    expect(run(core, 1000).every((s) => s === 0)).toBe(true) // 12000 since chunk 1, only 1000 since chunk 2
-    expect(run(core, 11001).some((s) => s !== 0)).toBe(true) // crosses the restarted window (start frame itself is gain-0)
+    expect(run(core, 13000).every((s) => s === 0)).toBe(true) // no time-based flush
+    core.end()
+    const out = run(core, 200)
+    expect(out[0]).toBe(0) // fade-in from silence
+    expect(out[1]).toBeCloseTo(0.5 / 96, 6)
+    expect(out[96]).toBe(0.5) // ramp done by frame 96
+    expect(out[99]).toBe(0.5) // last real sample
+    expect(out[100]).toBeCloseTo(0.5, 6) // EOS ramp continues it — no step
+    expect(out[195]).toBeCloseTo(0.5 / 96, 6) // ramp tail
+    expect(out.slice(196).some((s) => s !== 0)).toBe(false) // silence after
   })
 
   it('underrun ramp continues the last sample and decays linearly to zero', () => {
     const got: string[] = []
     const core = new JitterBufferCore(24000, (e) => got.push(e))
-    core.write(new Float32Array(100).fill(0.4))
-    const out = run(core, 12300) // flush at 11999; real frames 11999..12098
-    expect(out[12098]).toBeCloseTo(0.4, 6) // last real sample
-    expect(out[12099]).toBeCloseTo(0.4, 6) // ramp frame 0 CONTINUES it — no step
-    expect(out[12100]).toBeCloseTo((0.4 * 95) / 96, 6)
-    expect(out[12194]).toBeCloseTo(0.4 / 96, 6) // ramp tail
-    expect(out[12195]).toBe(0) // silence after the ramp
+    core.write(new Float32Array(12100).fill(0.4)) // over the floor: starts at once
+    const out = run(core, 12200) // real frames 0..12099, ramp 12100..12195
+    expect(out[12099]).toBeCloseTo(0.4, 6) // last real sample
+    expect(out[12100]).toBeCloseTo(0.4, 6) // ramp frame 0 CONTINUES it — no step
+    expect(out[12101]).toBeCloseTo((0.4 * 95) / 96, 6)
+    expect(out[12195]).toBeCloseTo(0.4 / 96, 6) // ramp tail
+    expect(out[12196]).toBe(0) // silence after the ramp
     expect(got).toEqual(['underrun'])
   })
 
   it('re-arms the floor after an underrun before resuming', () => {
     const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(6000).fill(0.3))
-    run(core, 128) // starts at frame 0 (6000 queued = floor)
-    run(core, 6000) // consumes frames 128..6127: dry at 6000, ramp to 6095, idle after
-    core.write(new Float32Array(5999).fill(0.3))
+    core.write(new Float32Array(12000).fill(0.3)) // the floor exactly
+    run(core, 128) // starts at frame 0
+    run(core, 12000) // consumes through frame 12095 (real + ramp), idle after
+    core.write(new Float32Array(11999).fill(0.3))
     expect(run(core, 100).every((s) => s === 0)).toBe(true) // still under the floor
     core.write(new Float32Array(1).fill(0.3))
     const resume = run(core, 128)
@@ -401,12 +399,12 @@ describe('JitterBufferCore', () => {
 
   it('survives a dry gap far past the old 500ms drain window (end is the only retirement)', () => {
     const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(6000).fill(0.3))
+    core.write(new Float32Array(12000).fill(0.3)) // the floor exactly: starts at once
     let alive = true
     let quanta = 0
-    // 6000 real + 96 ramp frames end at 6096; the old drain detector died
-    // 12000 frames later (quanta 142). The core must keep running forever
-    // now — a mid-stream gap is an underrun, not a stream end.
+    // 12000 real + 96 ramp frames end at 12096; a mid-stream gap is an
+    // underrun, not a stream end — the core keeps running forever until the
+    // explicit end.
     while (alive && quanta < 600) {
       alive = core.tick(new Float32Array(128))
       quanta++
@@ -459,15 +457,15 @@ describe('JitterBufferCore', () => {
   it('end() with a dry queue retires on the next quantum', () => {
     const core = new JitterBufferCore(24000, () => {})
     core.write(new Float32Array(100).fill(0.4))
-    run(core, 13000) // max-wait flush, plays 100, ramps out, idles dry
-    expect(core.tick(new Float32Array(128))).toBe(true) // alive: more data may come
-    core.end()
+    core.end() // bounded data: the short tail plays out now (no flush existed anyway)
+    const out = run(core, 200) // 100 real + 96 ramp, then retire
+    expect(out[99]).toBeCloseTo(0.4, 6) // last real sample
     expect(core.tick(new Float32Array(128))).toBe(false) // bounded data: done
   })
 
   it('end() flushes a prebuffered tail at once instead of waiting the floor', () => {
     const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(100).fill(0.5)) // far under the 250ms floor
+    core.write(new Float32Array(100).fill(0.5)) // far under the 500ms floor
     core.end()
     const out = run(core, 128)
     expect(out[0]).toBe(0) // starts NOW with the fade-in's zero frame
@@ -478,13 +476,13 @@ describe('JitterBufferCore', () => {
   it('end() during playback plays the queue out, ramps down, retires — no underrun report', () => {
     const got: string[] = []
     const core = new JitterBufferCore(24000, (e) => got.push(e))
-    core.write(new Float32Array(6000).fill(0.4))
+    core.write(new Float32Array(12000).fill(0.4))
     run(core, 128) // starts at the floor, 128 consumed
     core.end()
-    const out = run(core, 7000) // 5872 real + 96 ramp frames, then retire
-    expect(out[5871]).toBeCloseTo(0.4, 6) // last real sample
-    expect(out[5872]).toBeCloseTo(0.4, 6) // ramp frame 0 CONTINUES it — no step
-    expect(out[5967]).toBeCloseTo(0.4 / 96, 6) // linear decay tail
+    const out = run(core, 13000) // 11872 real + 96 ramp frames, then retire
+    expect(out[11871]).toBeCloseTo(0.4, 6) // last real sample
+    expect(out[11872]).toBeCloseTo(0.4, 6) // ramp frame 0 CONTINUES it — no step
+    expect(out[11967]).toBeCloseTo(0.4 / 96, 6) // linear decay tail
     expect(got).toEqual([]) // the final ramp is the EOS tail, not an underrun
     expect(core.tick(new Float32Array(128))).toBe(false)
   })

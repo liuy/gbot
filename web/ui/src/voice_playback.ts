@@ -6,14 +6,15 @@
 //
 // The worklet's buffering is a line-by-line port of the hf-realtime-voice
 // AudioPlaybackProcessor (PR #13, a production fork port): playback waits for
-// a jitter floor before starting, flushes after a max-wait even under the
-// floor (bounded latency for short/slow tails), ramps ~4ms linear de-click
-// fades at every boundary, re-arms the prebuffer after an underrun instead of
-// dying, and caps the queue as a runaway safety net. Mobile parameters are
-// locked harder than the reference's browser→cloud ones: 250ms floor, 500ms
-// max-wait. Engine PCM is s16le mono 24kHz on a 24kHz context, so the
-// reference's input→context upsampler would always step by exactly 1.0 and
-// is dead code here — stated, not silently dropped.
+// a 500ms jitter floor before starting — no time-based flush. The reference's
+// max-wait existed for cloud streams that could stall without an end signal;
+// here EOS is explicit, so a thin forced start would only buy cold-start
+// underruns, and a short tail plays whole at end(). Ramps ~4ms linear
+// de-click fades at every boundary, re-arms the prebuffer after an underrun
+// instead of dying, and caps the queue as a runaway safety net. Engine PCM is
+// s16le mono 24kHz on a 24kHz context, so the reference's input→context
+// upsampler would always step by exactly 1.0 and is dead code here — stated,
+// not silently dropped.
 import { rmsOf } from './voice_aura'
 
 //
@@ -26,7 +27,6 @@ export class JitterBufferCore {
   _playing: boolean
   _lastSample: number
   _prebufferActive: boolean
-  _prebufferWaitFrames: number
   _fadeIn: number
   /** Frames remaining in a linear ramp-out (0 = not ramping). */
   _underrunRamp: number
@@ -37,7 +37,6 @@ export class JitterBufferCore {
   _ended: boolean
   _fadeFrames: number
   _prebufferTarget: number
-  _maxWaitFrames: number
   _maxQueueSamples: number
   _emit: (event: string, dropped?: number) => void
 
@@ -47,7 +46,6 @@ export class JitterBufferCore {
     this._playing = false
     this._lastSample = 0
     this._prebufferActive = false
-    this._prebufferWaitFrames = 0
     this._fadeIn = 0
     this._underrunRamp = 0
     this._underrunStartSample = 0
@@ -55,8 +53,7 @@ export class JitterBufferCore {
     // ~4ms de-click ramp, scaled from the reference's 192 frames @48kHz —
     // long enough to de-click boundaries, inaudible as a fade.
     this._fadeFrames = 96
-    this._prebufferTarget = Math.ceil((250 / 1000) * sampleRate)
-    this._maxWaitFrames = Math.ceil((500 / 1000) * sampleRate)
+    this._prebufferTarget = Math.ceil((500 / 1000) * sampleRate)
     // 15min: a local engine (RTF 0.5) legitimately outpaces playback, so the
     // queue holds half a long run's audio — 30s trimmed it into audible
     // skips. Memory at the ceiling: ~58MB Float32.
@@ -82,7 +79,6 @@ export class JitterBufferCore {
     if (this._playing || this._underrunRamp > 0) return
     if (this._queue.length === 0) return
     this._prebufferActive = true
-    this._prebufferWaitFrames = 0
   }
 
   /** End a ramp-out: stop playback and re-arm prebuffer for any queued
@@ -99,15 +95,14 @@ export class JitterBufferCore {
     this._armPrebuffer()
   }
 
-  /** Flip from prebuffer to playback once the floor or max-wait is met. An
-   *  ended stream flushes its tail immediately — the floor waits for data
-   *  that will never arrive. */
+  /** Flip from prebuffer to playback once the floor is met. An ended stream
+   *  flushes its tail immediately — the floor waits for data that will never
+   *  arrive. */
   _tryStartPlayback(): boolean {
     if (!this._prebufferActive || this._playing) return false
     const queued = this._queuedSamples()
     const target = this._prebufferTarget
-    const maxWait = this._maxWaitFrames
-    if (!this._ended && queued < target && this._prebufferWaitFrames < maxWait) return false
+    if (!this._ended && queued < target) return false
     this._prebufferActive = false
     this._playing = true
     this._fadeIn = this._fadeFrames
@@ -200,7 +195,6 @@ export class JitterBufferCore {
       let sample = 0
 
       if (this._prebufferActive && !this._playing) {
-        this._prebufferWaitFrames += 1
         this._tryStartPlayback()
       }
 
