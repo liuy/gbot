@@ -3,13 +3,16 @@ import type { Block } from './model'
 import { createFeedSink } from './components/stream_sink'
 
 // rAF + performance on the fake clock (takeover_hydration.test.ts pattern):
-// one advanceTimersByTime(16) = exactly one backfill frame.
+// one advanceTimersByTime(16) = exactly one backfill frame. interval + Date
+// belong to the same clock: the live ticker needs a fake setInterval and
+// refreshToolDuration/refreshThinkingLabel read Date.now().
 function useHydrationTimers() {
   vi.useFakeTimers({
     toFake: [
       'setTimeout', 'clearTimeout',
+      'setInterval', 'clearInterval',
       'requestAnimationFrame', 'cancelAnimationFrame',
-      'performance',
+      'performance', 'Date',
     ],
   })
 }
@@ -41,8 +44,13 @@ function textBlock(text: string): Block {
   return { kind: 'text', id: '', text }
 }
 
-function thinkingBlock(text: string, active: boolean, durationNs = 0): Block {
-  return { kind: 'thinking', id: '', text, durationNs, active, startedAt: 0 }
+function thinkingBlock(
+  text: string,
+  active: boolean,
+  durationNs = 0,
+  startedAt = 0,
+): Block {
+  return { kind: 'thinking', id: '', text, durationNs, active, startedAt }
 }
 
 interface Ctx {
@@ -564,5 +572,162 @@ describe('feed sink — snapshot isolation and deferral', () => {
 
     vi.advanceTimersByTime(16 * 20)
     expect(feedEl.children.length).toBe(midCount)
+  })
+})
+
+describe('feed sink — live duration ticker', () => {
+  it('running tool duration ticks with the live clock', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const row = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    expect(textOf(row)).toContain('0s') // frozen baseline before any tick
+
+    vi.advanceTimersByTime(500)
+    // Ticks land on the 200ms grid: t=400 → 0.4s.
+    expect(textOf(row)).toContain('0.4s')
+
+    vi.advanceTimersByTime(700)
+    // t=1200 → 1.2s floors to '1s'; the mid-flight value was overwritten.
+    expect(textOf(row)).toContain('1s')
+    expect(textOf(row)).not.toContain('0.4s')
+  })
+
+  it('active thinking label ticks while active', () => {
+    useHydrationTimers()
+    const src = [thinkingBlock('推理', true, 0, Date.now())]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const wrap = feedEl.querySelector('[data-thinking]') as HTMLElement
+    expect(textOf(wrap)).toContain('Thinking (0s)')
+
+    vi.advanceTimersByTime(2300)
+    // Last tick at t=2200 → 2.2s floors to 2.
+    expect(textOf(wrap)).toContain('Thinking (2s)')
+  })
+
+  it('finished rows freeze and the ticker self-stops', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const row = feedEl.querySelector('[data-tool-root]') as HTMLElement
+
+    const b = src[0] as ToolBlockT
+    b.state = 'done'
+    b.timingNs = 3_000_000_000
+    sink.patchTool('t1')
+
+    // Leading space: ' 3s' cannot match inside ' 13s'.
+    expect(textOf(row)).toContain(' 3s')
+    vi.advanceTimersByTime(10_000)
+    expect(textOf(row)).toContain(' 3s')
+    expect(textOf(row)).not.toContain('13s')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('dispose stops the ticker', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+    sink.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('detached feed self-stops', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    feedEl.remove()
+    vi.advanceTimersByTime(200)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('re-registration restarts the ticker after a stop', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const b = src[0] as ToolBlockT
+    b.state = 'done'
+    b.timingNs = 1_000_000_000
+    sink.patchTool('t1')
+    vi.advanceTimersByTime(400) // past the self-stop tick
+    expect(vi.getTimerCount()).toBe(0)
+
+    src.push(toolBlock('t2', 'Bash', { startedAt: Date.now() }))
+    sink.syncTail(null)
+    vi.advanceTimersByTime(1200)
+    const rows = feedEl.querySelectorAll('[data-tool-root]')
+    expect(rows.length).toBe(2)
+    expect(textOf(rows[1] as HTMLElement)).toContain('1s')
+  })
+})
+
+describe('feed sink — live write follow pin', () => {
+  it('syncTail pins to the stubbed bottom while following and holds when released', () => {
+    useHydrationTimers()
+    const src = [textBlock('a')]
+    const { sink, feedEl, setFollow } = makeSink(src)
+    stubScroll(feedEl)
+    sink.hydrate() // single block: small path, no backfill → scrollTop stays 0
+
+    src.push(textBlock('b'))
+    sink.syncTail(null)
+    // Appended content moved the bottom: following keeps the viewport pinned.
+    expect(feedEl.scrollTop).toBe(feedEl.scrollHeight)
+
+    setFollow(false)
+    const held = feedEl.scrollTop
+    src.push(textBlock('c'))
+    sink.syncTail(null)
+    expect(feedEl.scrollTop).toBe(held) // reading up: no yank back down
+  })
+
+  it('patchTool pins while following (running output growth)', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl, setFollow } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    // Text-length stub: patchTool only mutates inside the card, so
+    // childElementCount never moves — the body text is the growth signal.
+    Object.defineProperty(feedEl, 'scrollHeight', {
+      configurable: true,
+      get: () => 1000 + (feedEl.textContent?.length ?? 0),
+    })
+    Object.defineProperty(feedEl, 'clientHeight', { configurable: true, get: () => 500 })
+    const before = feedEl.scrollTop
+
+    const b = src[0] as ToolBlockT
+    b.displayOutput = 'more output'
+    sink.patchTool('t1')
+    expect(feedEl.scrollTop).toBe(feedEl.scrollHeight)
+    expect(feedEl.scrollTop).not.toBe(before)
+
+    setFollow(false)
+    const held = feedEl.scrollTop
+    b.displayOutput += ' x'
+    sink.patchTool('t1')
+    expect(feedEl.scrollTop).toBe(held)
+  })
+
+  it('rerender (seam self-heal) also pins', () => {
+    useHydrationTimers()
+    const src = [textBlock('a'), textBlock('b')]
+    const { sink, feedEl, setSrc } = makeSink(src)
+    stubScroll(feedEl)
+    sink.hydrate()
+
+    // New refs everywhere: the tracked tail is gone → mismatch-at-0 → full
+    // container re-render (childElementCount 2 → 3 under the stub).
+    setSrc([textBlock('x'), textBlock('y'), textBlock('z')])
+    sink.syncTail(null)
+
+    expect(feedEl.scrollTop).toBe(feedEl.scrollHeight)
   })
 })

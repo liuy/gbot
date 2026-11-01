@@ -26,6 +26,8 @@ import {
   writeThinkingStream,
   finishThinking,
   finishTool,
+  refreshToolDuration,
+  refreshThinkingLabel,
   expandToolChildrenForRunning,
   collapseToolChildrenOnDone,
   markToolCollapsible,
@@ -69,6 +71,10 @@ interface RenderedEntry {
   el: HTMLElement | null
 }
 
+// 与 chat 的 refreshInterval 同节奏（chat.ts）：亚秒 '0.5s' 显示需要 <1s 的
+// 刷新粒度，200ms 是 chat 已验证的节拍，两处消费面共用同一手感。
+export const LIVE_TICK_MS = 200
+
 export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
   const { feedEl, blocks, follow } = opts
 
@@ -83,14 +89,43 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
   // whose children the store already cleared.
   const childTools = new Map<string, Set<string>>()
   const activeThinking = new Map<string | null, ThinkingEntryData>()
+  const runningTools = new Map<string, Extract<Block, { kind: 'tool' }>>()
+  let tickerId: number | null = null
   // Set by hydrate(), cleared by the wrapped onDone and by dispose(). While
   // true, syncTail/patchTool/dropLeading are no-ops and the renderer keeps
   // the feed's dirty record for one post-onDone reconcile pass.
   let hydrating = false
 
+  const stopTicker = () => {
+    if (tickerId !== null) {
+      window.clearInterval(tickerId)
+      tickerId = null
+    }
+  }
+  const liveTick = () => {
+    // 脱挂（面板收起/页面销毁/测试重置 DOM）或无注册项时自停：
+    // 没有消费者会再来清这个 interval。
+    if (!feedEl.isConnected || (runningTools.size === 0 && activeThinking.size === 0)) {
+      stopTicker()
+      return
+    }
+    runningTools.forEach((block, id) => {
+      if (block.state !== 'running') return
+      const handles = toolHandles.get(id)
+      if (handles) refreshToolDuration(handles, block.startedAt)
+    })
+    activeThinking.forEach((entry) => {
+      if (entry.pendingBlock.active) refreshThinkingLabel(entry.labelEl, entry.startedAt)
+    })
+  }
+  const startTicker = () => {
+    if (tickerId === null) tickerId = window.setInterval(liveTick, LIVE_TICK_MS)
+  }
+
   const live: LiveStreamSink = {
     onToolRunning: (handles, block, parentID) => {
       toolHandles.set(block.id, handles)
+      runningTools.set(block.id, block)
       if (parentID !== null) {
         let s = childTools.get(parentID)
         if (!s) {
@@ -99,9 +134,11 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
         }
         s.add(block.id)
       }
+      startTicker()
     },
     onThinkingActive: (entry, parentID) => {
       activeThinking.set(parentID, entry)
+      startTicker()
     },
   }
 
@@ -147,12 +184,22 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     onBlockRendered: noteRendered,
   })
 
+  // live 写入后的钉底；follow 是消费面的决策（voice 本地标志 / jobs 的
+  // store 标志）。hydration 回填不走这里——restoreScroll 的捕获/补偿
+  // 语义独占回填期间的滚动。jobs_render 的 flush 钉底保留：它还负责
+  // bash feed（无 sink）路径。
+  const pinIfFollowing = () => {
+    if (follow()) feedEl.scrollTop = feedEl.scrollHeight
+  }
+
   const reset = () => {
     rendered.clear()
     toolHandles.clear()
     childTools.clear()
     activeThinking.clear()
+    runningTools.clear()
     backfillCursor = 0
+    stopTicker()
   }
 
   // Recursive registry purge on tool_end: the store cleared the block's
@@ -165,6 +212,7 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     }
     toolHandles.delete(id)
     activeThinking.delete(id)
+    runningTools.delete(id)
     rendered.delete(id)
   }
 
@@ -230,7 +278,7 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     // tool/user/image/document: tools patch via patchTool; users never mutate.
   }
 
-  const syncTail = (parentID: string | null) => {
+  const syncTailInner = (parentID: string | null) => {
     if (hydrating) return
     let container: HTMLElement
     let list: Block[]
@@ -299,6 +347,14 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     patchSeam(entries[m - 1], container, firstAppended, seamThinking, parentID)
   }
 
+  // Pin unconditionally: inner's early-exit branches wrote no DOM, so the pin
+  // lands on the same unchanged bottom — idempotent. The rerenderContainer
+  // branches also exit through here, so one pin covers every write path.
+  const syncTail = (parentID: string | null) => {
+    syncTailInner(parentID)
+    pinIfFollowing()
+  }
+
   const patchTool = (toolID: string) => {
     if (hydrating) return
     const handles = toolHandles.get(toolID)
@@ -311,6 +367,7 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
       if (b.displayOutput) setToolOutput(handles, b.displayOutput)
       if (isCollapsibleBlock(b)) markToolCollapsible(handles.root)
       if (b.children && b.children.length > 0) expandToolChildrenForRunning(handles)
+      pinIfFollowing()
       return
     }
     finishTool(handles, {
@@ -321,6 +378,7 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     collapseToolChildrenOnDone(handles)
     // Hours-long feeds must not leak finished-tool registries.
     purgeTool(toolID)
+    pinIfFollowing()
   }
 
   const dropLeading = (dropped: Block[]) => {
@@ -338,6 +396,7 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
       entries.shift()
       head.el?.remove()
     }
+    pinIfFollowing()
   }
 
   return {

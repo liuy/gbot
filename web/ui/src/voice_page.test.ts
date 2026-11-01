@@ -124,6 +124,79 @@ describe('createVoicePage', () => {
     }
   })
 
+  it('voice face: running tool row and thinking label tick live', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const { page, store } = setup()
+      page.setState('think')
+      store.apply({ type: 'thinking_start' })
+      store.apply(toolStart('t1', 'web'))
+      const row = page.root.querySelector('[data-tool-root]') as HTMLElement
+      const wrap = page.root.querySelector('[data-thinking="1"]') as HTMLElement
+      expect(row.textContent).toContain('0s')
+      expect(wrap.textContent).toContain('0s')
+
+      vi.advanceTimersByTime(1200)
+      expect(row.textContent).toContain('1s')
+      expect(wrap.textContent).toContain('Thinking (1s)')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('think stream follows: pins, releases on scroll-up, resumes near bottom', () => {
+    vi.useFakeTimers()
+    try {
+      const { page, store } = setup()
+      const vc = page.root.querySelector('.voice-vcontent') as HTMLElement
+      // jsdom has no layout: stub the metrics the follow listener reads.
+      Object.defineProperty(vc, 'scrollHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(vc, 'clientHeight', { configurable: true, get: () => 200 })
+      page.setState('think')
+      store.apply({ type: 'thinking_start' })
+      store.apply({ type: 'thinking_delta', thinking: { text: 'part1' } })
+      // Following: the growing think stream keeps vcontent pinned to the bottom.
+      expect(vc.scrollTop).toBe(500)
+
+      // Scrolled up (500-100-200 = 200 > 40): new deltas must not yank back.
+      vc.scrollTop = 100
+      vc.dispatchEvent(new Event('scroll'))
+      store.apply({ type: 'thinking_delta', thinking: { text: ' part2' } })
+      expect(vc.scrollTop).toBe(100)
+
+      // Back within 40px of the bottom (500-480-200 < 0): follow resumes.
+      vc.scrollTop = 480
+      vc.dispatchEvent(new Event('scroll'))
+      store.apply({ type: 'thinking_delta', thinking: { text: ' more' } })
+      expect(vc.scrollTop).toBe(500)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reset re-arms following for the next think round', () => {
+    vi.useFakeTimers()
+    try {
+      const { page, store } = setup()
+      const vc = page.root.querySelector('.voice-vcontent') as HTMLElement
+      Object.defineProperty(vc, 'scrollHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(vc, 'clientHeight', { configurable: true, get: () => 200 })
+      page.setState('think')
+      // Released follow from the previous round.
+      vc.scrollTop = 100
+      vc.dispatchEvent(new Event('scroll'))
+
+      page.setState('speak') // reset branch clears vcontent for new content
+      page.setState('think')
+      store.apply({ type: 'thinking_start' })
+      store.apply({ type: 'thinking_delta', thinking: { text: '新一轮' } })
+      expect(vc.scrollTop).toBe(500)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('tool rows are chat-isomorphic: rendered by the shared stream renderer', () => {
     const { page, store } = setup()
     page.setState('tool')

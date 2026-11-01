@@ -11,6 +11,7 @@
 // ONLY close affordance (10-28 ruling).
 import { createFeedSink, type FeedSinkHandle } from './components/stream_sink'
 import type { EventBlockChange, EventBlockStore } from './components/event_blocks'
+import { nearBottom } from './jobs_render'
 import { createAuraVisual } from './voice_aura'
 
 export type VoiceState = 'idle' | 'listen' | 'wait' | 'think' | 'tool' | 'speak'
@@ -94,6 +95,14 @@ export function createVoicePage(opts: VoicePageOpts): VoicePage {
 
   let state: VoiceState = 'idle'
 
+  // vcontent 是滚动容器（.voice-vcontent overflow-y:auto max-height:240px），
+  // follow 语义对齐 task panel feeds：sink 只在 follow 时钉底，滚动监听
+  // 决定 follow——上翻读流不被拽回，扫回底部 40px 内自动续跟。
+  let following = true
+  vcontent.addEventListener('scroll', () => {
+    following = nearBottom(vcontent.scrollHeight, vcontent.scrollTop, vcontent.clientHeight)
+  })
+
   // Store change → sink call, the voice-sized mirror of jobs_render's dirty
   // records: tool events patch their card, every other event appends at the
   // feed root (the controller consumes the root stream only — no nesting).
@@ -102,7 +111,7 @@ export function createVoicePage(opts: VoicePageOpts): VoicePage {
   const sink: FeedSinkHandle = createFeedSink({
     feedEl: vcontent,
     blocks: () => opts.blocks.blocks(),
-    follow: () => true,
+    follow: () => following,
   })
   const dirtyTools = new Set<string>()
   let dirtyRoot = false
@@ -120,6 +129,9 @@ export function createVoicePage(opts: VoicePageOpts): VoicePage {
       // empty store over a cleared container).
       dirtyRoot = false
       dirtyTools.clear()
+      // 清空即新内容：新一轮 think 回到钉底。不归位则上翻释放状态
+      // 跨轮残留，新一轮不跟。
+      following = true
       sink.dispose()
       sink.hydrate(flush)
       return

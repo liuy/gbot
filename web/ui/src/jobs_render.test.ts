@@ -288,6 +288,39 @@ describe('jobs section — agent feed', () => {
     expect(feed.textContent).toContain('found it')
   })
 
+  it('expanded agent feed: running tool row ticks', async () => {
+    // useFakeFrames superset: the sink's live ticker needs a fake interval and
+    // the duration math reads Date.now().
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+        'requestAnimationFrame', 'cancelAnimationFrame', 'performance', 'Date',
+      ],
+    })
+    try {
+      const ctx = mount()
+      ctx.store.setJobs(
+        [agentJob('agent-1', 'running')],
+        new Map([
+          ['agent-1', { blocks: [toolBlock('t1', 'Bash', { state: 'running', startedAt: Date.now() })] }],
+        ]),
+      )
+      ctx.rerender()
+      rowFor(ctx.host, 'agent-1').click()
+      // One frame lets the hydrate onDone fire.
+      await vi.advanceTimersByTimeAsync(16)
+      const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+      const row = feed.querySelector('[data-tool-root]') as HTMLElement
+      expect(row.textContent).toContain('0s')
+
+      vi.advanceTimersByTime(1200)
+      expect(row.textContent).toContain('1s')
+      expect(row.textContent).not.toContain('0s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders attachment events as user lines in the feed', async () => {
     const ctx = mount()
     ctx.store.setJobs([agentJob('agent-1', 'running')])
