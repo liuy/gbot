@@ -66,8 +66,8 @@ func TestFetchToolsForServer_NilConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if tools != nil {
-		t.Errorf("expected nil tools, got %v", tools)
+	if tools == nil || len(tools) != 0 {
+		t.Errorf("expected non-nil empty tools, got %v", tools)
 	}
 }
 
@@ -78,8 +78,8 @@ func TestFetchToolsForServer_NilSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if tools != nil {
-		t.Errorf("expected nil tools for nil session, got %v", tools)
+	if tools == nil || len(tools) != 0 {
+		t.Errorf("expected non-nil empty tools for nil session, got %v", tools)
 	}
 }
 
@@ -165,8 +165,8 @@ func TestFetchToolsForServer_NoCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if tools != nil {
-		t.Errorf("expected nil tools with no capabilities, got %v", tools)
+	if tools == nil || len(tools) != 0 {
+		t.Errorf("expected non-nil empty tools with no capabilities, got %v", tools)
 	}
 }
 
@@ -236,7 +236,7 @@ func TestFetchToolsForServer_InputSchema(t *testing.T) {
 	}
 }
 
-func TestFetchToolsForServer_EmptyToolsNotCached(t *testing.T) {
+func TestFetchToolsForServer_EmptyToolsCached(t *testing.T) {
 	conn, cleanup := connectTestServer(t) // no tools
 	defer cleanup()
 
@@ -253,10 +253,10 @@ func TestFetchToolsForServer_EmptyToolsNotCached(t *testing.T) {
 		t.Errorf("expected 0 tools, got %d", len(tools))
 	}
 
-	// Empty results should NOT be cached (prevents wasting LRU capacity)
-	_, ok := cache.Get("test-server")
-	if ok {
-		t.Error("empty tool results should not be cached")
+	// TS memoizes every non-error return (client.ts:1752-1755 + cache set);
+	// empty results must be cached like resources/prompts do.
+	if _, ok := cache.Get("test-server"); !ok {
+		t.Error("empty tool results must be cached (TS memoizes every return)")
 	}
 }
 
@@ -441,8 +441,8 @@ func TestFetchCommandsForServer_NilConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if commands != nil {
-		t.Errorf("expected nil, got %v", commands)
+	if commands == nil || len(commands) != 0 {
+		t.Errorf("expected non-nil empty commands, got %v", commands)
 	}
 }
 
@@ -456,8 +456,8 @@ func TestFetchCommandsForServer_NoCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if commands != nil {
-		t.Errorf("expected nil commands, got %v", commands)
+	if commands == nil || len(commands) != 0 {
+		t.Errorf("expected non-nil empty commands, got %v", commands)
 	}
 }
 
@@ -468,8 +468,8 @@ func TestFetchCommandsForServer_NilSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if commands != nil {
-		t.Errorf("expected nil commands, got %v", commands)
+	if commands == nil || len(commands) != 0 {
+		t.Errorf("expected non-nil empty commands, got %v", commands)
 	}
 }
 
@@ -814,8 +814,8 @@ func TestOnCommandsChanged_ReFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OnCommandsChanged: %v", err)
 	}
-	if commands != nil {
-		t.Errorf("expected nil commands, got %v", commands)
+	if commands == nil || len(commands) != 0 {
+		t.Errorf("expected non-nil empty commands, got %v", commands)
 	}
 }
 
@@ -1139,6 +1139,10 @@ func TestFetchToolsForServer_MetaFields(t *testing.T) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "search_tool",
 		Description: "Search for things",
+		Meta: mcp.Meta{
+			"anthropic/searchHint": "quick lookup",
+			"anthropic/alwaysLoad": true,
+		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
@@ -1174,6 +1178,12 @@ func TestFetchToolsForServer_MetaFields(t *testing.T) {
 	}
 	if tools[0].ServerName != "test-server" {
 		t.Errorf("ServerName = %q, want %q", tools[0].ServerName, "test-server")
+	}
+	if tools[0].SearchHint != "quick lookup" {
+		t.Errorf("SearchHint = %q, want %q", tools[0].SearchHint, "quick lookup")
+	}
+	if !tools[0].AlwaysLoad {
+		t.Error("AlwaysLoad = false, want true for _meta anthropic/alwaysLoad true")
 	}
 }
 
@@ -1221,18 +1231,18 @@ func TestDiscoverForServer_ResourceErrorStopsCommands(t *testing.T) {
 	commandCache := mustLRU[string, []MCPCommand](10)
 
 	d := discoverForServer(context.Background(), conn, toolCache, resourceCache, commandCache)
-	// Session nil → tools returns nil, resources returns [] (TS contract), commands returns nil
+	// Session nil → tools/resources/commands all return [] (TS contract: [] on non-error paths)
 	if d.Error != nil {
 		t.Errorf("expected nil error for nil session, got: %v", d.Error)
 	}
-	if d.Tools != nil {
-		t.Errorf("expected nil tools, got %v", d.Tools)
+	if d.Tools == nil || len(d.Tools) != 0 {
+		t.Errorf("expected non-nil empty tools, got %v", d.Tools)
 	}
 	if d.Resources == nil || len(d.Resources) != 0 {
 		t.Errorf("expected non-nil empty resources, got %#v", d.Resources)
 	}
-	if d.Commands != nil {
-		t.Errorf("expected nil commands, got %v", d.Commands)
+	if d.Commands == nil || len(d.Commands) != 0 {
+		t.Errorf("expected non-nil empty commands, got %v", d.Commands)
 	}
 }
 

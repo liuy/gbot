@@ -130,7 +130,7 @@ const fetchCacheCapacity = 20 // Source: client.ts:1726 MCP_FETCH_CACHE_SIZE
 // Results are cached per server name in the provided LRU cache.
 func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []DiscoveredTool]) ([]DiscoveredTool, error) {
 	if conn == nil {
-		return nil, nil
+		return []DiscoveredTool{}, nil
 	}
 
 	// Check LRU cache
@@ -139,12 +139,12 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 	}
 
 	if conn.Session == nil {
-		return nil, nil
+		return []DiscoveredTool{}, nil
 	}
 
 	// Source: client.ts:1748-1750 — check capabilities
 	if conn.Capabilities == nil || conn.Capabilities.Tools == nil {
-		return nil, nil
+		return []DiscoveredTool{}, nil
 	}
 
 	// Source: client.ts:1752-1755 — call tools/list
@@ -154,7 +154,9 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 	}
 
 	if result == nil || len(result.Tools) == 0 {
-		return []DiscoveredTool{}, nil
+		empty := []DiscoveredTool{}
+		cache.Add(conn.Name, empty)
+		return empty, nil
 	}
 
 	// Source: client.ts:1766-1990 — convert SDK tools to DiscoveredTool
@@ -185,8 +187,8 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.
 			if v, ok := tool.Meta["anthropic/searchHint"].(string); ok {
 				searchHint = sanitizeString(strings.Join(strings.Fields(v), " ")) // collapse whitespace
 			}
-			if _, ok := tool.Meta["anthropic/alwaysLoad"].(bool); ok {
-				alwaysLoad = true
+			if v, ok := tool.Meta["anthropic/alwaysLoad"].(bool); ok {
+				alwaysLoad = v
 			}
 		}
 
@@ -272,7 +274,7 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 // Source: client.ts:2033-2116
 func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []MCPCommand]) ([]MCPCommand, error) {
 	if conn == nil || conn.Session == nil {
-		return nil, nil
+		return []MCPCommand{}, nil
 	}
 
 	// Check cache
@@ -281,7 +283,7 @@ func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *l
 	}
 
 	if conn.Capabilities == nil || conn.Capabilities.Prompts == nil {
-		return nil, nil
+		return []MCPCommand{}, nil
 	}
 
 	result, err := conn.Session.ListPrompts(ctx, nil)
