@@ -281,17 +281,17 @@ describe('worklet jitter buffer (hf-realtime-voice PR #13 port)', () => {
     expect(Math.abs(resume[96])).toBeGreaterThan(0.2)
   })
 
-  it('caps the queue at ~30s of runaway buffering', () => {
+  it('a 35s backlog is never trimmed and plays out in full (runaway net stays retired)', () => {
     const h = new WorkletHost(PLAYBACK_WORKLET_SRC)
-    for (let i = 0; i < 35; i++) h.write(tone(0.25, 24000)) // 35s
-    const outs = h.tick(5800)
+    for (let i = 0; i < 35; i++) h.write(tone(0.25, 24000)) // 35s backlog
+    const outs = h.tick(6700) // drain all 840000 frames (6563 quanta + edges)
     h.end()
-    h.tick(3)
+    const fin = h.tick(3)
     expect(h.dead).toBe(true) // end-of-stream retires the processor
     expect(events(h, 'stop')).toHaveLength(1)
-    const audible = audibleFrames(outs)
-    expect(audible).toBeGreaterThan(719000) // 30s kept…
-    expect(audible).toBeLessThan(721000) // …of the 35s written
+    const audible = audibleFrames([...outs, ...fin])
+    expect(audible).toBeGreaterThan(839500) // full 35s kept…
+    expect(audible).toBeLessThan(840500) // …(± fade/edge bookkeeping noise)
   })
 
   it('a normal-length reply is never trimmed (2s plays in full)', () => {
@@ -417,10 +417,40 @@ describe('JitterBufferCore', () => {
     expect(core.tick(new Float32Array(128))).toBe(false)
   })
 
-  it('trims one runaway chunk to the 30s ceiling', () => {
+  it('trims one runaway chunk to the 15min ceiling', () => {
+    // 1kHz sample rate keeps the allocation small; the ceiling is in ms, so
+    // 900000ms = 900000 samples here either way.
+    const core = new JitterBufferCore(1000, () => {})
+    core.write(new Float32Array(900001).fill(0.3)) // 15min + 1 sample in ONE chunk
+    expect(core._queuedSamples()).toBe(900000)
+  })
+
+  // A local engine (RTF 0.5) legitimately outpaces playback on long runs:
+  // the queue grows past the reference's 30s cap and every trimmed sample is
+  // an audible forward skip. The ceiling is a runaway net, not a flow
+  // controller — a 35s backlog (impossible for cloud pacing, routine for a
+  // local engine) must be retained sample-exact.
+  it('a 35s backlog past the old 30s cap is retained sample-exact (no trim)', () => {
     const core = new JitterBufferCore(24000, () => {})
-    core.write(new Float32Array(744001).fill(0.3)) // 31s + 1 sample in ONE chunk
-    expect(core._queuedSamples()).toBe(720000)
+    for (let i = 0; i < 35; i++) {
+      // Distinct amplitudes so a trimmed sample is distinguishable in content.
+      const chunk = new Float32Array(24000).fill((i + 1) / 36)
+      core.write(chunk)
+      run(core, 35) // the live path drains while producing; 35 samples total
+    }
+    // Lossless proof: after end, every written sample plays out — old 30s
+    // cap trimmed to 720000 (1.43% loss) → red; the 15min ceiling retains
+    // all but ~0.13% of fade/quantum-edge bookkeeping.
+    core.end()
+    let played = 0
+    const buf = new Float32Array(128)
+    let alive = true
+    while (alive) {
+      alive = core.tick(buf)
+      played += buf.length
+    }
+    expect(played).toBeGreaterThan(838500)
+    expect(played).toBeLessThan(840500)
   })
 
   it('end() with a dry queue retires on the next quantum', () => {

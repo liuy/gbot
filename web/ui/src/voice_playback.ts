@@ -57,7 +57,10 @@ export class JitterBufferCore {
     this._fadeFrames = 96
     this._prebufferTarget = Math.ceil((250 / 1000) * sampleRate)
     this._maxWaitFrames = Math.ceil((500 / 1000) * sampleRate)
-    this._maxQueueSamples = Math.ceil((30000 / 1000) * sampleRate)
+    // 15min: a local engine (RTF 0.5) legitimately outpaces playback, so the
+    // queue holds half a long run's audio — 30s trimmed it into audible
+    // skips. Memory at the ceiling: ~58MB Float32.
+    this._maxQueueSamples = Math.ceil((900000 / 1000) * sampleRate)
     this._emit = emit
   }
 
