@@ -94,13 +94,24 @@ export function createTTSQueue(opts: TTSQueueOpts): TTSQueue {
     const ctl = new AbortController()
     item.ctl = ctl
     void (async () => {
+      const t0 = performance.now()
+      const head = item.text.slice(0, 24)
+      let bytes = 0
+      let ttf = 0
       try {
+        console.debug(`[tts] synth len=${item.text.length} head="${head}"`)
         const body = await synth(item.text, ctl.signal)
         const reader = body.getReader()
+        let first = true
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
           if (g !== gen) return
+          if (first) {
+            ttf = Math.round(performance.now() - t0)
+            first = false
+          }
+          bytes += value.length
           // Identity, never a captured index: compaction renumbers items,
           // so liveness of "I am the flush head" can only be answered by
           // comparing against the object at the head slot right now.
@@ -108,10 +119,13 @@ export function createTTSQueue(opts: TTSQueueOpts): TTSQueue {
           else item.chunks.push(value)
         }
         if (g !== gen) return
+        console.debug(`[tts] item done ttf=${ttf}ms ms=${Math.round(performance.now() - t0)} bytes=${bytes}`)
         finish(item)
       } catch (err) {
         if (g !== gen) return
-        finish(item, err instanceof Error ? err : new Error(String(err)))
+        const msg = err instanceof Error ? err.message : String(err)
+        console.debug(`[tts] item failed ms=${Math.round(performance.now() - t0)} err=${msg}`)
+        finish(item, err instanceof Error ? err : new Error(msg))
       }
     })()
   }
@@ -181,6 +195,7 @@ export function createTTSQueue(opts: TTSQueueOpts): TTSQueue {
     },
     inFlight,
     abort(): void {
+      console.debug('[tts] abort')
       gen++
       for (const it of items) it.ctl?.abort()
       items = []

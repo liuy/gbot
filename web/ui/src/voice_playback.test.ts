@@ -417,12 +417,15 @@ describe('JitterBufferCore', () => {
     expect(core.tick(new Float32Array(128))).toBe(false)
   })
 
-  it('trims one runaway chunk to the 15min ceiling', () => {
+  it('trims one runaway chunk to the 15min ceiling and announces the drop', () => {
     // 1kHz sample rate keeps the allocation small; the ceiling is in ms, so
     // 900000ms = 900000 samples here either way.
-    const core = new JitterBufferCore(1000, () => {})
+    const emitted: Array<[string, number?]> = []
+    const core = new JitterBufferCore(1000, (ev, dropped) => emitted.push([ev, dropped]))
     core.write(new Float32Array(900001).fill(0.3)) // 15min + 1 sample in ONE chunk
     expect(core._queuedSamples()).toBe(900000)
+    // The drop must be loud — silent loss is what hid the skip from the user.
+    expect(emitted).toContainEqual(['trim', 1])
   })
 
   // A local engine (RTF 0.5) legitimately outpaces playback on long runs:
@@ -439,7 +442,7 @@ describe('JitterBufferCore', () => {
       run(core, 35) // the live path drains while producing; 35 samples total
     }
     // Lossless proof: after end, every written sample plays out — old 30s
-    // cap trimmed to 720000 (1.43% loss) → red; the 15min ceiling retains
+    // cap trimmed to 720000 (~14% loss) → red; the 15min ceiling retains
     // all but ~0.13% of fade/quantum-edge bookkeeping.
     core.end()
     let played = 0

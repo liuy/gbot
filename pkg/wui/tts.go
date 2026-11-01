@@ -8,8 +8,10 @@ package wui
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/liuy/gbot/pkg/audio/tts"
 	"github.com/liuy/gbot/pkg/config"
@@ -77,23 +79,32 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 }
 
 func speakTTS(w http.ResponseWriter, r *http.Request, text string) {
+	runes := []rune(text)
+	head := string(runes[:min(24, len(runes))])
+	slog.Info("tts: request", "chars", len(runes), "head", head)
+	start := time.Now()
 	cfg, err := config.Load()
 	if err != nil {
+		slog.Warn("tts: config load failed", "err", err)
 		errorJSON(w, http.StatusInternalServerError, "tts: config load failed: "+err.Error())
 		return
 	}
 	p, model, err := cfg.ResolveTTS()
 	if err != nil {
+		slog.Warn("tts: resolve failed", "err", err)
 		errorJSON(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	wrote := false
+	wrote, bytes := false, 0
+	var ttf time.Duration
 	streamPCM := func(pcm []byte) {
 		if !wrote {
+			ttf = time.Since(start)
 			w.Header().Set("Content-Type", "audio/L16;rate=24000;channels=1")
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
+		bytes += len(pcm)
 		_, _ = w.Write(pcm)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -107,10 +118,24 @@ func speakTTS(w http.ResponseWriter, r *http.Request, text string) {
 		Text:    text,
 		Voice:   cfg.TTS.Voice,
 	}, streamPCM)
+	aborted := r.Context().Err() != nil
 	if err != nil && !wrote {
-		// Failed before any audio: the client still gets a real status.
+		if !aborted {
+			// Failed before any audio: the client still gets a real status.
+			slog.Warn("tts: failed before audio", "ms", time.Since(start).Milliseconds(), "err", err)
+		}
 		errorJSON(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	if err != nil {
+		// An abort mid-stream is the user's interrupt, not a fault.
+		if aborted {
+			slog.Info("tts: aborted", "bytes", bytes)
+		} else {
+			slog.Warn("tts: truncated", "bytes", bytes, "ms", time.Since(start).Milliseconds(), "err", err)
+		}
+	} else {
+		slog.Info("tts: done", "bytes", bytes, "ttf_ms", ttf.Milliseconds(), "ms", time.Since(start).Milliseconds())
 	}
 	// err != nil && wrote: truncated stream ends here. err == nil && !wrote:
 	// a zero-PCM synthesis is a valid (empty) audio response.

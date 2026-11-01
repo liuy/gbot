@@ -39,7 +39,7 @@ export class JitterBufferCore {
   _prebufferTarget: number
   _maxWaitFrames: number
   _maxQueueSamples: number
-  _emit: (event: string) => void
+  _emit: (event: string, dropped?: number) => void
 
   constructor(sampleRate: number, emit: (event: string) => void) {
     this._queue = []
@@ -122,7 +122,7 @@ export class JitterBufferCore {
   }
 
   /**
-   * Runaway safety net: drop oldest samples only past the ~30s ceiling. Must
+   * Runaway safety net: drop oldest samples only past the 15min ceiling. Must
    * stay high enough that a normal TTS reply never hits this path —
    * discarding next-to-play (oldest unread) audio mid-phrase causes an
    * audible forward skip (~0.1s phrase swap), which is worse than the memory
@@ -130,6 +130,7 @@ export class JitterBufferCore {
    */
   _trimQueue(): void {
     const maxSamples = this._maxQueueSamples
+    let dropped = 0
     while (this._queuedSamples() > maxSamples && this._queue.length > 0) {
       if (this._queue.length === 1) {
         // Last buffer: keep at least one unread sample so trimming can never
@@ -139,6 +140,7 @@ export class JitterBufferCore {
         const drop = Math.min(unread - 1, this._queuedSamples() - maxSamples)
         if (drop <= 0) break
         this._readIdx += drop
+        dropped += drop
         if (this._readIdx >= head.length) {
           this._readIdx = 0
           this._queue.shift()
@@ -152,12 +154,14 @@ export class JitterBufferCore {
       } else {
         const drop = Math.min(head.length - this._readIdx, this._queuedSamples() - maxSamples)
         this._readIdx += drop
+        dropped += drop
         if (this._readIdx >= head.length) {
           this._readIdx -= head.length
           this._queue.shift()
         }
       }
     }
+    if (dropped > 0) this._emit('trim', dropped)
   }
 
   // The reference reads with linear interpolation because it upsamples
@@ -244,7 +248,7 @@ class StreamProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.hasInterrupted = false;
-    this.core = new JitterCore(sampleRate, (ev) => this.port.postMessage({ event: ev }));
+    this.core = new JitterCore(sampleRate, (ev, dropped) => this.port.postMessage({ event: ev, dropped }));
     this.port.onmessage = (event) => {
       if (!event.data) return;
       const payload = event.data;
@@ -400,7 +404,14 @@ export function createPlayback(deps: PlaybackDeps = {}): Playback {
     const n = makeNode()
     node = n
     n.port.onmessage = (e) => {
-      if ((e.data as { event?: string })?.event !== 'stop') return
+      const ev = (e.data as { event?: string; dropped?: number })?.event
+      // worklet→main events: trim/underrun are the loss diagnostics (a
+      // silent drop is exactly what hid the 30s-cap skips); stop retires.
+      if (ev === 'trim' || ev === 'underrun') {
+        console.debug('[tts-playback]', ev, (e.data as { dropped?: number }).dropped != null ? 'dropped=' + (e.data as { dropped?: number }).dropped : '')
+        return
+      }
+      if (ev !== 'stop') return
       n.disconnect()
       // A rebuilt successor already owns the graph — a late stop from this
       // retired node only cleans itself up.
