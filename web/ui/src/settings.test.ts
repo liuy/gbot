@@ -2615,16 +2615,18 @@ describe('STT settings surface', () => {
     await vi.waitFor(() => {
       expect((page.root.querySelector('[data-stt-panel]') as HTMLElement).classList.contains('hidden')).toBe(false)
     })
-    expect(page.root.querySelectorAll('[data-task-badge]')).toHaveLength(0)
+    // Unfiltered first render: no task knowledge → both config rows listed.
+    expect(page.root.querySelectorAll('[data-stt-model]')).toHaveLength(2)
     // Backend comes back; the failed probe must not stay cached forever.
     released = true
     // Keep reopening until the retried probe succeeds: it goes through
-    // base's success stub (outside the error counter), so the badge is the
+    // base's success stub (outside the error counter), so the task filter
+    // engaging (the tts-tasked row drops off the stt card) is the
     // user-visible outcome that matters.
     await vi.waitFor(() => {
       ;(sttCard.firstElementChild as HTMLElement).click() // collapse
       ;(sttCard.firstElementChild as HTMLElement).click() // reopen
-      expect(page.root.querySelectorAll('[data-task-badge="stt"]')).toHaveLength(1)
+      expect(page.root.querySelectorAll('[data-stt-model]')).toHaveLength(1)
     })
   })
 
@@ -2650,7 +2652,22 @@ describe('STT settings surface', () => {
     await vi.waitFor(() => {
       ;(sttCard.firstElementChild as HTMLElement).click() // collapse
       ;(sttCard.firstElementChild as HTMLElement).click() // reopen
-      expect(page.root.querySelectorAll('[data-task-badge="stt"]')).toHaveLength(1)
+      expect(page.root.querySelectorAll('[data-stt-model]')).toHaveLength(1)
+    })
+  })
+
+  it('provider model rows wear the TTS tag on the configured tts default', async () => {
+    const payload = { ...STT_PAYLOAD, tts: { provider: 'audiocpp', model: 'stt', voice: 'Mike' } }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    const audioCard = Array.from(page.root.querySelectorAll('[data-provider-card]')).find(
+      (c) => c.textContent!.includes('audiocpp'),
+    ) as HTMLElement
+    audioCard.click()
+    await vi.waitFor(() => {
+      const rows = page.root.querySelectorAll('[data-model-row]')
+      const tagged = Array.from(rows).filter((r) => r.querySelector('[data-tts-badge]'))
+      expect(tagged.length).toBe(1)
+      expect((tagged[0].querySelector('[data-model-name]') as HTMLInputElement).value).toBe('stt')
     })
   })
 
@@ -2732,7 +2749,7 @@ describe('audio model task badges', () => {
     ],
   }
 
-  it('task metadata splits and badges both cards; taskless models stay unfiltered', async () => {
+  it('task metadata splits both cards; taskless models stay unfiltered', async () => {
     const page = await openPage(makeFetchHandler({ payload: TASK_PAYLOAD, models: TASK_MODELS }), TASK_PAYLOAD)
 
     const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
@@ -2740,13 +2757,9 @@ describe('audio model task badges', () => {
     await vi.waitFor(() => {
       const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
       expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/asr-m"]').length).toBe(1)
-      expect(
-        sttPanel.querySelector('[data-stt-model="audiocpp/asr-m"] [data-task-badge="stt"]')!.textContent,
-      ).toBe('STT')
       // tts model hidden from the STT card; taskless model stays listed
       expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/tts-m"]').length).toBe(0)
       expect(sttPanel.querySelectorAll('[data-stt-model="audiocpp/plain-m"]').length).toBe(1)
-      expect(sttPanel.querySelector('[data-stt-model="audiocpp/plain-m"] [data-task-badge]')).toBeNull()
     })
 
     const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
@@ -2754,9 +2767,6 @@ describe('audio model task badges', () => {
     await vi.waitFor(() => {
       const ttsPanel = page.root.querySelector('[data-tts-panel]') as HTMLElement
       expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/tts-m"]').length).toBe(1)
-      expect(
-        ttsPanel.querySelector('[data-tts-model="audiocpp/tts-m"] [data-task-badge="tts"]')!.textContent,
-      ).toBe('TTS')
       expect(ttsPanel.querySelectorAll('[data-stt-model="audiocpp/asr-m"]').length).toBe(0)
       expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/asr-m"]').length).toBe(0)
       expect(ttsPanel.querySelectorAll('[data-tts-model="audiocpp/plain-m"]').length).toBe(1)
@@ -2776,7 +2786,6 @@ describe('audio model task badges', () => {
     await vi.waitFor(() => {
       const sttPanel = page.root.querySelector('[data-stt-panel]') as HTMLElement
       expect(sttPanel.querySelectorAll('[data-stt-model]').length).toBe(3)
-      expect(sttPanel.querySelector('[data-task-badge]')).toBeNull()
     })
   })
 
@@ -2794,7 +2803,6 @@ describe('audio model task badges', () => {
     )
     for (let i = 0; i < 10; i++) await Promise.resolve()
     expect(sttPanel.querySelectorAll('[data-stt-model]').length).toBe(3)
-    expect(sttPanel.querySelector('[data-task-badge]')).toBeNull()
     expect((page.root.querySelector('[data-toast]') as HTMLElement).classList.contains('toast-show')).toBe(false)
   })
 })

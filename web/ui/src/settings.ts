@@ -531,16 +531,6 @@ export function createSettingsPage(): SettingsPageHandles {
           const label = createElement('span', 'text-xs font-mono' + (isSel ? ' text-blue' : ''))
           label.textContent = name
           row.append(dot, label)
-          if (wantAudio && task === wantTask) {
-            // Same pill style as the model-row STT tag (data-stt-badge).
-            row.appendChild(
-              createNode('span', {
-                className: 'text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold',
-                text: kind.toUpperCase(),
-                attrs: { 'data-task-badge': kind },
-              }),
-            )
-          }
           row.addEventListener('click', async (e) => {
             e.stopPropagation()
             try {
@@ -2357,6 +2347,19 @@ export function createSettingsPage(): SettingsPageHandles {
           className: 'text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold',
           text: 'STT',
           attrs: { 'data-stt-badge': '' },
+        }),
+      )
+    }
+    if (
+      payload.tts &&
+      payload.tts.provider === form.provider?.name &&
+      payload.tts.model === currentKey
+    ) {
+      mrow.appendChild(
+        createNode('span', {
+          className: 'text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold',
+          text: 'TTS',
+          attrs: { 'data-tts-badge': '' },
         }),
       )
     }
