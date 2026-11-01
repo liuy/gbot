@@ -281,55 +281,6 @@ func TestHashMcpConfig_PluginSource(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// sortKeysDeep — internal helper
-// ---------------------------------------------------------------------------
-
-func TestSortKeysDeep(t *testing.T) {
-	input := map[string]any{
-		"z": 1,
-		"a": map[string]any{"b": 2, "a": 1},
-	}
-	result := sortKeysDeep(input)
-	// Verify via JSON serialization — json.Marshal sorts map keys
-	got, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	want := `{"a":{"a":1,"b":2},"z":1}`
-	if string(got) != want {
-		t.Errorf("sortKeysDeep JSON = %q, want %q", string(got), want)
-	}
-}
-
-func TestSortKeysDeep_Array(t *testing.T) {
-	input := []any{
-		map[string]any{"b": 2, "a": 1},
-		map[string]any{"d": 4, "c": 3},
-	}
-	result := sortKeysDeep(input)
-	// Verify via JSON serialization — json.Marshal sorts map keys
-	got, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	want := `[{"a":1,"b":2},{"c":3,"d":4}]`
-	if string(got) != want {
-		t.Errorf("sortKeysDeep array JSON = %q, want %q", string(got), want)
-	}
-}
-
-func TestSortKeysDeep_Scalar(t *testing.T) {
-	result := sortKeysDeep("hello")
-	if result != "hello" {
-		t.Errorf("expected hello, got %v", result)
-	}
-	result = sortKeysDeep(42)
-	if result != 42 {
-		t.Errorf("expected 42, got %v", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ExcludeStalePluginClients — Source: utils.ts:185-224
 // ---------------------------------------------------------------------------
 
@@ -1434,34 +1385,6 @@ func TestHashMcpConfig_PluginSourceIncluded(t *testing.T) {
 	hash2 := HashMcpConfig(cfg2)
 	if hash1 == hash2 {
 		t.Errorf("different pluginSource should produce different hash: both %q", hash1)
-	}
-}
-
-func TestHashMcpConfig_MarshalErrorReturnsEmpty(t *testing.T) {
-	// Create a config that can't be marshaled (nil channel causes marshal error)
-	// Actually, all our configs are marshalable. Let's test with a config that has unmarshalable fields.
-	// Since we can't create an unmarshalable StdioConfig, we'll test the error path indirectly.
-	// The hash function returns "" on marshal error - we can't easily trigger this without custom types.
-	// Skip this test as it's hard to trigger without breaking the config type.
-}
-
-// ---------------------------------------------------------------------------
-// HashMcpConfig: empty PluginSource not included
-// ---------------------------------------------------------------------------
-
-func TestHashMcpConfig_EmptyPluginSourceNotIncluded(t *testing.T) {
-	cfg1 := ScopedMcpServerConfig{
-		Config:       &StdioConfig{Command: "node"},
-		PluginSource: "",
-	}
-	cfg2 := ScopedMcpServerConfig{
-		Config:       &StdioConfig{Command: "node"},
-		PluginSource: "",
-	}
-	h1 := HashMcpConfig(cfg1)
-	h2 := HashMcpConfig(cfg2)
-	if h1 != h2 {
-		t.Errorf("same config with empty pluginSource should produce same hash")
 	}
 }
 

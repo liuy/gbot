@@ -30,8 +30,9 @@ import (
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"golang.org/x/image/draw"
-	// gif, jpeg, png registered by image.Decode; webp needs explicit import
+	// jpeg, png registered by image.Decode; gif and webp need explicit import
 	_ "golang.org/x/image/webp"
+	_ "image/gif"
 )
 
 // ---------------------------------------------------------------------------
@@ -203,9 +204,8 @@ func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallRes
 	// so we use a sync.Map registry to route notifications to the correct callback.
 	if params.OnProgress != nil {
 		tokenBytes := make([]byte, 16)
-		if _, err := rand.Read(tokenBytes); err != nil {
-			return nil, fmt.Errorf("mcp: failed to generate progress token: %w", err)
-		}
+		// crypto/rand.Read is documented to never return an error (Go 1.24+).
+		_, _ = rand.Read(tokenBytes)
 		token := hex.EncodeToString(tokenBytes)
 		registerProgress(token, params.OnProgress)
 		defer func() {
@@ -335,9 +335,8 @@ func InferCompactSchema(value any, depth ...int) string {
 			return "unknown"
 		}
 		var decoded any
-		if json.Unmarshal(b, &decoded) != nil {
-			return "unknown"
-		}
+		// Unmarshal of Marshal's own output cannot fail.
+		_ = json.Unmarshal(b, &decoded)
 		return InferCompactSchema(decoded, d)
 	}
 }
@@ -367,9 +366,10 @@ func TransformResultContent(content mcp.Content, serverName string) []Transforme
 		imgMIME := c.MIMEType
 		if resized, err := resizeImage(imgData, imgMIME); err == nil && len(resized) > 0 {
 			imgData = resized
-			// Resize may convert to JPEG for compression
-			if len(resized) < len(c.Data) {
-				imgMIME = "image/jpeg"
+			// TS takes media_type from the resizer's own output
+			// (client.ts:2503-2519); sniff the payload instead.
+			if _, cfgFormat, derr := image.DecodeConfig(bytes.NewReader(resized)); derr == nil {
+				imgMIME = "image/" + cfgFormat
 			}
 		} else if err != nil {
 			slog.Debug("mcp: image resize failed, using original", "error", err)
@@ -579,29 +579,44 @@ func resizeImageWithLimits(data []byte, mimeType string, maxWidth, maxHeight int
 		w = w * maxHeight / h
 		h = maxHeight
 	}
+	// Extreme aspect ratios floor the preserved side to 0 (e.g. 4001x1 under
+	// a 2000px cap); encoders reject zero dimensions, so clamp to 1. TS
+	// diverges here: sharp throws on the zero side and its catch returns the
+	// original buffer; Go resizes to the clamped shape instead.
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
 
 	// Resize using CatmullRom interpolation
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.CatmullRom.Scale(rgba, rgba.Bounds(), img, bounds, draw.Over, nil)
 
-	// Encode: prefer JPEG for compression, PNG for lossless formats
+	// Encode: prefer JPEG for compression, PNG for lossless formats.
+	// With dimensions clamped to >=1, the only remaining encode error
+	// source is the writer, and bytes.Buffer's Write never errors.
 	var buf bytes.Buffer
 	switch format {
 	case "png":
-		if err := png.Encode(&buf, rgba); err != nil {
-			return nil, fmt.Errorf("mcp: encode png: %w", err)
-		}
+		_ = png.Encode(&buf, rgba)
 	default:
-		if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 80}); err != nil {
-			return nil, fmt.Errorf("mcp: encode jpeg: %w", err)
-		}
+		_ = jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 80})
 	}
 
-	// If still over size limit, try lower JPEG quality
+	// If still over size limit, walk the TS quality ladder [60,40,20] and
+	// stop at the first rung that fits (imageResizer.ts:256-273). If none
+	// fits, TS falls through to a second resize at min(width,1000)+q20
+	// (imageResizer.ts:348-372); Go has already resized to the same cap,
+	// so the smallest rung is returned instead (known divergence).
 	if buf.Len() > int(targetRawSize) {
-		buf.Reset()
-		if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 60}); err != nil {
-			return nil, fmt.Errorf("mcp: encode jpeg q60: %w", err)
+		for _, q := range []int{60, 40, 20} {
+			buf.Reset()
+			_ = jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: q})
+			if buf.Len() <= int(targetRawSize) {
+				break
+			}
 		}
 	}
 

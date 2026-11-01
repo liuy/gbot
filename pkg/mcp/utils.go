@@ -109,62 +109,35 @@ func ExcludeResourcesByServer(resources map[string][]ServerResource, serverName 
 // ---------------------------------------------------------------------------
 
 // HashMcpConfig returns a stable SHA-256 hash of the server config for change detection.
-// Excludes scope (provenance, not content). Keys sorted at all levels for determinism.
+// Excludes scope (provenance, not content). Determinism: encoding/json sorts map keys (TS needs a replacer, Go does not).
 // Source: utils.ts:157-169 — SHA-256, first 16 hex chars.
 func HashMcpConfig(config ScopedMcpServerConfig) string {
 	// Source: utils.ts:158 — const { scope: _scope, ...rest } = config
+	// Reachable: McpServerConfig implementations may supply a failing
+	// MarshalJSON (pinned by TestHashMcpConfig_FirstMarshalError).
 	inner, err := json.Marshal(config.Config)
 	if err != nil {
 		return ""
 	}
 
-	// Parse into generic map for deep key sorting
+	// Parse into generic map so pluginSource can be injected before hashing
 	var raw any
-	if json.Unmarshal(inner, &raw) != nil {
-		return ""
-	}
+	// Unmarshal of Marshal's own output cannot fail.
+	_ = json.Unmarshal(inner, &raw)
 
 	// Add pluginSource if present — part of "rest" after scope exclusion
 	if m, ok := raw.(map[string]any); ok && config.PluginSource != "" {
 		m["pluginSource"] = config.PluginSource
 	}
 
-	// Source: utils.ts:159-166 — replacer sorts all object keys
-	sorted := sortKeysDeep(raw)
-	stable, err := json.Marshal(sorted)
-	if err != nil {
-		return ""
-	}
+	// Source: utils.ts:159-166 — TS replacer sorts object keys at every
+	// level because JS objects preserve insertion order; encoding/json sorts
+	// map keys itself, so no key-normalization pass is needed here.
+	stable, _ := json.Marshal(raw)
 
 	// Source: utils.ts:168 — sha256, first 16 hex chars
 	hash := sha256.Sum256(stable)
 	return fmt.Sprintf("%x", hash)[:16]
-}
-
-// sortKeysDeep recursively sorts map keys for deterministic JSON output.
-// Mirrors the TS jsonStringify replacer that sorts object keys at every level.
-func sortKeysDeep(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(val))
-		for k := range val {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		sorted := make(map[string]any, len(val))
-		for _, k := range keys {
-			sorted[k] = sortKeysDeep(val[k])
-		}
-		return sorted
-	case []any:
-		result := make([]any, len(val))
-		for i, elem := range val {
-			result[i] = sortKeysDeep(elem)
-		}
-		return result
-	default:
-		return v
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +229,8 @@ func ExcludeStalePluginClients(
 	}
 
 	if len(stale) == 0 {
-		// Source: utils.ts:205-207 — no stale, return copy
+		// Source: utils.ts:205-207 — TS returns a shallow spread ({ ...mcp,
+		// stale: [] }), i.e. the caller's own slices, not copies.
 		return MCPExclusionResult{
 			Clients:   state.Clients,
 			Tools:     state.Tools,

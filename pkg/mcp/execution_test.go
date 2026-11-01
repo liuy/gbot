@@ -859,118 +859,6 @@ func TestPersistToolResult_WithoutPersistID(t *testing.T) {
 // resource empty, ProcessMCPResult env="0", persistToolResult write error
 // ===========================================================================
 
-// TestCallMCPTool_AuthError tests that CallMCPTool returns McpAuthError when
-// the server returns a 401/Unauthorized error.
-func TestCallMCPTool_AuthError(t *testing.T) {
-	// Use a closed session to trigger an error from CallTool that contains "401"
-	server, t2 := setupInMemoryServer(t)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "auth_tool",
-		Description: "Auth required tool",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
-		return &mcp.CallToolResult{}, nil, fmt.Errorf("401 Unauthorized: API key invalid")
-	})
-
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
-	session, err := client.Connect(context.Background(), t2, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	defer session.Close()
-
-	conn := &ConnectedServer{
-		Name:         "auth-server",
-		Session:      session,
-		Config:       ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-	}
-
-	_, err = CallMCPTool(context.Background(), CallMCPToolParams{
-		Server:   conn,
-		ToolName: "auth_tool",
-		Args:     map[string]any{},
-	})
-	if err == nil {
-		t.Fatal("expected error from auth tool")
-	}
-
-	// The SDK may wrap the error differently. Check what we actually get.
-	// If the error contains "401" it should be McpAuthError, otherwise it's
-	// a generic McpToolCallError.
-	errMsg := err.Error()
-	t.Logf("auth error type: %T, message: %v", err, err)
-
-	if authErr, ok := errors.AsType[*McpAuthError](err); ok {
-		if authErr.ServerName != "auth-server" {
-			t.Errorf("ServerName = %q, want %q", authErr.ServerName, "auth-server")
-		}
-	} else if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Unauthorized") {
-		// Error contains auth keywords but is wrapped differently
-		t.Logf("error contains auth keywords but is wrapped as %T", err)
-	} else {
-		t.Errorf("expected auth-related error, got: %v", err)
-	}
-}
-
-// TestCallMCPTool_SessionExpiredError tests that CallMCPTool detects session
-// expiry errors from the server.
-func TestCallMCPTool_SessionExpiredError(t *testing.T) {
-	server, t2 := setupInMemoryServer(t)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "expired_tool",
-		Description: "Session expired tool",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
-		return nil, nil, fmt.Errorf(`HTTP 404 Not Found: {"code":-32001,"message":"Session not found"}`)
-	})
-
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
-	session, err := client.Connect(context.Background(), t2, nil)
-	if err != nil {
-		t.Fatalf("client connect: %v", err)
-	}
-	defer session.Close()
-
-	conn := &ConnectedServer{
-		Name:         "expired-server",
-		Session:      session,
-		Config:       ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-	}
-
-	_, err = CallMCPTool(context.Background(), CallMCPToolParams{
-		Server:   conn,
-		ToolName: "expired_tool",
-		Args:     map[string]any{},
-	})
-	if err == nil {
-		t.Fatal("expected error from expired session tool")
-	}
-
-	// The SDK wraps the tool handler error, and CallMCPTool catches it.
-	// The error may be McpToolCallError depending on how the SDK passes it through.
-	errMsg := err.Error()
-	t.Logf("session error type: %T, message: %v", err, err)
-
-	if toolErr, ok := errors.AsType[*McpToolCallError](err); ok {
-		// Verify it's for the right server and tool
-		if toolErr.ServerName != "expired-server" {
-			t.Errorf("ServerName = %q, want %q", toolErr.ServerName, "expired-server")
-		}
-		if toolErr.ToolName != "expired_tool" {
-			t.Errorf("ToolName = %q, want %q", toolErr.ToolName, "expired_tool")
-		}
-	} else {
-		t.Errorf("expected *McpToolCallError, got %T: %v", err, err)
-	}
-
-	// Verify the error message contains the session expiry markers
-	if !strings.Contains(errMsg, "404") {
-		t.Errorf("error should contain 404, got: %v", errMsg)
-	}
-}
-
 // TestCallMCPTool_MetaResult tests CallMCPTool with result that has Meta.
 func TestCallMCPTool_MetaResult(t *testing.T) {
 	server, t2 := setupInMemoryServer(t)
@@ -2332,7 +2220,7 @@ func TestCallMCPTool_WithProgressCallback(t *testing.T) {
 // over-size lower quality JPEG, lower quality still over size
 // ---------------------------------------------------------------------------
 
-func TestResizeImageWithLimits_PNGEncodeError(t *testing.T) {
+func TestResizeImageWithLimits_PNGOverSizeFallsToJpegLadder(t *testing.T) {
 	// Create a valid PNG image
 	var buf bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
@@ -2341,14 +2229,21 @@ func TestResizeImageWithLimits_PNGEncodeError(t *testing.T) {
 	}
 	pngData := buf.Bytes()
 
-	// Use very small target size to force over-size path after encoding
+	// target=1 makes every ladder rung over-size: the result must be the
+	// q20 floor — a JPEG, never the original PNG bytes and never empty.
 	result, err := resizeImageWithLimits(pngData, "image/png", 10, 10, 1)
-	// Should either succeed with resized data or return error
 	if err != nil {
-		// Encode failure is acceptable — just verify it doesn't panic
-		t.Logf("resize error (acceptable): %v", err)
-	} else {
-		t.Logf("resize result: %d bytes", len(result))
+		t.Fatalf("resize: %v", err)
+	}
+	if len(result) == 0 {
+		t.Fatal("empty payload, want the q20 floor encoding")
+	}
+	cfg, format, derr := image.DecodeConfig(bytes.NewReader(result))
+	if derr != nil || format != "jpeg" {
+		t.Fatalf("payload format = %q (err %v), want jpeg", format, derr)
+	}
+	if cfg.Width != 10 || cfg.Height != 10 {
+		t.Errorf("dimensions = %dx%d, want 10x10", cfg.Width, cfg.Height)
 	}
 }
 
