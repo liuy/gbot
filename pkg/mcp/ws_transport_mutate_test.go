@@ -96,7 +96,7 @@ func dialRawWS(t *testing.T, srv *httptest.Server) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("dial %s: %v", wsURL, err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
@@ -250,12 +250,16 @@ func newSpyWSConn(t *testing.T) (*websocket.Conn, *wsSpyConn) {
 	if err != nil {
 		t.Fatalf("parse fixture URL: %v", err)
 	}
-	conn, resp, err := websocket.NewClient(spy, u, nil, 4096, 4096)
+	d := websocket.Dialer{
+		NetDial:        func(network, addr string) (net.Conn, error) { return spy, nil },
+		ReadBufferSize: 4096, WriteBufferSize: 4096,
+	}
+	conn, resp, err := d.Dial(u.String(), nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v (resp=%v)", err, resp)
 	}
 	t.Cleanup(func() {
-		clientEnd.Close()
+		_ = clientEnd.Close()
 		<-serverDone
 	})
 	return conn, spy
@@ -419,9 +423,9 @@ func TestWSTransport_DialHonorsProxyFromEnvironment(t *testing.T) {
 		return
 	}
 
-	var seen int32
+	var seen atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&seen, 1)
+		seen.Add(1)
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	t.Cleanup(proxy.Close)
@@ -446,7 +450,7 @@ func TestWSTransport_DialHonorsProxyFromEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy child run failed: %v\n%s", err, out)
 	}
-	if n := atomic.LoadInt32(&seen); n != 1 {
+	if n := seen.Load(); n != 1 {
 		t.Errorf("proxy requests = %d, want 1 (the dial bypassed HTTP_PROXY)", n)
 	}
 }
@@ -462,7 +466,7 @@ func TestWSConn_ReadDeadlineIs60s(t *testing.T) {
 	ws, spy := newSpyWSConn(t)
 	c := newWSConn(ws)
 	defer func() {
-		ws.Close()
+		_ = ws.Close()
 		drainIncoming(c)
 	}()
 	nextDeadline(t, spy.readDL, 60*time.Second)
@@ -474,7 +478,7 @@ func TestWSConn_WriteDeadlineIs30s(t *testing.T) {
 	ws, spy := newSpyWSConn(t)
 	c := newWSConn(ws)
 	defer func() {
-		ws.Close()
+		_ = ws.Close()
 		drainIncoming(c)
 	}()
 	if err := c.Write(context.Background(), &jsonrpc.Request{Method: "ping"}); err != nil {
@@ -507,7 +511,7 @@ func TestWSConn_WriteEncodeErrorIsWrapped(t *testing.T) {
 	srv := mutationWSServer(t, nil, waitForPeerClose)
 	c := newWSConn(dialRawWS(t, srv))
 	defer func() {
-		c.Close()
+		_ = c.Close()
 		drainIncoming(c)
 	}()
 
@@ -537,7 +541,7 @@ func TestWSConn_WriteSocketErrorIsWrapped(t *testing.T) {
 	spy.setWriteErr(errSpyWrite)
 	c := newWSConn(ws)
 	defer func() {
-		ws.Close()
+		_ = ws.Close()
 		drainIncoming(c)
 	}()
 
@@ -601,7 +605,7 @@ func TestWSConn_ReadLoopExitsWhenClosedWhileSendBlocked(t *testing.T) {
 		serve func(*websocket.Conn)
 	}{
 		// Server hangs up: the next client read fails.
-		{"read-error", func(c *websocket.Conn) { c.Close() }},
+		{"read-error", func(c *websocket.Conn) { _ = c.Close() }},
 		// Undecodable frame: the decode branch reports the failure.
 		{"decode-error", func(c *websocket.Conn) {
 			if err := c.WriteMessage(websocket.TextMessage, []byte("not json")); err != nil {
@@ -713,7 +717,7 @@ func TestWSConn_DecodeErrorKeepsJSONRPCError(t *testing.T) {
 	})
 	c := newWSConn(dialRawWS(t, srv))
 	defer func() {
-		c.Close()
+		_ = c.Close()
 		drainIncoming(c)
 	}()
 

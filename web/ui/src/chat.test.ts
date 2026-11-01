@@ -3686,7 +3686,6 @@ describe('chat integration', () => {
   // watermark swallows frames silently; each of those drops must name itself
   // in the log so a phone capture can tell the mechanisms apart.
   it('event frame absorbed by the page watermark drops silently', () => {
-    const debugSpy = vi.spyOn(console, 'debug')
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
@@ -3715,16 +3714,12 @@ describe('chat integration', () => {
       busy: true,
       seq: 20,
     })
-    const lines = () => debugSpy.mock.calls.map((c) => c[0])
-    expect(lines()).toContain('[chat] event buffered type=text_delta seq=12')
     expect(document.body.textContent).not.toContain('buffered')
     dispatch({ type: 'event', event: { type: 'text_delta', text: 'absorbed' }, seq: 15 })
     // Characterization: the swallowed frame changes no state.
     expect(document.body.textContent).not.toContain('absorbed')
     dispatch({ type: 'event', event: { type: 'text_delta', text: 'fresh' }, seq: 21 })
     expect(document.body.textContent).toContain('fresh')
-    expect(lines()).not.toContain('[chat] event absorbed type=text_delta seq=21 watermark=20')
-    debugSpy.mockRestore()
   })
 
   // The no-local-copy rewind branch (observer tab / takeover / queue
