@@ -601,8 +601,9 @@ func renderActionsRun(ctx context.Context, client *http.Client, gh *ghURL) (*Res
 		return nil, fmt.Errorf("parse run: %w", err)
 	}
 
-	// Fetch jobs
-	jobsData, err := fetchGitHubAPI(ctx, client, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", gh.owner, gh.repo, gh.runID))
+	// Fetch jobs. A failed fetch or an unparseable payload must stay visible in
+	// the output: "## Jobs (0)" means the run really has no jobs.
+	jobsData, jobsErr := fetchGitHubAPI(ctx, client, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", gh.owner, gh.repo, gh.runID))
 	var jobsResp struct {
 		Jobs []struct {
 			ID          int64  `json:"id"`
@@ -621,8 +622,8 @@ func renderActionsRun(ctx context.Context, client *http.Client, gh *ghURL) (*Res
 			} `json:"steps"`
 		} `json:"jobs"`
 	}
-	if err == nil {
-		_ = json.Unmarshal(jobsData, &jobsResp)
+	if jobsErr == nil {
+		jobsErr = json.Unmarshal(jobsData, &jobsResp)
 	}
 
 	var md strings.Builder
@@ -660,7 +661,11 @@ func renderActionsRun(ctx context.Context, client *http.Client, gh *ghURL) (*Res
 	}
 
 	md.WriteString("\n---\n\n")
-	fmt.Fprintf(&md, "## Jobs (%d)\n\n", len(jobsResp.Jobs))
+	if jobsErr != nil {
+		md.WriteString("## Jobs (unknown — fetch failed)\n\n")
+	} else {
+		fmt.Fprintf(&md, "## Jobs (%d)\n\n", len(jobsResp.Jobs))
+	}
 
 	for _, job := range jobsResp.Jobs {
 		jobDuration := computeDuration(job.StartedAt, job.CompletedAt)

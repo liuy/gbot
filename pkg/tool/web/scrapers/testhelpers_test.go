@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	neturl "net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -107,6 +108,26 @@ func (t *allowHostsTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	return t.server.Client().Transport.RoundTrip(newReq)
 }
+
+// errTransport fails every request with a fixed sentinel so error wrapping
+// can be pinned with errors.Is: %w keeps the chain, %v flattens it.
+type errTransport struct{ err error }
+
+func (t errTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
+
+// fakeTransport hands back a canned response without any socket, so response
+// bodies that fail mid-read (truncated downloads) can be exercised.
+type fakeTransport struct {
+	resp *http.Response
+}
+
+func (t fakeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := *t.resp
+	r.Request = req
+	return &r, nil
+}
+
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 
 func mustParseURL(t *testing.T, s string) *neturl.URL {
 	t.Helper()

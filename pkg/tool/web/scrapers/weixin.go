@@ -69,7 +69,9 @@ func extractByIDText(html, id string) string {
 	return strings.TrimSpace(stripXMLTags(inner))
 }
 
-// extractByIDInner returns the inner HTML of the first element with the given id.
+// extractByIDInner returns the HTML of the first element with the given id,
+// from just past the opening tag's '>' through the matching closing tag
+// (inclusive). Callers strip tags, so the trailing close tag costs nothing.
 func extractByIDInner(html, id string) string {
 	marker := fmt.Sprintf(`id="%s"`, id)
 	start := strings.Index(html, marker)
@@ -112,7 +114,7 @@ func findCloseTag(html string, from int, tag string) int {
 	depth := 1
 	pos := from
 
-	for depth > 0 && pos < len(html)-len(closeMarker) {
+	for depth > 0 && pos+len(closeMarker) <= len(html) {
 		lt := strings.IndexByte(html[pos:], '<')
 		if lt < 0 {
 			return -1
