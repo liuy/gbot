@@ -4,6 +4,7 @@ import {
   customAvatarURL,
   deleteAvatar,
   encodeCanvas,
+  initAvatars,
   refreshAvatar,
   renderAvatarInto,
   resetAvatarStateForTest,
@@ -56,6 +57,8 @@ describe('default avatar rendering', () => {
     expect(el.dataset.avatar).toBe('user')
     expect(el.dataset.avatarIcon).toBe('12')
     expect(el.querySelector('svg')).toBeTruthy()
+    // Literal #FFFFFF ink, not text-white (see comment at the call site).
+    expect(el.querySelector('svg')!.getAttribute('class')).toContain('text-[#FFFFFF]')
   })
   it('custom image mode strips the default backdrop so transparent PNGs do not bleed the gradient', async () => {
     const el = agentHolder()
@@ -97,9 +100,47 @@ describe('default avatar rendering', () => {
     expect(el.classList.contains('to-t3')).toBe(true)
     expect(el.querySelector('svg')).toBeTruthy()
   })
+  it('rewriteAvatarHolders defaults the icon size to 13 for holders mounted without one', () => {
+    const el = agentHolder()
+    // Every production mount goes through renderAvatarInto, which stamps
+    // data-avatarIcon itself — the ?? '13' fallback is a defensive default
+    // for holders that predate that bookkeeping. Pin it so the fallback
+    // cannot silently drift.
+    el.dataset.avatar = 'agent'
+    rewriteAvatarHolders('agent')
+    expect(el.dataset.avatarIcon).toBe('13')
+  })
+  it('initAvatars probes and rewrites holders asynchronously', async () => {
+    const el = agentHolder()
+    el.dataset.avatar = 'agent'
+    stubHead(200, '"t-init"')
+    initAvatars()
+    // Fire-and-forget chain: the rewrite lands after the probe resolves.
+    await vi.waitFor(() => {
+      if (!el.querySelector('img')) throw new Error('holder not rewritten to img')
+    })
+    expect(el.querySelector('img')!.getAttribute('src')).toContain('t-init')
+  })
 })
 
 describe('custom avatar rendering', () => {
+  it('pins the img element shape on rewrite', async () => {
+    const el = agentHolder()
+    renderAvatarInto(el, 'agent')
+    stubHead(200, '"t-3"')
+    await refreshAvatar('agent')
+    // Set after the custom mode is live: the default-path agent backdrop
+    // rewrites the whole style attribute, which would wipe a fixture set
+    // earlier. A legal color survives jsdom's parser, so a mutant writing
+    // garbage gets dropped and leaves 'red' behind.
+    el.style.background = 'red'
+    rewriteAvatarHolders('agent')
+    const img = el.querySelector('img')
+    expect(img).toBeTruthy()
+    expect(img!.className).toBe('h-full w-full object-cover')
+    expect(img!.alt).toBe('')
+    expect(el.style.background).toBe('')
+  })
   it('probes 200 and swaps every agent holder to an img with a versioned URL', async () => {
     const agent = agentHolder()
     renderAvatarInto(agent, 'agent')
@@ -243,6 +284,16 @@ describe('uploadAvatar', () => {
     })))
     await expect(uploadAvatar('user', new Blob([]))).rejects.toThrow('x')
   })
+  it('rejects with the HTTP status when the failure body is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => {
+        throw new SyntaxError('not JSON')
+      },
+    })))
+    await expect(uploadAvatar('agent', new Blob([]))).rejects.toThrow('HTTP 503')
+  })
 })
 
 describe('deleteAvatar', () => {
@@ -313,5 +364,20 @@ describe('encodeCanvas', () => {
     const { canvas } = fakeEncodeCanvas([8 * 1024])
     expect('getContext' in canvas).toBe(false)
     await expect(encodeCanvas(canvas)).resolves.toMatchObject({ type: 'image/png' })
+  })
+  it('accepts a PNG sized exactly at the cap', async () => {
+    const { canvas, toBlobCalls } = fakeEncodeCanvas([300 * 1024])
+    const blob = await encodeCanvas(canvas)
+    expect(blob.type).toBe('image/png')
+    expect(toBlobCalls).toEqual([['image/png', undefined]])
+  })
+  it('accepts a JPEG sized exactly at the cap', async () => {
+    const { canvas, toBlobCalls } = fakeEncodeCanvas([400 * 1024, 300 * 1024])
+    const blob = await encodeCanvas(canvas)
+    expect(blob.type).toBe('image/jpeg')
+    expect(toBlobCalls).toEqual([
+      ['image/png', undefined],
+      ['image/jpeg', 0.9],
+    ])
   })
 })
