@@ -322,3 +322,7 @@ web-lint: web-deps
 
 web-weak: web-deps
 	cd web/ui && npx vitest run test/weak.test.ts
+web-mutate: web-deps
+	cd web/ui && node scripts/stryker-diff.mjs $(MUTATE_BASE)
+web-mutate-file: web-deps
+	cd web/ui && npx stryker run --mutate $(FILE)

@@ -66,3 +66,5 @@ wails
 gbot-android
 local.properties
 go-mutesting-*.json
+.stryker-tmp
+web/ui/reports/
