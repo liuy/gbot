@@ -17,13 +17,18 @@ type StateListener = (s: string) => void
 const listeners: Set<Listener> = new Set()
 const stateCbs: Set<StateListener> = new Set()
 
+// Outbound frame recorder: send was a no-op for every test here; recording
+// keeps that behavior and makes history_request counts observable.
+const sent: unknown[] = []
 vi.mock('./ws', () => ({
   getConnection: () => ({
     subscribe: (fn: Listener) => {
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    send: () => {},
+    send: (m: unknown) => {
+      sent.push(m)
+    },
     connected: true,
     onStateChange: (cb: StateListener) => {
       stateCbs.add(cb)
@@ -417,6 +422,65 @@ describe('takeover snapshot hydration', () => {
     expect(containerText()).toContain('small-snapshot-text')
     expect(mdBodyCount()).toBe(1)
     expect(fillOf().style.width).toBe('100%')
+  })
+
+  it('a repeat metadata with a fresh rev misses the cache and re-requests the page', () => {
+    useHydrationTimers()
+    mount()
+    // The recorder is module-level and accumulates across tests.
+    sent.length = 0
+    // Round 1 caches the tail page under its rev.
+    metadataWithSnapshot([{ kind: 'text', id: '', text: 'first tail' }])
+    const reqs = () => sent.filter((m) => (m as { type: string }).type === 'history_request').length
+    expect(reqs()).toBe(1)
+    // Same session, NEW rev, and no trailing history frame this time: the
+    // cached page is stale by definition, so the gate must miss and the
+    // client must ask for a fresh page instead of re-applying the cache.
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [{ id: 'e1', name: 'agent-1', model: 'm' }], activeID: 'e1' },
+      rev: 'r-fresh',
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    expect(reqs()).toBe(2)
+  })
+
+  it('a same-rev cache hit closes the pending-page window', () => {
+    useHydrationTimers()
+    mount()
+    const meta = (rev: string) =>
+      dispatch({
+        type: 'metadata',
+        connect: { connected: true },
+        config: { models: [], current: { provider: 'p', model: 'm' } },
+        engines: { engines: [{ id: 'e1', name: 'agent-1', model: 'm' }], activeID: 'e1' },
+        rev,
+        stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      })
+    // Round 1 caches the tail page under its rev.
+    meta('same-rev')
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'first tail' }],
+      nextCursor: '', hasMore: false, rev: 'same-rev',
+    })
+    vi.advanceTimersByTime(16 * 60)
+    expect(containerText()).toContain('first tail')
+    // Round 2 repeats the SAME rev on an idle engine: the cache hit applies
+    // without a round trip and must clear pendingPageZero — a stuck-pending
+    // window parks the next event frames in the buffer instead of applying
+    // them live.
+    meta('same-rev')
+    dispatch({ type: 'event', event: { type: 'query_start' } })
+    dispatch({ type: 'event', event: { type: 'text_start' } })
+    dispatch({ type: 'event', event: { type: 'text_delta', text: 'live now' } })
+    // Draining the hydration frames renders the live delta; buffered frames
+    // (stuck pending window) never reach the DOM.
+    vi.advanceTimersByTime(16 * 60)
+    expect(document.body.textContent).toContain('live now')
   })
 
   it('standalone streamState chunks large snapshots without touching the takeover bar', () => {

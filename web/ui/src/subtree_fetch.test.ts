@@ -214,6 +214,34 @@ describe('subtree fetch: apply and anchor advance', () => {
     expect(second.anchor).toBe('s:940:5')
     expect(second.nonce).not.toBe(first.nonce)
   })
+
+  it('subtree prepends compensate a scrolled-up viewport and skip a pinned one', () => {
+    const chat = bootSubtree()
+    const first = reqOf('agent1')
+    sendSubtreePage({ nonce: first.nonce, children: olderText('agent1', 30), nextAnchor: 's:940:5', hasMore: true, remaining: 940 })
+    const container = containerOf(0)
+    mockNearTop(container)
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    const second = reqOf('agent1')
+    // Geometry: 100px per subtree child over a 1000px base, 500px client.
+    Object.defineProperty(chat.scrollEl, 'scrollHeight', {
+      configurable: true,
+      get: () => 1000 + container.children.length * 100,
+    })
+    Object.defineProperty(chat.scrollEl, 'clientHeight', { configurable: true, value: 500 })
+    // Scrolled up: the second page prepends 5 rows (500px) above and the
+    // viewport must ride along by exactly that delta.
+    chat.scrollEl.scrollTop = 800
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    sendSubtreePage({ nonce: second.nonce, children: olderText('agent1', 5, 'page2'), nextAnchor: 's:935:5', hasMore: true, remaining: 935 })
+    expect(chat.scrollEl.scrollTop).toBe(1300)
+    // Pinned to the bottom: the third page must NOT move the viewport.
+    chat.scrollEl.scrollTop = 7000
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    const third = reqOf('agent1')
+    sendSubtreePage({ nonce: third.nonce, children: olderText('agent1', 3, 'page3'), nextAnchor: '', hasMore: false, remaining: 0 })
+    expect(chat.scrollEl.scrollTop).toBe(7000)
+  })
 })
 
 // ── C4: dedupe ───────────────────────────────────────────────────────────

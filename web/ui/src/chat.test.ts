@@ -6,6 +6,10 @@ import { stopStatusSweep } from './components/status_sweep'
 import { createTTSQueue } from './voice_tts'
 import { floatTo16Le } from './stt'
 import * as sttModule from './stt'
+import * as streamBlocks from './components/stream_blocks'
+import { copyText } from './utils/copy_button'
+import { uploadAttachment } from './upload'
+import type { HistoryChatMsg, HistoryBlock } from './types'
 
 // jsdom lacks IntersectionObserver — stub it (no longer used for prefetch).
 class MockIntersectionObserver {
@@ -23,6 +27,14 @@ const sent: unknown[] = []
 
 let stateCb: ((s: string) => void) | null = null
 
+// reconnect is deliberately ABSENT (as on the real connector before the
+// first state change): the banner click handler must tolerate a missing
+// method, and a mutant that drops the optional chaining throws here.
+// `connected` reads mutable state so a test can simulate the socket state
+// for the upgrade rollback timer.
+let wsConnected = true
+let reconnectImpl: () => void = () => { stateCb?.('reconnecting') }
+
 vi.mock('./ws', () => ({
   getConnection: () => ({
     subscribe: (fn: Listener) => {
@@ -32,9 +44,11 @@ vi.mock('./ws', () => ({
     send: (p: unknown) => {
       sent.push(p)
     },
-    connected: true,
+    get connected() {
+      return wsConnected
+    },
     onStateChange: (cb: (s: string) => void) => { stateCb = cb },
-    reconnect: () => { stateCb?.('reconnecting') },
+    reconnect: () => reconnectImpl(),
   }),
 }))
 // The TTS queue is mocked so the chat-level voice tests can observe what
@@ -137,6 +151,34 @@ vi.mock('./stt', async (importOriginal) => {
   }
   return { ...orig, SttSession, __sttSocks: sttSocks }
 })
+vi.mock('./utils/copy_button', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./utils/copy_button')>()
+  return { ...orig, copyText: vi.fn() }
+})
+// uploadAttachment is the network boundary: a controllable promise that
+// rejects exactly when the chat aborts its AbortSignal. The rest of the
+// upload module (attachmentMeta, pooled) stays real — those are pure.
+vi.mock('./upload', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./upload')>()
+  return { ...orig, uploadAttachment: vi.fn() }
+})
+// The lightbox overlay is a module singleton appended to document.body once;
+// the history-twin test creates it and later tests' body wipes detach it,
+// so a live-send lightbox assert cannot go through the DOM. Record calls
+// while delegating to the real singleton.
+vi.mock('./components/stream_blocks', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./components/stream_blocks')>()
+  const real = orig.showImageLightbox
+  const __lightboxCalls: string[] = []
+  return {
+    ...orig,
+    showImageLightbox: (src: string): void => {
+      __lightboxCalls.push(src)
+      real(src)
+    },
+    __lightboxCalls,
+  }
+})
 
 function dispatch(msg: unknown) {
   listeners.forEach((fn) => fn(msg))
@@ -157,7 +199,10 @@ function mount() {
 // the artifact integration Response mocks) can satisfy the probe — leaked
 // avatar state would flip later shells to <img> with no test opting in.
 afterEach(() => {
+  vi.useRealTimers()
   resetAvatarStateForTest()
+  delete (window as unknown as Record<string, unknown>).GBotShare
+  vi.restoreAllMocks()
 })
 
 function setTextarea(value: string) {
@@ -184,10 +229,51 @@ function assistantContentDivs(): HTMLElement[] {
   return Array.from(document.querySelectorAll('.space-y-3'))
 }
 
+const histMsg = (over: Partial<HistoryChatMsg>): HistoryChatMsg => ({
+  id: '',
+  role: 'assistant',
+  text: '',
+  thinking: [],
+  tools: [],
+  usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+  error: '',
+  status: 'done',
+  startedAt: 0,
+  ...over,
+})
+
+// The share menu is armed only when the Android bridge exists.
+function armShareBridge() {
+  ;(window as unknown as Record<string, unknown>).GBotShare = {
+    shareImage: vi.fn().mockResolvedValue('opened'),
+  }
+}
+// Full long-press gesture: pointerdown, hold expiry, contextmenu open.
+function sharePress(target: HTMLElement) {
+  target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 100 }))
+  vi.advanceTimersByTime(450)
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+}
+function shareMenu(): HTMLElement | null {
+  return document.querySelector('.share-menu')
+}
+function clickCopy() {
+  const items = Array.from(document.querySelectorAll('.share-menu-item')) as HTMLButtonElement[]
+  items[items.length - 1].click()
+}
+function toolRootByName(name: string): HTMLElement {
+  return document.querySelector(`[data-tool-root][data-tool-name="${name}"]`) as HTMLElement
+}
+
 beforeEach(() => {
+  reconnectImpl = (): void => {}
   listeners.clear()
   sent.length = 0
+  wsConnected = true
+  stateCb = null
   document.body.innerHTML = ''
+  vi.mocked(copyText).mockReset().mockResolvedValue(undefined)
+  vi.mocked(uploadAttachment).mockReset().mockResolvedValue({ id: 'up-1' })
 })
 
 describe('chat integration', () => {
@@ -5523,4 +5609,3718 @@ describe('avatar consumption', () => {
     for (const el of chatHolders('agent')) expect(el.textContent).toBe('G')
     expect(chatHolders('agent', 'img').length).toBe(0)
   })
+})
+
+// Mutation kill tests for src/chat.ts (StrykerJS census follow-up).
+// Colocated per the wui mutate convention: merged into chat.test.ts, these
+// describes only pin behaviors the census found un-asserted. Assertions
+// target observable DOM / wire output.
+
+// ── mapHistoryToChatMessages ────────────────────────────────────────────────
+
+describe('chat mutation kills: mapHistoryToChatMessages', () => {
+  it('merges consecutive assistant parts: text concat, usage summed, error kept from the part that has one', () => {
+    const noUsage = { usage: undefined } as Partial<HistoryChatMsg>
+    const out = mapHistoryToChatMessages([
+      histMsg({ id: 'u1', role: 'user', text: 'q' }),
+      histMsg({ id: 'a1', text: 'part1 ', usage: { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheCreation: 4 } }),
+      histMsg({ id: 'a2', text: 'part2', usage: { inputTokens: 10, outputTokens: 20, cacheRead: 30, cacheCreation: 40 } }),
+      histMsg({ id: 'a3', text: undefined as unknown as string, error: 'boom' }),
+      // A trailing part with neither usage nor error must overwrite neither.
+      { ...histMsg({ id: 'a4', text: undefined as unknown as string }), ...noUsage },
+    ])
+    expect(out.length).toBe(2)
+    expect(out[0].role).toBe('user')
+    expect(out[1].id).toBe('a1')
+    expect(out[1].blocks).toEqual([{ kind: 'text', id: '', text: 'part1 part2' }])
+    expect(out[1].usage).toEqual({ inputTokens: 11, outputTokens: 22, cacheRead: 33, cacheCreation: 44 })
+    expect(out[1].error).toBe('boom')
+  })
+
+  it('merge with no prior usage sums from zero', () => {
+    const out = mapHistoryToChatMessages([
+      { ...histMsg({ id: 'a1', text: 'x' }), usage: undefined } as unknown as HistoryChatMsg,
+      histMsg({ id: 'a2', usage: { inputTokens: 5, outputTokens: 6, cacheRead: 7, cacheCreation: 8 } }),
+    ])
+    expect(out.length).toBe(1)
+    expect(out[0].usage).toEqual({ inputTokens: 5, outputTokens: 6, cacheRead: 7, cacheCreation: 8 })
+  })
+
+  it('defaults: absent id/error/status map to empty id, empty error, done status', () => {
+    const out = mapHistoryToChatMessages([
+      { role: 'user', text: 'hi', thinking: [], tools: [], startedAt: 0 } as unknown as HistoryChatMsg,
+    ])
+    expect(out[0].id).toBe('')
+    expect(out[0].error).toBe('')
+    expect(out[0].status).toBe('done')
+  })
+
+  it('block mapping: image block id empty, thinking inactive with zero duration, tool summary empty', () => {
+    const blocks: HistoryBlock[] = [
+      { kind: 'image', src: 'data:image/png;base64,AA' },
+      { kind: 'thinking', thinking: { text: 'th' } },
+      { kind: 'tool', tool: { id: 't1', name: 'Bash' } },
+    ]
+    const out = mapHistoryToChatMessages([
+      histMsg({ id: 'a1', role: 'assistant', blocks, text: '' }),
+    ])
+    expect(out[0].blocks[0]).toEqual({ kind: 'image', id: '', src: 'data:image/png;base64,AA' })
+    expect(out[0].blocks[1]).toEqual({ kind: 'thinking', id: '', text: 'th', durationNs: 0, active: false, startedAt: 0 })
+    expect(out[0].blocks[2]).toEqual({
+      kind: 'tool', id: 't1', name: 'Bash', summary: '',
+      isSearch: false, isRead: false, isList: false, isLsp: false, isWeb: false, isTask: false,
+      state: 'done', timingNs: 0, displayOutput: '', startedAt: 0, children: [],
+    })
+  })
+})
+
+// ── committed history rendering ─────────────────────────────────────────────
+
+describe('chat mutation kills: committed history rendering', () => {
+  it('user message error renders the red error box with the error text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u1', role: 'user', text: 'q', error: 'upload failed' })],
+      nextCursor: '', hasMore: false,
+    })
+    const box = document.querySelector('.break-all.text-red') as HTMLElement
+    expect(box).toBeTruthy()
+    expect(box.textContent).toBe('upload failed')
+    expect(box.className).toContain('border-red/40')
+  })
+
+  it('an errored history tool renders the red duration style', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'a0', role: 'assistant',
+        blocks: [{ kind: 'tool', tool: { id: 't1', name: 'Bash', isError: true, isRunning: false, durationNs: 2_000_000_000 } }],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    const dur = document.querySelector('[data-tool-root] .font-mono.text-xs') as HTMLElement
+    expect(dur).toBeTruthy()
+    expect(dur.className).toContain('text-red')
+    expect(dur.className).not.toContain('text-blue')
+  })
+
+  it('assistant image block renders a defensive 400px thumbnail', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'a1', role: 'assistant',
+        blocks: [{ kind: 'image', src: 'data:image/png;base64,QUJD' }],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    const img = document.querySelector('.space-y-3 img') as HTMLImageElement
+    expect(img).toBeTruthy()
+    expect(img.src).toBe('data:image/png;base64,QUJD')
+    expect(img.className).toBe('block max-w-[400px] max-h-[400px] rounded-lg my-1')
+  })
+
+  it('legacy document text with no trailing text renders the chip only', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'u1', role: 'user',
+        text: '[Document: notes.md saved at /tmp/x]\n',
+        blocks: [{ kind: 'text', text: '[Document: notes.md saved at /tmp/x]\n' }],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    const chip = document.querySelector('span.font-mono') as HTMLElement
+    expect(chip.textContent).toBe('[notes.md]')
+    expect(chip.className).toContain('font-mono')
+    // No trailing empty user-text span is appended after the chip: the
+    // content div's only child is the chip itself.
+    expect(chip.parentElement!.childElementCount).toBe(1)
+    expect(document.querySelectorAll('.whitespace-pre-wrap').length).toBe(1)
+  })
+
+  it('history image click opens the lightbox with the same data URL', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'u1', role: 'user',
+        blocks: [
+          { kind: 'text', text: 'look' },
+          { kind: 'image', src: 'data:image/png;base64,WFk' },
+        ],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    const img = document.querySelector('.max-w-fit img') as HTMLImageElement
+    img.click()
+    const overlay = document.querySelector('.cursor-zoom-out img') as HTMLImageElement
+    expect(overlay).toBeTruthy()
+    expect(overlay.src).toBe('data:image/png;base64,WFk')
+  })
+
+  it('running tool replay dedupes a live tool_start with the same id', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'a1', role: 'assistant',
+        blocks: [{ kind: 'tool', tool: { id: 't-1', name: 'Bash', isRunning: true } }],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([{ type: 'tool_start', tool_use: { id: 't-1', name: 'Bash' } }])
+    const roots = document.querySelectorAll('[data-tool-root]')
+    expect(roots.length).toBe(1)
+    expect(roots[0].getAttribute('data-tool-name')).toBe('Bash')
+  })
+
+  it('replayed nested running tools are registered so their live tool_end finalizes them', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{
+        kind: 'tool', id: 'agent-1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+        displayOutput: '', startedAt: Date.now(), children: [{
+          kind: 'tool', id: 'inner-1', name: 'Edit', summary: '', isSearch: false, isRead: false,
+          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+          displayOutput: '', startedAt: Date.now(), children: [],
+        }],
+      }],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    dispatchEvents([{
+      type: 'tool_end',
+      tool_result: { tool_use_id: 'inner-1', display_output: 'file contents here' },
+    }])
+    const inner = document.querySelector('[data-tool-root][data-tool-name="Edit"]') as HTMLElement
+    expect(inner).toBeTruthy()
+    const innerBody = inner.querySelector('.md-body') as HTMLElement
+    expect(innerBody.textContent).toBe('file contents here\n')
+    // The Edit row finalized: duration element leaves the running style.
+    const dur = inner.querySelector('.text-t3, .text-red') as HTMLElement
+    expect(dur.className).not.toContain('text-blue')
+  })
+})
+
+// ── share source resolution (long-press menu) ───────────────────────────────
+describe('chat mutation kills: share source resolution', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    armShareBridge()
+  })
+
+  function replayDoneAssistant(blocks: HistoryBlock[]) {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'a1', role: 'assistant', blocks })],
+      nextCursor: '', hasMore: false,
+    })
+  }
+
+  it('tool press copies that tool output by document order (second tool of two)', () => {
+    replayDoneAssistant([
+      { kind: 'tool', tool: { id: 't1', name: 'Bash', displayOutput: 'OUT-ONE', durationNs: 1 } },
+      { kind: 'tool', tool: { id: 't2', name: 'Read', displayOutput: 'OUT-TWO', durationNs: 2 } },
+    ])
+    sharePress(toolRootByName('Read').querySelector('.font-mono') as HTMLElement)
+    expect(shareMenu()).toBeTruthy()
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('OUT-TWO')
+  })
+
+  it('sub-agent child press resolves to the parent tool row, not the child text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [
+        { kind: 'text', id: '', text: 'narration' },
+        {
+          kind: 'tool', id: 'agent-1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 5,
+          displayOutput: 'AGENT-RESULT', startedAt: 0, children: [
+            { kind: 'text', id: '', text: 'inner child text' },
+            {
+              kind: 'tool', id: 'inner-1', name: 'Edit', summary: '', isSearch: false, isRead: false,
+              isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+              displayOutput: 'INNER-OUTPUT', startedAt: 0, children: [],
+            },
+          ],
+        },
+      ],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    // Press the child TEXT: resolves up to the parent tool row.
+    const childText = document.querySelector('[data-tool-children] [data-block-kind="text"]') as HTMLElement
+    sharePress(childText)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('AGENT-RESULT')
+    ;(document.querySelector('.share-menu') as HTMLElement).remove()
+    // Press the parent tool root: the index pairing must skip the nested
+    // child tool root (document order among top-level tools only).
+    sharePress(toolRootByName('Agent'))
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('AGENT-RESULT')
+  })
+
+  it('markdown text press copies the markdown source, not the rendered text', () => {
+    replayDoneAssistant([
+      { kind: 'text', text: '**bold** source' },
+      { kind: 'text', text: 'later block' },
+    ])
+    const firstDiv = document.querySelectorAll('[data-block-kind="text"]')[0] as HTMLElement
+    sharePress(firstDiv)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('**bold** source')
+  })
+
+  it('live reminder row press copies the envelope display body', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }])
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: {
+          attachment: { prompt: '<job-notification>\n<summary>job done</summary>\n</job-notification>' },
+        },
+      },
+    })
+    dispatchEvents([{ type: 'query_end' }])
+    const row = document.querySelector('[data-reminder-row]') as HTMLElement
+    expect(row).toBeTruthy()
+    sharePress(row.querySelector('.font-mono') as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('job done')
+  })
+
+  it('user echo press copies the echoed text inside a done assistant message', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }])
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'queued while busy' } } },
+    })
+    dispatchEvents([{ type: 'text_start' }, { type: 'text_delta', text: 'the final reply' }, { type: 'query_end' }])
+    const echo = document.querySelector('[data-block-kind="user"]') as HTMLElement
+    expect(echo).toBeTruthy()
+    sharePress(echo)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('queued while busy')
+  })
+
+  it('text press after an error frame falls back to the DOM text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'partial answer' },
+    ])
+    dispatch({ type: 'error', message: 'engine blew up' })
+    const textDiv = document.querySelector('[data-block-kind="text"]') as HTMLElement
+    sharePress(textDiv)
+    clickCopy()
+    // The rendered markdown div carries one trailing newline.
+    expect(copyText).toHaveBeenCalledWith('partial answer\n')
+  })
+
+  it('streaming: tool copy works mid-flight, text and reminder presses open nothing', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 't1', display_output: 'live output' } },
+      { type: 'text_start' },
+    ])
+    sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
+    expect(shareMenu()).toBeTruthy()
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('live output')
+    ;(document.querySelector('.share-menu') as HTMLElement).remove()
+    const textDiv = document.querySelector('[data-block-kind="text"]') as HTMLElement
+    sharePress(textDiv)
+    expect(shareMenu()).toBeNull()
+  })
+
+  it('whitespace-only tool output falls back to the final reply', () => {
+    replayDoneAssistant([
+      { kind: 'tool', tool: { id: 't1', name: 'Bash', displayOutput: '   ', durationNs: 1 } },
+      { kind: 'text', text: 'final reply text' },
+    ])
+    sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('final reply text')
+  })
+
+  it('whitespace-only markdown message opens no menu at all', () => {
+    replayDoneAssistant([{ kind: 'text', text: '   ' }])
+    const div = document.querySelector('[data-block-kind="text"]') as HTMLElement
+    sharePress(div)
+    expect(shareMenu()).toBeNull()
+  })
+})
+
+// ── connection state visuals ────────────────────────────────────────────────
+
+describe('chat mutation kills: connection state visuals', () => {
+  it('reconnecting aborts in-flight uploads and animates dots', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Stage a document attachment and start its upload.
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((_resolve, reject) => {
+        opts!.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+    )
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'spec.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('here is the doc')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    stateCb!('reconnecting')
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments()[0].failed).toBe(true))
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.textContent).toBe('Connection lost, reconnecting.')
+  })
+
+  it('disconnect dots advance one per second', () => {
+    vi.useFakeTimers()
+    mount()
+    stateCb!('reconnecting')
+    vi.advanceTimersByTime(1000)
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.textContent).toBe('Connection lost, reconnecting..')
+    vi.advanceTimersByTime(1000)
+    expect(banner.textContent).toBe('Connection lost, reconnecting...')
+  })
+
+  it('banner click asks the connector to reconnect', () => {
+    const calls: number[] = []
+    reconnectImpl = () => calls.push(1)
+    mount()
+    stateCb!('reconnecting')
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    banner.click()
+    expect(calls.length).toBe(1)
+    expect(banner.textContent).toBe('Connection lost, reconnecting.')
+  })
+
+  it('upgrading then connected: capsule recovers, attribute and freeze clear', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    expect(document.body.hasAttribute('data-upgrading')).toBe(true)
+    const lastMsg = document.querySelector('.space-y-7 > div:last-child') as HTMLElement
+    expect(lastMsg.className).toContain('stream-dim')
+    stateCb!('connected')
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+    expect(document.querySelector('.stream-dim')).toBeNull()
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).not.toContain('opacity-0')
+  })
+
+  it('rollback timer dismisses the capsule when the socket stayed alive', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    vi.advanceTimersByTime(20_000)
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+    expect(document.querySelector('.stream-dim')).toBeNull()
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+  })
+
+  it('give-up retires upgrading visuals and shows the failure banner', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    stateCb!('failed')
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+    expect(document.querySelector('.stream-dim')).toBeNull()
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.textContent).toBe('Reconnection failed. Tap to retry.')
+    expect(banner.parentElement!.style.cursor).toBe('pointer')
+    expect(banner.parentElement!.style.maxHeight).toBe('40px')
+  })
+
+  it('connected hides the banner and restores default cursor', () => {
+    mount()
+    stateCb!('reconnecting')
+    stateCb!('connected')
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.parentElement!.style.maxHeight).toBe('0px')
+    expect(banner.parentElement!.style.opacity).toBe('0')
+    expect(banner.parentElement!.style.cursor).toBe('default')
+  })
+})
+
+// ── scroll prefetch geometry ────────────────────────────────────────────────
+
+describe('chat mutation kills: scroll prefetch geometry', () => {
+  it('counts children above the viewport with inclusive-bottom boundary semantics', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const msgs = Array.from({ length: 12 }, (_, i) =>
+      histMsg({ id: 'u' + i, role: 'user', text: 'm' + i, startedAt: i }))
+    dispatch({ type: 'history', messages: msgs, nextCursor: 'c1', hasMore: true })
+    // loadHistory's own prefetch fired with unmocked (zero) geometry and set
+    // loadingMore; answer that page to close the gate.
+    dispatch({ type: 'history', messages: [], nextCursor: 'c2', hasMore: true })
+    const kids = Array.from(document.querySelector('.space-y-7')!.children) as HTMLElement[]
+    kids.forEach((el, i) => {
+      Object.defineProperty(el, 'offsetTop', { configurable: true, value: i * 100 })
+      Object.defineProperty(el, 'offsetHeight', { configurable: true, value: 50 })
+    })
+    const scroll = chat.scrollEl
+    const reqs = () => sent.filter((m) => (m as { type: string }).type === 'history_request') as { cursor: string }[]
+    // bottom of child 9 is exactly 950: inclusive >= breaks there → 9 above → fetch.
+    scroll.scrollTop = 950
+    scroll.dispatchEvent(new Event('scroll'))
+    expect(reqs().some((m) => m.cursor === 'c2')).toBe(true)
+    dispatch({ type: 'history', messages: [], nextCursor: 'c3', hasMore: true })
+    // bottom of child 10 is exactly 1050: breaks there → 10 above → no fetch.
+    sent.length = 0
+    scroll.scrollTop = 1050
+    scroll.dispatchEvent(new Event('scroll'))
+    expect(reqs().length).toBe(0)
+  })
+})
+
+// ── subtree auto-fetch geometry ─────────────────────────────────────────────
+
+describe('chat mutation kills: subtree auto-fetch geometry', () => {
+  function replayTruncated(truncated: number, cursor?: string): HTMLElement {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{
+        kind: 'tool', id: 't1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+        displayOutput: '', startedAt: Date.now(), truncated, truncatedCursor: cursor, children: [],
+      }],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    return document.querySelector('[data-tool-root] [data-tool-children]') as HTMLElement
+  }
+  const subtreeReqs = () => sent.filter((m) => (m as { type: string }).type === 'subtree_request')
+
+  it('fires only when the children container sits within the window, boundaries excluded', () => {
+    const container = replayTruncated(2, 'a1')
+    // The snapshot render already auto-fired one fetch — answer it to clear
+    // the in-flight gate.
+    expect(subtreeReqs().length).toBe(1)
+    const nonce = (subtreeReqs()[0] as { nonce: number }).nonce
+    dispatch({ type: 'subtree_page', nonce, blockID: 't1', children: [], remaining: 2, nextAnchor: 'a2' })
+    const setTop = (top: number) => {
+      Object.defineProperty(container, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }),
+      })
+    }
+    const chat = document.querySelector('.flex-1.min-h-0') as HTMLElement
+    const scroll = () => chat.dispatchEvent(new Event('scroll'))
+    setTop(400)
+    scroll()
+    expect(subtreeReqs().length).toBe(1)
+    setTop(-400)
+    scroll()
+    expect(subtreeReqs().length).toBe(1)
+    setTop(300)
+    scroll()
+    expect(subtreeReqs().length).toBe(1)
+    setTop(-300)
+    scroll()
+    expect(subtreeReqs().length).toBe(1)
+    setTop(0)
+    scroll()
+    expect(subtreeReqs().length).toBe(2)
+    expect((subtreeReqs()[1] as { anchor: string }).anchor).toBe('a2')
+  })
+
+  it('no subtree fetch without truncation markers or cursor', () => {
+    replayTruncated(2, undefined)
+    expect(subtreeReqs().length).toBe(0)
+    replayTruncated(0, 'a1')
+    expect(subtreeReqs().length).toBe(0)
+  })
+
+  it('a zero truncation marker with a cursor still never auto-fetches on scroll', () => {
+    replayTruncated(0, 'a1')
+    // Force updateScrollBtn synchronously — the observer path alone runs
+    // after the test body.
+    const chat = document.querySelector('.flex-1.min-h-0') as HTMLElement
+    chat.dispatchEvent(new Event('scroll'))
+    expect(subtreeReqs().length).toBe(0)
+  })
+})
+
+// ── loadHistory scroll anchoring ────────────────────────────────────────────
+
+describe('chat mutation kills: loadHistory scroll anchoring', () => {
+  it('prepend compensates scrollTop by the height delta when scrolled up', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const container = document.querySelector('.space-y-7') as HTMLElement
+    Object.defineProperty(chat.scrollEl, 'scrollHeight', {
+      configurable: true,
+      get: () => container.children.length * 100,
+    })
+    Object.defineProperty(chat.scrollEl, 'clientHeight', { configurable: true, value: 500 })
+    const first = Array.from({ length: 20 }, (_, i) =>
+      histMsg({ id: 'n' + i, role: 'user', text: 'msg' + i, startedAt: i }))
+    dispatch({ type: 'history', messages: first, nextCursor: '', hasMore: false })
+    expect(chat.scrollEl.scrollTop).toBe(2100)
+    // Scroll away from the bottom so the observer-driven autoscroll stays off.
+    chat.scrollEl.scrollTop = 800
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    const older = Array.from({ length: 5 }, (_, i) =>
+      histMsg({ id: 'o' + i, role: 'user', text: 'old' + i, startedAt: 0 }))
+    dispatch({ type: 'history', messages: older, nextCursor: '', hasMore: false })
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+    // 5 children * 100px taller: 800 + 500.
+    expect(chat.scrollEl.scrollTop).toBe(1300)
+  })
+})
+
+// ── running-tool replay anchors ─────────────────────────────────────────────
+
+describe('chat mutation kills: running-tool replay anchors', () => {
+  it('elapsed anchors at replay time and the init log names the reason', () => {
+    vi.useFakeTimers()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'a1', role: 'assistant',
+        blocks: [{ kind: 'tool', tool: { id: 't-1', name: 'Bash', isRunning: true } }],
+      })],
+      nextCursor: '', hasMore: false,
+    })
+    vi.advanceTimersByTime(2500)
+    const elapsed = document.querySelector('.status-line .sep-elapsed + span') as HTMLElement
+    expect(elapsed.textContent).toBe('2s')
+    expect(dbg).toHaveBeenCalledWith(
+      '[chat] initStreaming reason=loadHistory_runningTool streamContainer=true progressHandles=true')
+  })
+})
+
+// ── attachment events ───────────────────────────────────────────────────────
+
+describe('chat mutation kills: attachment events', () => {
+  it('prompt fallback renders a plain user echo bubble', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'typed with no content blocks' } } },
+    })
+    const spans = Array.from(document.querySelectorAll('.max-w-fit span.whitespace-pre-wrap')) as HTMLElement[]
+    expect(spans.map((s) => s.textContent)).toEqual(['typed with no content blocks'])
+  })
+
+  it('an attachment event without a message envelope is ignored', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'event', event: { type: 'attachment' } })
+    // No envelope means no attachment and no content: nothing renders and
+    // the optional chain keeps the handler from throwing.
+    expect(document.querySelectorAll('.max-w-fit').length).toBe(0)
+    expect(document.querySelectorAll('.space-y-7 > *').length).toBe(0)
+  })
+
+  it('an image-only attachment with no prompt renders no text span', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: {
+          attachment: { source_uuid: 's1' },
+          content: [{ type: 'image', source: { media_type: 'image/png', data: 'QUJD' } }],
+        },
+      },
+    })
+    // The absent prompt maps to an empty string: the image renders and no
+    // undefined leaks into any text node.
+    const img = document.querySelector('img') as HTMLImageElement
+    expect(img).toBeTruthy()
+    expect(img.src).toBe('data:image/png;base64,QUJD')
+    expect(document.body.textContent).not.toContain('undefined')
+    expect(document.querySelector('.max-w-fit span.whitespace-pre-wrap')).toBeNull()
+  })
+
+  it('content blocks join text, inline the image data URL, and chip the document', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: {
+          attachment: { source_uuid: 'q1' },
+          content: [
+            { type: 'text', text: 'cap ' },
+            { type: 'text', text: 'tion' },
+            { type: 'image', source: { media_type: 'image/png', data: 'QUJD' } },
+            { type: 'document', name: 'notes.md', mime: 'text/markdown', size: 2048 },
+          ],
+        },
+      },
+    })
+    const content = document.querySelector('.max-w-fit') as HTMLElement
+    expect(content.querySelector('.whitespace-pre-wrap')!.textContent).toBe('cap tion')
+    const img = content.querySelector('img') as HTMLImageElement
+    expect(img.src).toBe('data:image/png;base64,QUJD')
+    expect(content.querySelector('span.font-mono')!.textContent).toBe('[notes.md 2.0 KB]')
+  })
+
+  it('an image block without payload data renders nothing at all', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: {
+          attachment: {},
+          content: [{ type: 'image', source: { media_type: 'image/png' } }],
+        },
+      },
+    })
+    expect((document.querySelector('.space-y-7') as HTMLElement).children.length).toBe(0)
+  })
+
+  it('agent-tagged reminder completion renders no chat row', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        agent: { job_id: 'j1' },
+        message: {
+          attachment: { prompt: '<job-notification>\n<summary>x</summary>\n</job-notification>' },
+        },
+      },
+    })
+    expect(document.querySelector('[data-reminder-row]')).toBeNull()
+  })
+
+  it('idle reminder renders as a reminder row inside an assistant shell', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: {
+          attachment: { prompt: '<job-notification>\n<summary>idle job done</summary>\n</job-notification>' },
+        },
+      },
+    })
+    const row = document.querySelector('[data-reminder-row]') as HTMLElement
+    expect(row).toBeTruthy()
+    // The body sits collapsed until the header expands it.
+    ;(row.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(row.textContent).toContain('idle job done')
+    // An assistant shell was built for the row (no user bubble).
+    expect(document.querySelector('.max-w-fit')).toBeNull()
+  })
+
+  it('share-press on an idle reminder row opens the menu, so the message joined the model', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: { attachment: { prompt: '<job-notification>\n<summary>idle share body</summary>\n</job-notification>' } },
+      },
+    })
+    const row = document.querySelector('[data-reminder-row]') as HTMLElement
+    expect(row).toBeTruthy()
+    sharePress(row.querySelector('.font-mono') as HTMLElement)
+    expect(document.querySelector('.share-menu')).toBeTruthy()
+  })
+
+  it('chrome press on an idle reminder row copies the body, not the raw envelope', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: { attachment: { prompt: '<job-notification>\n<summary>chrome body</summary>\n</job-notification>' } },
+      },
+    })
+    // Press the message chrome (avatar column), not the reminder row itself.
+    const shell = (document.querySelector('[data-reminder-row]') as HTMLElement)
+      .closest('.space-y-7 > div') as HTMLElement
+    sharePress((shell.querySelector('.grid') as HTMLElement).firstElementChild as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('chrome body')
+  })
+
+  it('a non-queued idle echo renders in the default user style, not queued gray', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'plain idle echo' } } },
+    })
+    const span = document.querySelector('.max-w-fit span.whitespace-pre-wrap') as HTMLElement
+    expect(span.textContent).toBe('plain idle echo')
+    expect(span.className).toBe('whitespace-pre-wrap break-words')
+  })
+
+  it('drained queued message with a backfilled uuid removes its pill', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('first')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    setTextarea('queued while busy')
+    pressEnter()
+    dispatch({ type: 'queued', uuid: 'q9' })
+    expect(document.querySelectorAll('.queued-bubble').length).toBe(1)
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: { attachment: { source_uuid: 'q9', prompt: 'queued while busy' } },
+      },
+    })
+    expect(document.querySelectorAll('.queued-bubble').length).toBe(0)
+    // The echo rendered gray inside the streaming assistant.
+    const echo = document.querySelector('.space-y-3 [data-block-kind="user"]') as HTMLElement
+    expect(echo.textContent).toBe('queued while busy')
+  })
+})
+
+// ── query_end commit and rewind ─────────────────────────────────────────────
+
+describe('chat mutation kills: query_end commit and rewind', () => {
+  it('abort with tool content commits the turn even when the server rewound', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('question')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.querySelector('[data-tool-root]')).toBeTruthy()
+    expect(document.body.textContent).toContain('question')
+    // Aborted finalize leaves the tool body empty, never placeholder text.
+    ;(document.querySelector('[data-tool-root] [data-tool-header]') as HTMLElement).click()
+    const body = document.querySelector('[data-tool-root] .md-body') as HTMLElement
+    expect(body.textContent).toBe('')
+  })
+
+  it('abort commit drops empty text blocks but keeps the pairing for later ones', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'aaa' },
+      { type: 'text_end' },
+      { type: 'text_start' },
+      { type: 'text_end' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'bbb' },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true }])
+    const divs = document.querySelectorAll('[data-block-kind="text"]')
+    expect(divs.length).toBe(2)
+    sharePress(divs[1] as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('bbb')
+  })
+
+  it('rewind with an empty turn removes the assistant shell and restores the prompt', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('restore me')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.querySelectorAll('.space-y-3').length).toBe(0)
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('restore me')
+    // A late duplicate query_end with an emptied message list must not crash.
+    dispatchEvents([{ type: 'query_end', aborted: true }])
+    expect(document.querySelectorAll('.space-y-3').length).toBe(0)
+  })
+
+  it('rewound_text pops exactly the matching user message, not the newest one', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u0', role: 'user', text: 'older prompt', startedAt: 1 })],
+      nextCursor: '', hasMore: false,
+    })
+    setTextarea('target prompt')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'target prompt' }])
+    expect(document.body.textContent).not.toContain('target prompt')
+    expect(document.body.textContent).toContain('older prompt')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('target prompt')
+  })
+
+  it('rewound_text with no local copy restores the text without touching history', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'a0', role: 'assistant', blocks: [{ kind: 'text', text: 'kept answer' }] })],
+      nextCursor: '', hasMore: false,
+    })
+    setTextarea('local q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'from another tab' }])
+    expect(document.body.textContent).toContain('kept answer')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('from another tab')
+  })
+  it('rewound_text with duplicate history twins and no live copy pops the NEWEST twin', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Sharpest BUG-1 shape: 'dup prompt' exists twice in history and there
+    // is no live copy. The matcher scans newest-first ([...messages]
+    // .reverse()), so the NEWEST twin (d1, after MID) must be popped and
+    // the oldest (d0, before MID) must stay rendered — the surrounding
+    // rows tell the twins apart. An oldest-first scan pops the wrong one.
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'd0', role: 'user', text: 'dup prompt', startedAt: 1 }),
+        histMsg({ id: 'm0', role: 'assistant', blocks: [{ kind: 'text', text: 'MID' }], startedAt: 2 }),
+        histMsg({ id: 'd1', role: 'user', text: 'dup prompt', startedAt: 3 }),
+        histMsg({ id: 'l0', role: 'assistant', blocks: [{ kind: 'text', text: 'LATE' }], startedAt: 4 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'dup prompt' }])
+    // The rewind drops the target AND everything after it: newest-twin d1
+    // plus LATE. An oldest-first scan instead picks d0 and drops the whole
+    // conversation (count 0, MID gone).
+    const order = (document.querySelector('.space-y-7') as HTMLElement).textContent ?? ''
+    expect((order.match(/dup prompt/g) ?? []).length).toBe(1)
+    expect(order).toContain('MID')
+    expect(order.indexOf('dup prompt')).toBeLessThan(order.indexOf('MID'))
+  })
+
+  it('legacy rewind after a history load pops the user row, not the error shell', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // ASC page (assistant first, user second) + an idle error shell at the
+    // tail: with no rewound_text the legacy matcher must select a USER
+    // message, scanning past the newer assistant/error entries.
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'a0', role: 'assistant', blocks: [{ kind: 'text', text: 'KEPT ANSWER' }], startedAt: 1 }),
+        histMsg({ id: 'u0', role: 'user', text: 'OLD PROMPT', startedAt: 2 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    dispatch({ type: 'error', message: 'boom' })
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.body.textContent).toContain('KEPT ANSWER')
+    expect(document.body.textContent).not.toContain('OLD PROMPT')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('OLD PROMPT')
+  })
+
+  it('abort rewind after a two-page load pops the live prompt, not its history twin', () => {
+    // NOTE: this shape passes under both array orders (the live copy wins
+    // either way); the order-sensitive variant without a live copy is
+    // 'rewound_text with duplicate history twins and no live copy pops the
+    // NEWEST twin' above.
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Newer page first, older page second (prepend). 'dup prompt' appears
+    // twice in history AND as the live turn — the rewound_text matcher
+    // scans newest-first, so it must pick the live message and leave both
+    // history twins rendered.
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'd1', role: 'user', text: 'dup prompt', startedAt: 10 }),
+        histMsg({ id: 'o1', role: 'user', text: 'other question', startedAt: 20 }),
+      ],
+      nextCursor: 'c1', hasMore: true,
+    })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'd0', role: 'user', text: 'dup prompt', startedAt: 1 })],
+      nextCursor: '', hasMore: false,
+    })
+    setTextarea('dup prompt')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'dup prompt' }])
+    expect(document.body.textContent).toContain('other question')
+    // Both history twins survive the rewind; only the live echo is gone.
+    expect((document.body.textContent ?? '').split('dup prompt').length - 1).toBe(2)
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('dup prompt')
+  })
+
+  it('a chat error after a two-page load attaches to the newest streaming row', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'q9', role: 'user', text: 'the newest question', startedAt: 20 }),
+        histMsg({
+          id: 'a9', role: 'assistant', status: 'streaming', startedAt: 21,
+          blocks: [{ kind: 'text', text: 'halfway answer' }],
+        }),
+      ],
+      nextCursor: 'c1', hasMore: true,
+    })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'q0', role: 'user', text: 'ancient question', startedAt: 1 })],
+      nextCursor: '', hasMore: false,
+    })
+    dispatch({ type: 'error', message: 'boom' })
+    const rows = Array.from((document.querySelector('.space-y-7') as HTMLElement).children) as HTMLElement[]
+    const boomRow = rows.find((r) => r.textContent?.includes('boom'))
+    // The streaming tail owns the error: an in-place box inside the row
+    // that carries 'halfway answer', not a fresh shell after the history.
+    expect(boomRow?.textContent).toContain('halfway answer')
+    expect(boomRow?.textContent).not.toContain('ancient question')
+  })
+
+  it('an aborted turn with text content commits even when the server rewound', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'kept text' },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    // Content beats rewind: the streamed text stays committed and the prompt
+    // is not restored into the input.
+    expect(document.body.textContent).toContain('kept text')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('query_end debug names all three flags with their values', () => {
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      mount()
+      dispatch({ type: 'connect_status', connected: true })
+      setTextarea('q')
+      pressEnter()
+      dispatchEvents([{ type: 'query_start' }])
+      dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'q' }])
+      expect(dbg).toHaveBeenCalledWith('[chat] query_end aborted=true rewound=true rewound_text=yes')
+    } finally {
+      dbg.mockRestore()
+    }
+  })
+
+  it('a tool still running at query_end finalizes as done, not error', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'query_end' },
+    ])
+    const dur = document.querySelector('[data-tool-root] .font-mono.text-xs') as HTMLElement
+    // Un-aborted finalize leaves the running style; an aborted-flag leak
+    // would flip it to the error style.
+    expect(dur.className).toContain('text-blue')
+    expect(dur.className).not.toContain('text-red')
+  })
+})
+
+// ── usage accounting ────────────────────────────────────────────────────────
+
+describe('chat mutation kills: usage accounting', () => {
+  it('context used sums input, cache read, cache creation, and output', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'stats', contextUsed: 0, contextTotal: 500000 })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'usage', usage_event: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 20, cache_creation_input_tokens: 5 } },
+    ])
+    const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLElement
+    // 100 + 20 + 5 = 125 in, 50 out → 175 of the 500k window.
+    expect(trigger.textContent).toContain('175/488.3k')
+  })
+
+  it('accumulated cache read shows in the finalized bar as a percentage', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'usage', usage_event: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 100 } },
+      { type: 'usage', usage_event: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 100 } },
+      { type: 'query_end' },
+    ])
+    const bar = document.querySelector('.status-line') as HTMLElement
+    // cache 200 of total input 400 → 50%.
+    expect(bar.textContent).toContain('50.0% cached')
+  })
+})
+
+// ── header and input wiring ─────────────────────────────────────────────────
+
+describe('chat mutation kills: header and input wiring', () => {
+  const headerComboTriggers = () =>
+    Array.from(document.querySelectorAll('header button')) as HTMLButtonElement[]
+
+  it('model select sends model_switch; opening the picker requests quotas; entries render them', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [
+        { provider: 'prov', model: 'm1' },
+        { provider: 'prov', model: 'm2' },
+        { provider: 'other', model: 'm3' },
+      ],
+      current: { provider: 'prov', model: 'm1' },
+    })
+    const trigger = headerComboTriggers().find((b) => b.textContent === 'm1')!
+    trigger.click()
+    expect(sent.some((m) => (m as { type: string }).type === 'quota_request')).toBe(true)
+    dispatch({ type: 'quota_result', entries: [{ provider: 'prov', quota: '42/50' }, { provider: 'other', quota: '1/9' }] })
+    const item = Array.from(document.querySelectorAll('span'))
+      .find((sp) => sp.textContent === 'm2')!.closest('button') as HTMLButtonElement
+    item.click()
+    expect(sent).toContainEqual({ type: 'model_switch', provider: 'prov', model: 'm2' })
+    // Reopen: both providers show their quota.
+    trigger.click()
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('42/50')
+    expect(body).toContain('1/9')
+  })
+
+  it('engine picker footer starts a new engine', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'engine_list',
+      engines: [{ id: 'e1', name: 'agent-1', model: 'm' }],
+      activeID: 'e1',
+    })
+    const trigger = headerComboTriggers().find((b) => b.textContent === 'agent-1')!
+    trigger.click()
+    const panel = document.querySelector('[data-testid="engine-picker-panel"]') as HTMLElement
+    const footer = panel.querySelectorAll('button')[panel.querySelectorAll('button').length - 1] as HTMLButtonElement
+    footer.click()
+    expect(sent).toContainEqual({ type: 'engine_new' })
+  })
+
+  it('context trigger requests the breakdown; Compact hides the panel and asks the server', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'stats', contextUsed: 1000, contextTotal: 500000 })
+    const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    trigger.click()
+    expect(sent).toContainEqual({ type: 'context_request' })
+    dispatch({
+      type: 'context_breakdown',
+      model: 'm', contextWindow: 500000, totalTokens: 5000, percentage: 1, isAutoCompact: false,
+      categories: [], mcpToolsLoaded: [], mcpToolsDeferred: [], deferredBuiltinTools: [],
+      systemTools: [], systemPromptSections: [], memoryFiles: [], agents: [], skills: [],
+      messageBreakdown: null, apiUsage: null,
+    })
+    trigger.click() // close (open from the first click)
+    trigger.click() // reopen with data
+    const compact = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.textContent === 'Compact') as HTMLButtonElement
+    expect(compact).toBeTruthy()
+    compact.click()
+    expect(sent).toContainEqual({ type: 'compact_request' })
+    const panel = document.querySelector('.max-h-\\[60dvh\\]') as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('zero-token breakdown clears to the empty state instead of rendering zeros', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'stats', contextUsed: 1000, contextTotal: 500000 })
+    dispatch({
+      type: 'context_breakdown',
+      totalTokens: 5000, contextWindow: 500000, percentage: 1, categories: [],
+    })
+    dispatch({
+      type: 'context_breakdown',
+      model: 'm', contextWindow: 500000, totalTokens: 0, percentage: 0, isAutoCompact: false,
+      categories: [], mcpToolsLoaded: [], mcpToolsDeferred: [], deferredBuiltinTools: [],
+      systemTools: [], systemPromptSections: [], memoryFiles: [], agents: [], skills: [],
+      messageBreakdown: null, apiUsage: null,
+    })
+    const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    trigger.click()
+    const panel = document.querySelector('.max-h-\\[60dvh\\]') as HTMLElement
+    expect(panel.textContent).not.toContain('Context Usage')
+  })
+
+  it('thinking effort selection sends thinking_switch', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const caption = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.textContent === 'auto' && b.className.includes('text-[10px]')) as HTMLButtonElement
+    caption.click()
+    const strip = document.querySelector('[data-effort-strip]') as HTMLElement
+    const high = Array.from(strip.querySelectorAll('button')).find((b) => b.textContent === 'high') as HTMLButtonElement
+    high.click()
+    expect(sent).toContainEqual({ type: 'thinking_switch', effort: 'high' })
+  })
+
+  it('engine_list and session_list render into header and sidebar', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'engine_list', engines: [{ id: 'e9', name: 'agent-nine', model: 'm' }], activeID: 'e9' })
+    expect(headerComboTriggers().some((b) => b.textContent === 'agent-nine')).toBe(true)
+    dispatch({ type: 'session_list', sessions: [{ id: 's1', title: 'chat about lists', updatedAt: 1 }] })
+    expect(document.body.textContent).toContain('chat about lists')
+  })
+
+  it('model_switched without a thinking field falls back to auto, never undefined', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'model_switched', contextUsed: 1, contextTotal: 100 })
+    dispatch({ type: 'config', models: [], current: { provider: 'p', model: 'm' } })
+    expect(document.body.textContent).not.toContain('undefined')
+  })
+
+  it('task_list, job_list, and job_output reach the task panel and store', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'task_list', tasks: [{ id: '1', subject: 'Plan', status: 'completed' }, { id: '2', subject: 'Code', status: 'pending' }] })
+    expect((document.querySelector('.task-label') as SVGTextElement).textContent).toBe('1/2')
+    dispatch({ type: 'job_list', jobs: [{ id: 'bg-1', kind: 'bash', status: 'running', command: 'make all', startedMs: 1 }] })
+    dispatch({ type: 'job_output', jobID: 'bg-1', tail: 'tail line' })
+    expect(chat.jobsStore.feed('bg-1')?.tail).toBe('tail line')
+    const ring = document.querySelector('.task-label')?.closest('button') as HTMLElement
+    ring.click()
+    expect((document.getElementById('task-popover') as HTMLElement).textContent).toContain('make all')
+  })
+
+  it('stats frame overwrites the live progress usage', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'usage', usage_event: { input_tokens: 100, output_tokens: 0 } },
+    ])
+    dispatch({ type: 'stats', usage: { input_tokens: 555, output_tokens: 0 } })
+    const inEl = document.querySelector('.status-line span') as HTMLElement
+    expect(inEl.textContent).toContain('↑555')
+  })
+
+  it('turn_start keeps a prior estimate when the new frame carries none', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    // A turn_start with no live stream initiates on its own.
+    dispatchEvents([{ type: 'turn_start', input_estimate: 100 }])
+    expect(dbg.mock.calls.some((c) => String(c[0]).includes('reason=turn_start'))).toBe(true)
+    dispatchEvents([{ type: 'turn_start' }])
+    const inEl = document.querySelector('.status-line span') as HTMLElement
+    expect(inEl.textContent).toContain('↑100')
+    dispatchEvents([{ type: 'query_end' }])
+    expect(dbg.mock.calls.some((c) => String(c[0]).includes('[chat] query_end aborted=false'))).toBe(true)
+  })
+})
+
+// ── text_delta late-sink mount ──────────────────────────────────────────────
+
+describe('chat mutation kills: text_delta late sink', () => {
+  it('a delta after tool_start mounts a fresh div between the tool and the progress bar, copy buttons wired', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'first part' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'text_delta', text: '```js\nlate()\n```' },
+    ])
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    const divs = stream.querySelectorAll(':scope > [data-block-kind="text"]')
+    expect(divs.length).toBe(2)
+    const late = divs[1] as HTMLElement
+    expect(late.querySelector('.copy-btn')).toBeTruthy()
+    // The late div lands before the progress line, not after it.
+    const bar = stream.querySelector(':scope > .status-line') as HTMLElement
+    expect(late.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+// ── sub-agent thinking lifecycle ────────────────────────────────────────────
+
+describe('chat mutation kills: sub-agent thinking', () => {
+  const agentTag = { parent_tool_use_id: 'agent-1', agent_type: 'Executor' }
+  const childThinking = () =>
+    Array.from(document.querySelectorAll('[data-tool-children] .text-amber'))
+      .filter((el) => /Thinking|Thought/.test(el.textContent ?? '')) as HTMLElement[]
+  const mainThinking = () =>
+    Array.from(document.querySelectorAll('.space-y-3 > .text-amber'))
+      .filter((el) => /Thinking|Thought/.test(el.textContent ?? '')) as HTMLElement[]
+
+  it('start/delta/end inside the parent tool: label, text, duration, no main entry', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'thinking_start', agent: agentTag },
+      { type: 'thinking_delta', agent: agentTag, thinking: { text: 'inner reasoning' } },
+    ])
+    expect(childThinking().length).toBe(1)
+    expect(document.querySelector('[data-tool-children]')!.textContent).toContain('inner reasoning')
+    expect(mainThinking().length).toBe(0)
+    dispatchEvents([{ type: 'thinking_end', agent: agentTag, thinking: { duration: 3_000_000_000 } }])
+    expect(document.querySelector('[data-tool-children]')!.textContent).toContain('Thought for 3s')
+  })
+
+  it('a delta with no prior start lazily creates the entry', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'thinking_delta', agent: agentTag, thinking: { text: 'lazy thought' } },
+    ])
+    expect(childThinking().length).toBe(1)
+    expect(document.querySelector('[data-tool-children]')!.textContent).toContain('lazy thought')
+  })
+
+  it('a new delta after end starts a fresh entry instead of extending the finished one', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'thinking_start', agent: agentTag },
+      { type: 'thinking_end', agent: agentTag, thinking: { duration: 1_000_000_000 } },
+      { type: 'thinking_delta', agent: agentTag, thinking: { text: 'second wind' } },
+    ])
+    expect(childThinking().length).toBe(2)
+    const texts = childThinking().map((el) => el.textContent ?? '')
+    expect(texts.some((t) => t.includes('Thought for 1s'))).toBe(true)
+    expect(texts.some((t) => t.includes('Thinking ('))).toBe(true)
+    expect(document.querySelector('[data-tool-children]')!.textContent).toContain('second wind')
+  })
+})
+
+// ── queued / cancel / restore bookkeeping ───────────────────────────────────
+
+describe('chat mutation kills: queued cancel and restore bookkeeping', () => {
+  it('a second queued frame with no empty-uuid slot is a no-op', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('a')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    setTextarea('b')
+    pressEnter()
+    dispatch({ type: 'queued', uuid: 'q1' })
+    dispatch({ type: 'queued', uuid: 'q2' })
+    const labels = Array.from(document.querySelectorAll('.queued-bubble span:first-child'))
+      .map((el) => el.textContent)
+    expect(labels).toEqual(['b'])
+  })
+
+  it('cancel_result joins stripped texts and rebuilds chips from the local queued entry', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('first')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'spec.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('with doc')
+    pressEnter()
+    await vi.waitFor(() =>
+      expect(sent.some((m) => (m as { type: string; attachments?: unknown[] }).type === 'message' && (m as { attachments?: unknown[] }).attachments)).toBe(true))
+    dispatch({ type: 'queued', uuid: 'q7' })
+    dispatch({
+      type: 'cancel_result',
+      restored: [
+        { uuid: 'q7', text: '[voice] spoken one', attachments: [{ id: 'fresh-1', mime: 'application/pdf', size: 7 }] },
+        { text: 'plain two' },
+      ],
+    })
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('spoken one\nplain two')
+    const refs = chat.inputBar.getAttachments()
+    expect(refs.length).toBe(1)
+    expect(refs[0].file.name).toBe('spec.pdf')
+    expect(refs[0].uploadedID).toBe('fresh-1')
+  })
+
+  it('cancel_result drops empty restored texts before joining', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'cancel_result',
+      restored: [{ text: '' }, { text: 'plain two' }],
+    })
+    // The empty entry contributes nothing — no leading newline in the join.
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('plain two')
+  })
+
+  it('cancel_result with no restored list clears the queue only', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('a')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    setTextarea('b')
+    pressEnter()
+    dispatch({ type: 'cancel_result' })
+    expect(document.querySelectorAll('.queued-bubble').length).toBe(0)
+  })
+
+  it('restore_result fills names and previews from the rewind stash', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const imgInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '') === 'image/*' && i.multiple) as HTMLInputElement
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const img = new File(['x'], 'photo.png', { type: 'image/png' })
+    const doc = new File(['y'], 'notes.md', { type: 'text/markdown' })
+    Object.defineProperty(imgInput, 'files', { value: [img], configurable: true })
+    imgInput.dispatchEvent(new Event('change'))
+    Object.defineProperty(docInput, 'files', { value: [doc], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('pic and doc')
+    pressEnter()
+    await vi.waitFor(() =>
+      expect(sent.some((m) => (m as { type: string; attachments?: unknown[] }).type === 'message' && (m as { attachments?: unknown[] }).attachments)).toBe(true))
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(sent).toContainEqual({ type: 'restore_attachments' })
+    dispatch({
+      type: 'restore_result',
+      attachments: [
+        { id: 'r-img', mime: 'image/png' },
+        { id: 'r-doc', mime: 'text/markdown' },
+        // A server entry beyond the stash must not crash the restore.
+        { id: 'r-x', mime: 'image/png' },
+      ],
+    })
+    const refs = chat.inputBar.getAttachments()
+    expect(refs.map((r) => r.uploadedID)).toEqual(['r-img', 'r-doc', 'r-x'])
+    // The document name and size come from the local stash — the server
+    // entry carries only the fresh id and mime.
+    expect(refs[1].file.name).toBe('notes.md')
+    expect(refs[1].restoredSize).toBe(1)
+    expect(refs[1].kind).toBe('document')
+    // The image keeps its local blob thumbnail.
+    expect(refs[0].kind).toBe('image')
+    expect(refs[0].previewURL).not.toBe('')
+    expect(refs[2].previewURL).toBe('')
+  })
+})
+
+// ── streamState / watermark / page0 cache ───────────────────────────────────
+
+describe('chat mutation kills: streamState and event watermark', () => {
+  it('empty streamState arms nothing; a blockful one renders live', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'streamState', blocks: [] })
+    expect(document.querySelector('.status-line')).toBeNull()
+    expect(document.querySelectorAll('.space-y-3').length).toBe(0)
+    dispatch({ type: 'streamState', blocks: [{ kind: 'text', id: '', text: 'resumed text' }] })
+    expect(document.querySelector('.md-body')!.textContent).toContain('resumed text')
+    expect(document.querySelector('.status-line')).toBeTruthy()
+  })
+
+  it('a blockful streamState init names streamState as its reason', () => {
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      mount()
+      dispatch({ type: 'connect_status', connected: true })
+      dispatch({ type: 'streamState', blocks: [{ kind: 'text', id: '', text: 'resumed text' }] })
+      expect(dbg).toHaveBeenCalledWith(expect.stringContaining('reason=streamState'))
+    } finally {
+      dbg.mockRestore()
+    }
+  })
+
+  it('a seq-0 event on a fresh page-less session applies live', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event', seq: 0,
+      event: { type: 'attachment', message: { attachment: { prompt: 'seq zero echo' } } },
+    })
+    const spans = Array.from(document.querySelectorAll('.max-w-fit span.whitespace-pre-wrap'))
+    expect(spans.map((s) => s.textContent)).toEqual(['seq zero echo'])
+  })
+
+  it('an event frame absorbed by the page seq watermark drops silently', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false, seq: 5 })
+    dispatch({
+      type: 'event', seq: 5,
+      event: { type: 'attachment', message: { attachment: { prompt: 'already inside page' } } },
+    })
+    expect(document.querySelector('.max-w-fit')).toBeNull()
+  })
+})
+
+describe('chat mutation kills: page0 cache eviction', () => {
+  const feedPage = (engineID: string, rev: string) => {
+    // The metadata frame carries rev/busy (v2 unified paging): the cache
+    // lookup and the page mint both key off it.
+    dispatch({
+      type: 'metadata',
+      rev,
+      connect: { connected: true, engineID, sessionID: 's' },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: engineID },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: 'cur-' + engineID, hasMore: false, rev, busy: false })
+  }
+  const pageRequests = () =>
+    sent.filter((m) => (m as { type: string; type2?: string }).type === 'history_request') as unknown[]
+
+  it('evicts oldest beyond 8 entries; a re-minted key re-orders to newest', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Keys e0..e2 minted, then e0 re-minted (delete+set moves it newest).
+    for (const e of ['e0', 'e1', 'e2']) feedPage(e, 'r1')
+    feedPage('e0', 'r2')
+    // Fill to ten distinct keys total: e3..e9 plus one more.
+    for (const e of ['e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9']) feedPage(e, 'r1')
+    // e0 survived (re-minted newest); e1 was the oldest at the final insert.
+    sent.length = 0
+    feedPage('e0', 'r2')
+    // Hit: the re-minted key is still cached — no round trip.
+    expect(pageRequests().length).toBe(0)
+    sent.length = 0
+    feedPage('e1', 'r1')
+    // Miss: e1 was evicted, so the page request leaves.
+    expect(pageRequests().length).toBe(1)
+  })
+})
+
+// ── subtree page seam and dedup ─────────────────────────────────────────────
+
+describe('chat mutation kills: subtree page merge', () => {
+  it('dedupes seen child tools and drops an identical seam text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{
+        kind: 'tool', id: 't1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+        displayOutput: '', startedAt: Date.now(), truncated: 5, truncatedCursor: 'anc',
+        children: [
+          { kind: 'text', id: '', text: 'seam' },
+          {
+            kind: 'tool', id: 'c1', name: 'Read', summary: '', isSearch: false, isRead: false,
+            isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+            displayOutput: 'C1 OUTPUT', startedAt: 0, children: [],
+          },
+        ],
+      }],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    const nonce = ((sent.find((m) => (m as { type: string }).type === 'subtree_request')) as { nonce: number }).nonce
+    dispatch({
+      type: 'subtree_page',
+      nonce,
+      blockID: 't1',
+      children: [
+        {
+          kind: 'tool', id: 'c2', name: 'Read', summary: '', isSearch: false, isRead: false,
+          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+          displayOutput: 'C2 OUTPUT', startedAt: 0, children: [],
+        },
+        {
+          kind: 'tool', id: 'c1', name: 'Read', summary: '', isSearch: false, isRead: false,
+          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+          displayOutput: 'C1 OUTPUT DUP', startedAt: 0, children: [],
+        },
+        { kind: 'text', id: '', text: 'seam' },
+      ],
+      remaining: 0,
+      nextAnchor: '',
+    })
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    const toolRoots = children.querySelectorAll('[data-tool-root]')
+    expect(toolRoots.length).toBe(2)
+    expect(children.querySelectorAll('[data-block-kind="text"]').length).toBe(1)
+    expect(children.querySelectorAll('[data-block-kind="text"]')[0].textContent).toBe('seam\n')
+    // c2 (older) sits above c1 in document order.
+    expect((toolRoots[0] as HTMLElement).getAttribute('data-tool-name')).toBe('Read')
+    expect(children.textContent).not.toContain('C1 OUTPUT DUP')
+  })
+})
+
+// ── prependStreamBlocks ─────────────────────────────────────────────────────
+
+describe('chat mutation kills: prependStreamBlocks', () => {
+  it('an older in-flight window prepends above the live stream content', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'live tail' },
+    ])
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'older window text' }],
+      nextCursor: '', hasMore: false,
+    })
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    const divs = stream.querySelectorAll(':scope > [data-block-kind="text"]')
+    expect(divs.length).toBe(2)
+    expect((divs[0] as HTMLElement).textContent).toContain('older window text')
+    expect((divs[1] as HTMLElement).textContent).toContain('live tail')
+  })
+})
+
+// ── cleanup ─────────────────────────────────────────────────────────────────
+
+describe('chat mutation kills: cleanup', () => {
+  it('cleanup stops message delivery and freezes the refresh interval', () => {
+    vi.useFakeTimers()
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+    ])
+    vi.advanceTimersByTime(1200)
+    const dur = document.querySelector('[data-tool-root] .font-mono.text-xs') as HTMLElement
+    const before = dur.textContent
+    chat.cleanup()
+    vi.advanceTimersByTime(5000)
+    expect(dur.textContent).toBe(before)
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u1', role: 'user', text: 'after cleanup' })],
+      nextCursor: '', hasMore: false,
+    })
+    expect(document.body.textContent).not.toContain('after cleanup')
+  })
+})
+
+// ── voice face and dictation wiring ─────────────────────────────────────────
+
+describe('chat mutation kills: voice and dictation', () => {
+  class FakeAudioContext {
+    static created: FakeAudioContext[] = []
+    static analysers: Array<{ connectedTo: unknown; data: Uint8Array }> = []
+    readonly sampleRate: number
+    readonly destination = {}
+    readonly audioWorklet = { addModule: async () => {} }
+    constructor(opts?: { sampleRate?: number }) {
+      this.sampleRate = opts?.sampleRate ?? 48000
+      FakeAudioContext.created.push(this)
+    }
+    resume() { return Promise.resolve() }
+    close() { return Promise.resolve() }
+    createAnalyser() {
+      const analyser = {
+        connectedTo: null as unknown,
+        data: new Uint8Array(0),
+        connect(target: unknown) { this.connectedTo = target },
+        disconnect() {},
+        getByteTimeDomainData(arr: Uint8Array) { this.data = arr },
+      }
+      FakeAudioContext.analysers.push(analyser)
+      return analyser
+    }
+    createMediaStreamSource(_s: unknown) { return { connect() {}, disconnect() {} } }
+  }
+  class FakeAudioWorkletNode {
+    static created: Array<{ node: FakeAudioWorkletNode; name: string }> = []
+    readonly name: string
+    readonly port = {
+      posted: [] as unknown[],
+      onmessage: null as ((e: { data: unknown }) => void) | null,
+      postMessage(msg: unknown) { this.posted.push(msg) },
+    }
+    constructor(_ctx: unknown, name: string) {
+      this.name = name
+      FakeAudioWorkletNode.created.push({ node: this, name })
+    }
+    connect() {}
+    disconnect() {}
+  }
+  const sttSocks = () =>
+    (sttModule as unknown as { __sttSocks: { sentText: string[]; dispatch: (d: unknown) => void; close: () => void }[] }).__sttSocks
+  const realAudioContext = globalThis.AudioContext
+  const realAudioWorkletNode = globalThis.AudioWorkletNode
+
+  beforeEach(() => {
+    FakeAudioContext.created = []
+    FakeAudioContext.analysers = []
+    FakeAudioWorkletNode.created = []
+    sttSocks().length = 0
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    vi.stubGlobal('AudioWorkletNode', FakeAudioWorkletNode)
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+  })
+  afterEach(() => {
+    vi.stubGlobal('AudioContext', realAudioContext)
+    vi.stubGlobal('AudioWorkletNode', realAudioWorkletNode)
+    Reflect.deleteProperty(navigator, 'mediaDevices')
+  })
+
+  function mountWithRoot() {
+    document.body.innerHTML = ''
+    // A previous test's face may have parked body-level styles; jsdom's
+    // innerHTML wipe clears children but not attributes.
+    document.body.removeAttribute('aria-hidden')
+    document.body.removeAttribute('data-upgrading')
+    document.body.style.overflow = ''
+    const rootEl = document.createElement('div')
+    rootEl.id = 'root'
+    document.body.appendChild(rootEl)
+    const chat = createChat({ connected: true })
+    rootEl.appendChild(chat.root)
+    return chat
+  }
+  const metaWithVoice = (stt: boolean, tts: boolean) => {
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' }, stt: stt ? true : undefined, tts: tts ? true : undefined },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false })
+  }
+  const micBtn = () => document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+  const voicePage = () => document.querySelector('.voice-page') as HTMLElement | null
+  const flushMicrotasks = async (): Promise<void> => {
+    for (let i = 0; i < 12; i++) await Promise.resolve()
+  }
+
+  it('metadata with stt+tts arms the face; a second long-press does not remount it', async () => {
+    vi.useFakeTimers()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    metaWithVoice(true, true)
+    micBtn().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    expect(voicePage()).toBeTruthy()
+    expect(document.getElementById('root')!.getAttribute('aria-hidden')).toBe('true')
+    expect(document.body.style.overflow).toBe('hidden')
+    expect(dbg).toHaveBeenCalledWith(expect.stringContaining('[voice] doc metrics scrollH='))
+    micBtn().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    expect(document.querySelectorAll('.voice-page').length).toBe(1)
+  })
+
+  it('metadata with stt but no tts never opens the face', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    metaWithVoice(true, false)
+    micBtn().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    expect(voicePage()).toBeNull()
+    expect(document.body.style.overflow).toBe('')
+  })
+
+  it('dictation start frame carries the last ten messages, newest included, oldest not', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 'p', model: 'm' },
+      stt: true,
+      thinking: 'auto',
+    })
+    // The messages array is time-ordered (oldest first, matching the DOM),
+    // so slice(-10) feeds the ten NEWEST history messages: h10 (newest) is
+    // inside the window, h0 (oldest, the filler words) is outside, and the
+    // thinking text never leaks (only text blocks reach the prompt).
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'h0', role: 'user', text: 'fone ftwo fthree ffour ffive fsix fseven feight fnine ften feleven ftwelve', startedAt: 0 }),
+        histMsg({ id: 'h1', role: 'user', text: 'aardvark', startedAt: 1 }),
+        ...Array.from({ length: 3 }, (_, i) => histMsg({ id: 's' + i, role: 'user', text: 'aa', startedAt: 2 + i })),
+        histMsg({
+          id: 'h5', role: 'assistant', startedAt: 5,
+          blocks: [
+            { kind: 'thinking', thinking: { text: 'uniquethinkword' } },
+            { kind: 'text', text: 'midtext' },
+          ],
+        }),
+        ...Array.from({ length: 3 }, (_, i) => histMsg({ id: 't' + i, role: 'user', text: 'bb', startedAt: 6 + i })),
+        histMsg({ id: 'h9', role: 'user', text: 'zzprefix', startedAt: 9 }),
+        histMsg({ id: 'h10', role: 'user', text: 'zebrafinch', startedAt: 10 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    micBtn().click()
+    await flushMicrotasks()
+    const sock = sttSocks()[sttSocks().length - 1]
+    const frame = JSON.parse(sock.sentText[0]) as { type: string; prompt: string }
+    expect(frame.type).toBe('start')
+    // Exact terms: newest-ten window [h1..h10] in time order — aa/bb fall
+    // under the 3-char floor, so the four distinct long words are the whole
+    // prompt. zebrafinch (newest) in, h0's filler words out, no thinking.
+    expect(frame.prompt).toBe('aardvark midtext zzprefix zebrafinch')
+  })
+
+  it('a two-page history keeps the array time-ordered; the window follows the newest page', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 'p', model: 'm' },
+      stt: true,
+      thinking: 'auto',
+    })
+    // First frame is the NEWER page (newA..newK); the second is an OLDER
+    // page (oldA, oldB) that arrives later and prepends. The model array
+    // must read [oldA oldB newA..newK] — one block per page, time order
+    // inside each — so the ten-message window is newB..newK.
+    dispatch({
+      type: 'history',
+      messages: Array.from({ length: 11 }, (_, i) =>
+        histMsg({ id: 'n' + i, role: 'user', text: 'new' + String.fromCharCode(65 + i), startedAt: 100 + i })),
+      nextCursor: 'c1', hasMore: true,
+    })
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'o0', role: 'user', text: 'oldA', startedAt: 1 }),
+        histMsg({ id: 'o1', role: 'user', text: 'oldB', startedAt: 2 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    // DOM stays oldest-first across the prepend.
+    const order = (document.querySelector('.space-y-7') as HTMLElement).textContent ?? ''
+    expect(order.indexOf('oldB')).toBeLessThan(order.indexOf('newA'))
+    expect(order.indexOf('newA')).toBeLessThan(order.indexOf('newK'))
+    micBtn().click()
+    await flushMicrotasks()
+    const sock = sttSocks()[sttSocks().length - 1]
+    const frame = JSON.parse(sock.sentText[0]) as { prompt: string }
+    // 13 messages: the window drops oldA, oldB, and newA. An older page
+    // appended at the tail (instead of the head) or an in-page reversal
+    // changes this exact string.
+    expect(frame.prompt).toBe('newB newC newD newE newF newG newH newI newJ newK')
+  })
+  it('a compactBoundary mid-page splits the batches but keeps the array time-ordered', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 'p', model: 'm' },
+      stt: true,
+      thinking: 'auto',
+    })
+    // Boundary in the MIDDLE of one page: flushBatch runs per segment, but
+    // the model array must still come out oldest-first in one final block
+    // insert — an in-page reversal would flip the prompt window. Words are
+    // ≥3 chars: extractPromptTerms drops shorter ones from the bias list.
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'a1', role: 'user', text: 'alpha', startedAt: 1 }),
+        histMsg({ id: 'a2', role: 'user', text: 'bravo', startedAt: 2 }),
+        { id: 'b', role: 'system', compactBoundary: true, text: '', thinking: [], tools: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 }, error: '', status: 'done', startedAt: 3 },
+        histMsg({ id: 'c1', role: 'user', text: 'charlie', startedAt: 4 }),
+        histMsg({ id: 'c2', role: 'user', text: 'delta', startedAt: 5 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    const order = (document.querySelector('.space-y-7') as HTMLElement).textContent ?? ''
+    expect(order.indexOf('bravo')).toBeLessThan(order.indexOf('charlie'))
+    micBtn().click()
+    await flushMicrotasks()
+    const sock = sttSocks()[sttSocks().length - 1]
+    const frame = JSON.parse(sock.sentText[0]) as { prompt: string }
+    expect(frame.prompt).toBe('alpha bravo charlie delta')
+  })
+
+  it('an error frame flags the mic and freezes the utterance against later partials', async () => {
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'config', models: [], current: { provider: 'p', model: 'm' }, stt: true })
+    micBtn().click()
+    await flushMicrotasks()
+    const sock = sttSocks()[sttSocks().length - 1]
+    sock.dispatch('{"type":"partial","text":"half said"}')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('half said')
+    sock.dispatch('{"type":"error","message":"engine down"}')
+    expect(micBtn().classList.contains('stt-mic-err')).toBe(true)
+  })
+
+  it('a scoped tts error capsule auto-dismisses after its duration', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    metaWithVoice(true, true)
+    micBtn().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    const bigMic = voicePage()!.querySelector('.voice-mic') as HTMLElement
+    bigMic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    bigMic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }))
+    const sock = sttSocks()[sttSocks().length - 1] as unknown as { dispatch: (d: unknown) => void }
+    sock.dispatch('{"type":"done","text":"spoken"}')
+    await flushMicrotasks()
+    const queues = (createTTSQueue as unknown as { all: { opts: { onError?: (m: string) => void } }[] }).all
+    queues[queues.length - 1].opts.onError!('tts engine down')
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).not.toContain('opacity-0')
+    vi.advanceTimersByTime(6500)
+    expect(capsule.className).toContain('opacity-0')
+  })
+
+  it('the voice session start frame carries the timeline prompt texts too', async () => {
+    vi.useFakeTimers()
+    mountWithRoot()
+    dispatch({ type: 'connect_status', connected: true })
+    metaWithVoice(true, true)
+    // Time-ordered array (see the dictation twin): slice(-10) keeps the ten
+    // NEWEST messages — v0 and x0 (the two oldest) fall outside the window
+    // and outsidermark (v11, newest) is inside it.
+    const fillers = 'wone wtwo wthree wfour wfive wsix wseven weight wnine wten weleven wtwelve'.split(' ')
+    dispatch({
+      type: 'history',
+      messages: [
+        histMsg({ id: 'v0', role: 'user', text: fillers.join(' '), startedAt: 0 }),
+        ...Array.from({ length: 6 }, (_, i) => histMsg({ id: 'x' + i, role: 'user', text: 'xx', startedAt: i + 1 })),
+        histMsg({
+          id: 'v7', role: 'assistant', startedAt: 7,
+          blocks: [
+            { kind: 'thinking', thinking: { text: 'voiceThinkLeak' } },
+            { kind: 'text', text: 'yy' },
+          ],
+        }),
+        histMsg({ id: 'v8', role: 'user', text: 'vfinal', startedAt: 8 }),
+        histMsg({ id: 'v9', role: 'user', text: 'voice context prompt', startedAt: 9 }),
+        histMsg({ id: 'v10', role: 'user', text: 'xx', startedAt: 10 }),
+        histMsg({ id: 'v11', role: 'user', text: 'outsidermark', startedAt: 11 }),
+      ],
+      nextCursor: '', hasMore: false,
+    })
+    micBtn().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await flushMicrotasks()
+    const bigMic = voicePage()!.querySelector('.voice-mic') as HTMLElement
+    bigMic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    const sock = sttSocks()[sttSocks().length - 1]
+    const frame = JSON.parse(sock.sentText[0]) as { prompt: string }
+    // Exact terms from the newest-ten window in time order: xx/yy sit under
+    // the 3-char floor, so the four distinct long words are the whole
+    // prompt — v0's fillers and the thinking text are absent.
+    expect(frame.prompt).toBe('vfinal voice context prompt outsidermark')
+  })
+})
+
+// ── batch 5: residual escapes ───────────────────────────────────────────────
+
+describe('chat mutation kills: residual wiring', () => {
+  it('sub-agent text deltas render markdown with grown text and copy buttons', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'text_delta', agent: { parent_tool_use_id: 'agent-1' }, text: '**bo' },
+      { type: 'text_delta', agent: { parent_tool_use_id: 'agent-1' }, text: 'ld**' },
+      { type: 'text_delta', agent: { parent_tool_use_id: 'agent-1' }, text: '\n```js\nhi()\n```' },
+    ])
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    expect(children.querySelector('strong')?.textContent).toBe('bold')
+    expect(children.querySelectorAll('[data-block-kind="text"]').length).toBe(1)
+    expect(children.querySelector('.copy-btn')).toBeTruthy()
+  })
+
+  it('sub-agent thinking label ticks while active', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    const agentTag = { parent_tool_use_id: 'agent-1', agent_type: 'Executor' }
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'thinking_start', agent: agentTag },
+    ])
+    vi.advanceTimersByTime(2200)
+    const label = Array.from(document.querySelectorAll('[data-tool-children] .text-amber'))
+      .find((el) => (el.textContent ?? '').startsWith('Thinking (')) as HTMLElement
+    expect(label.textContent).toBe('Thinking (2s)')
+  })
+
+  it('page0 hydration finishes the takeover bar and logs the page reason', () => {
+    vi.useFakeTimers()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // The bar only finishes a window that is running: reconnect opens it.
+    stateCb!('reconnecting')
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'page window' }],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    vi.advanceTimersByTime(60)
+    const fill = document.querySelector('[data-testid="takeover-bar-fill"]') as HTMLElement
+    expect(fill.style.width).toBe('100%')
+    expect(dbg).toHaveBeenCalledWith(expect.stringContaining('reason=page'))
+  })
+
+  it('tool_start without a turn logs the fallback streaming reason', () => {
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } }])
+    expect(dbg).toHaveBeenCalledWith(expect.stringContaining('reason=tool_start_fallback'))
+  })
+
+  it('tool_run does not mark a non-collapsible tool', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      { type: 'tool_run', tool_use: { id: 't1' } },
+    ])
+    expect((document.querySelector('[data-tool-root]') as HTMLElement).hasAttribute('data-collapsible')).toBe(false)
+  })
+
+  it('abort rewound with text and echo content commits the turn', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'real answer' },
+      { type: 'attachment', message: { attachment: { prompt: 'mid-turn note' } } },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.body.textContent).toContain('real answer')
+    expect(document.body.textContent).toContain('mid-turn note')
+    expect(document.body.textContent).toContain('q')
+  })
+
+  it('late abort frames never clobber a user message', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u0', role: 'user', text: 'old prompt', startedAt: 1 })],
+      nextCursor: '', hasMore: false,
+    })
+    // Rewound abort whose target is absent: text-only restore, history intact.
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'elsewhere' }])
+    expect(document.body.textContent).toContain('old prompt')
+    // Commit-path abort while the tail is a USER message: nothing may be
+    // removed or rewritten on it.
+    dispatchEvents([{ type: 'query_end', aborted: true }])
+    expect(document.body.textContent).toContain('old prompt')
+    const row = Array.from(document.querySelectorAll('.space-y-7 > div'))
+      .find((el) => (el.textContent ?? '').includes('old prompt')) as HTMLElement
+    sharePress(row.querySelector('.bg-gradient-to-br') as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('old prompt')
+  })
+
+  it('whitespace-only text blocks are dropped from the commit pairing too', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'aaa' },
+      { type: 'text_end' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: '   ' },
+      { type: 'text_end' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'bbb' },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true }])
+    const divs = document.querySelectorAll('[data-block-kind="text"]')
+    expect(divs.length).toBe(2)
+    sharePress(divs[1] as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('bbb')
+  })
+
+  it('the rewind splice keeps stale entries out of later prompt contexts', async () => {
+    class FakeAC2 {
+      readonly sampleRate = 48000
+      readonly destination = {}
+      readonly audioWorklet = { addModule: async () => {} }
+      resume() { return Promise.resolve() }
+      close() { return Promise.resolve() }
+      createAnalyser() { return { connect() {}, disconnect() {}, getByteTimeDomainData() {} } }
+      createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+    }
+    vi.stubGlobal('AudioContext', FakeAC2)
+    vi.stubGlobal('AudioWorkletNode', class { port = { postMessage() {}, posted: [] as unknown[], onmessage: null }; connect() {} disconnect() {} })
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 'p', model: 'm' },
+      stt: true,
+    })
+    setTextarea('first prompt')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    // The popped prompt must be gone from the messages array as well.
+    setTextarea('second prompt')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'turn_start' }])
+    dispatchEvents([{ type: 'query_end' }])
+    const { __sttSocks } = sttModule as unknown as { __sttSocks: { sentText: string[] }[] }
+    const socksBefore = __sttSocks.length
+    const micBtn2 = document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+    micBtn2.click()
+    await vi.waitFor(() => expect(__sttSocks.length).toBeGreaterThan(socksBefore))
+    const sock = __sttSocks[socksBefore]
+    expect(sock.sentText.length).toBe(1)
+    const frame = JSON.parse(sock.sentText[0]) as { prompt: string }
+    expect(frame.prompt.split(' ')).toEqual(expect.arrayContaining(['second', 'prompt']))
+    expect(frame.prompt).not.toContain('first')
+  })
+
+  it('live image and document sends render thumbnails, alt text, chips, and lightbox', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const imgInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '') === 'image/*' && i.multiple) as HTMLInputElement
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const img = new File(['x'], 'cam.png', { type: 'image/png' })
+    const doc = new File(['yy'], 'spec.md', { type: 'text/markdown' })
+    Object.defineProperty(imgInput, 'files', { value: [img], configurable: true })
+    imgInput.dispatchEvent(new Event('change'))
+    Object.defineProperty(docInput, 'files', { value: [doc], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('see files')
+    pressEnter()
+    await vi.waitFor(() =>
+      expect(sent.some((m) => (m as { type: string; attachments?: unknown[] }).type === 'message' && (m as { attachments?: unknown[] }).attachments)).toBe(true))
+    const bubbleImg = document.querySelector('.space-y-7 .max-w-fit img') as HTMLImageElement
+    expect(bubbleImg.alt).toBe('cam.png')
+    expect(bubbleImg.className).toBe('block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+    const chip = document.querySelector('.space-y-7 .max-w-fit span.font-mono') as HTMLElement
+    expect(chip.textContent).toBe('[spec.md]')
+    expect(chip.className).toContain('font-mono')
+    // The thumbnail keeps its blob URL alive for the lightbox singleton.
+    expect(bubbleImg.src.startsWith('blob:')).toBe(true)
+  })
+
+  it('clicking the live-sent thumbnail opens the lightbox with the same blob url', async () => {
+    const calls = (streamBlocks as unknown as { __lightboxCalls: string[] }).__lightboxCalls
+    calls.length = 0
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const imgInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '') === 'image/*' && i.multiple) as HTMLInputElement
+    const img = new File(['x'], 'cam.png', { type: 'image/png' })
+    Object.defineProperty(imgInput, 'files', { value: [img], configurable: true })
+    imgInput.dispatchEvent(new Event('change'))
+    setTextarea('see this')
+    pressEnter()
+    await vi.waitFor(() =>
+      expect(sent.some((m) => (m as { type: string; attachments?: unknown[] }).type === 'message' && (m as { attachments?: unknown[] }).attachments)).toBe(true))
+    const bubbleImg = document.querySelector('.space-y-7 .max-w-fit img') as HTMLImageElement
+    bubbleImg.click()
+    expect(calls.length).toBe(1)
+    expect(calls[0]).toBe(bubbleImg.src)
+  })
+
+  it('empty send with no paste is a no-op; a pasted block joins the message body', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    pressEnter()
+    expect(sent.filter((m) => (m as { type: string }).type === 'message').length).toBe(0)
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    const paste = new InputEvent('beforeinput', {
+      inputType: 'insertFromPaste',
+      data: 'pasted line one\npasted line two\nthird\nfourth',
+      bubbles: true,
+      cancelable: true,
+    })
+    ta.dispatchEvent(paste)
+    pressEnter()
+    const frame = sent.find((m) => (m as { type: string }).type === 'message') as { text: string }
+    expect(frame.text).toBe('pasted line one\npasted line two\nthird\nfourth')
+  })
+
+  it('STOP aborts in-flight uploads and logs both debug lines', async () => {
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((_resolve, reject) => {
+        opts!.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+    )
+    dispatchEvents([{ type: 'query_start' }])
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'spec.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('upload then stop')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(sent).toContainEqual({ type: 'stop' })
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments()[0].failed).toBe(true))
+    expect(dbg).toHaveBeenCalledWith('[chat] onStop esc pressed at', expect.any(Number))
+    expect(dbg).toHaveBeenCalledWith(expect.stringContaining('[chat] onStop stop sent, ws_buffered='))
+  })
+
+  it('onStop logs the exact buffered delta with its unit', async () => {
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(2500)
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      mount()
+      dispatch({ type: 'connect_status', connected: true })
+      vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+        new Promise((_resolve, reject) => {
+          opts!.signal.addEventListener('abort', () => reject(new Error('aborted')))
+        }),
+      )
+      dispatchEvents([{ type: 'query_start' }])
+      const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+        .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+      const file = new File(['bytes'], 'spec.pdf', { type: 'application/pdf' })
+      Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+      docInput.dispatchEvent(new Event('change'))
+      setTextarea('upload then stop')
+      pressEnter()
+      await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await vi.waitFor(() => expect(sent).toContainEqual({ type: 'stop' }))
+      // Frozen clock: t0 and the final read are both 2500, so the delta is
+      // exactly zero — summing instead of subtracting prints 5000ms.
+      expect(dbg).toHaveBeenCalledWith('[chat] onStop stop sent, ws_buffered=0ms')
+    } finally {
+      nowSpy.mockRestore()
+      dbg.mockRestore()
+    }
+  })
+
+  it('a failed chip retry re-uploads and re-stages the id', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockRejectedValueOnce(new Error('net down'))
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'retry.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('flaky')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+    const redChip = document.querySelector('.border-red-500') as HTMLElement
+    const chipButtons = (redChip.parentElement as HTMLElement).querySelectorAll('button')
+    // The retry affordance is the failed chip's first button; the second is ×.
+    const retryBtn = chipButtons[0] as HTMLButtonElement
+    retryBtn.click()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments()[0].failed).toBe(false))
+    expect(chat.inputBar.getAttachments()[0].uploadedID).toBe('up-1')
+    expect(chat.inputBar.getAttachments()[0].uploadProgress).toBe(1)
+  })
+
+  it('input history arrows replay the last prompt', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('remembered prompt')
+    pressEnter()
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    expect(ta.value).toBe('remembered prompt')
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(ta.value).toBe('')
+  })
+  it('an ArrowUp past the oldest prompt keeps the current value', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('first prompt')
+    pressEnter()
+    setTextarea('second prompt')
+    pressEnter()
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    const up = () => ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    up()
+    expect(ta.value).toBe('second prompt')
+    up()
+    expect(ta.value).toBe('first prompt')
+    // Exhausted: the third up reports cursor none and the value survives.
+    up()
+    expect(ta.value).toBe('first prompt')
+  })
+  it('an ArrowDown with the cursor at the newest keeps the current value', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('only prompt')
+    pressEnter()
+    setTextarea('fresh draft')
+    const ta = document.querySelector('textarea') as HTMLTextAreaElement
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    // No history walk below the newest entry: the draft survives.
+    expect(ta.value).toBe('fresh draft')
+  })
+
+  it('upgrade and give-up states abort in-flight uploads too', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((_resolve, reject) => {
+        opts!.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+    )
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'a.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('u')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    stateCb!('upgrading')
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments()[0].failed).toBe(true))
+    expect(document.body.hasAttribute('data-upgrading')).toBe(true)
+    stateCb!('failed')
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+  })
+
+  it('reconnecting pins the banner open with pointer cursor', () => {
+    mount()
+    stateCb!('reconnecting')
+    const banner = (document.querySelector('.text-\\[12px\\].text-red') as HTMLElement).parentElement!
+    expect(banner.style.maxHeight).toBe('40px')
+    expect(banner.style.opacity).toBe('1')
+    expect(banner.style.cursor).toBe('default')
+  })
+
+  it('rollback leaves the capsule armed when the socket actually dropped', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    wsConnected = false
+    vi.advanceTimersByTime(20_000)
+    expect(document.body.hasAttribute('data-upgrading')).toBe(true)
+  })
+
+  it('voice page mounts with a rendered avatar inside its holder', async () => {
+    vi.useFakeTimers()
+    class FakeAC {
+      static created: FakeAC[] = []
+      readonly sampleRate = 48000
+      readonly destination = {}
+      readonly audioWorklet = { addModule: async () => {} }
+      resume() { return Promise.resolve() }
+      close() { return Promise.resolve() }
+      createAnalyser() { return { connect() {}, disconnect() {}, getByteTimeDomainData() {} } }
+      createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+    }
+    vi.stubGlobal('AudioContext', FakeAC)
+    vi.stubGlobal('AudioWorkletNode', class { port = { postMessage() {}, posted: [] as unknown[], onmessage: null }; connect() {} disconnect() {} })
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+    document.body.innerHTML = ''
+    const rootEl = document.createElement('div')
+    rootEl.id = 'root'
+    document.body.appendChild(rootEl)
+    const chat = createChat({ connected: true })
+    rootEl.appendChild(chat.root)
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config', models: [], current: { provider: 'p', model: 'm' }, stt: true, tts: true,
+    })
+    const mic = document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await Promise.resolve()
+    await Promise.resolve()
+    const holder = document.querySelector('.voice-avatar') as HTMLElement
+    expect(holder).toBeTruthy()
+    expect(holder.childElementCount).toBeGreaterThan(0)
+    vi.stubGlobal('AudioContext', undefined)
+  })
+
+  it('scroll button click re-pins the viewport to the bottom', () => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, writable: true, value: 3000 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, writable: true, value: 500 })
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    chat.scrollEl.scrollTo = ((o: ScrollToOptions) => { chat.scrollEl.scrollTop = o.top ?? 0 }) as typeof chat.scrollEl.scrollTo
+    chat.scrollEl.scrollTop = 0
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    const btn = (document.querySelector('.scroll-progress') as HTMLElement).closest('button') as HTMLElement
+    expect(btn.classList.contains('opacity-0')).toBe(false)
+    btn.click()
+    expect(chat.scrollEl.scrollTop).toBeGreaterThan(0)
+    expect(btn.classList.contains('opacity-0')).toBe(true)
+  })
+})
+
+describe('chat mutation kills: sidebar sheets and session wiring', () => {
+  it('new-session button sends session_new and closes the sidebar', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const btn = document.querySelector('[data-new-session]') as HTMLButtonElement
+    btn.click()
+    expect(sent).toContainEqual({ type: 'session_new' })
+  })
+
+  it('settings button closes the sidebar and opens the settings page', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const gear = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement
+    gear.click()
+    const page = Array.from(document.querySelectorAll('.fixed.inset-0'))
+      .find((el) => (el.textContent ?? '').includes('PROVIDERS')) as HTMLElement
+    expect(page.style.display).not.toBe('none')
+    // The gear closes the sidebar first: its panel parks off-canvas.
+    const sidebarRoot = (document.querySelector('[data-new-session]') as HTMLElement)
+      .closest('.fixed') as HTMLElement
+    expect(sidebarRoot.style.transform).toBe('translateX(-100%)')
+  })
+  it('the settings gear closes an already-open sidebar immediately', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const hamburger = document.querySelector('button[aria-label="Menu"]') as HTMLButtonElement
+    hamburger.click()
+    const sidebarRoot = (document.querySelector('[data-new-session]') as HTMLElement)
+      .closest('.fixed') as HTMLElement
+    expect(sidebarRoot.style.transform).not.toBe('translateX(-100%)')
+    const gear = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement
+    gear.click()
+    const page = Array.from(document.querySelectorAll('.fixed.inset-0'))
+      .find((el) => (el.textContent ?? '').includes('PROVIDERS')) as HTMLElement
+    expect(page.style.display).not.toBe('none')
+    expect(sidebarRoot.style.transform).toBe('translateX(-100%)')
+  })
+  it('an empty config thinking value renders an empty caption, not auto', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 'p', model: 'm' },
+      stt: false,
+      thinking: '',
+    })
+    const caption = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.className.includes('text-[10px] leading-none')) as HTMLElement
+    expect(caption).toBeTruthy()
+    // 'auto' hides the caption; an explicit empty effort shows it blank.
+    expect(caption.classList.contains('invisible')).toBe(false)
+    expect(caption.textContent).toBe('')
+  })
+
+  it('a device row opens the VNC sheet', async () => {
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      const path = typeof url === 'string' ? url : (url as URL).toString()
+      if (path.includes('remotedesktop')) {
+        return Promise.resolve({ ok: true, json: async () => ({ devices: [{ name: 'phone-x', addr: '1.2.3.4:5901' }] }) })
+      }
+      if (path.includes('artifacts')) return Promise.resolve({ ok: true, json: async () => [] })
+      if (path.includes('plugins')) return Promise.resolve({ ok: true, json: async () => [] })
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // Opening the sidebar refreshes devices through the real fetch mock.
+    ;(document.querySelector('button[aria-label="Menu"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-device-row="phone-x"]')).toBeTruthy()
+    })
+    ;(document.querySelector('[data-device-row="phone-x"]') as HTMLElement).click()
+    const veil = document.querySelector('[data-vnc-veil]') as HTMLElement
+    expect(veil.style.display).not.toBe('none')
+    vi.stubGlobal('fetch', realFetch)
+  })
+
+  it('clear-artifacts double tap refetches the artifact list', async () => {
+    const realFetch = globalThis.fetch
+    let artifactFetches = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: unknown) => {
+      const path = typeof url === 'string' ? url : String(url)
+      if (path.includes('artifacts')) {
+        artifactFetches++
+        return Promise.resolve({ ok: true, json: async () => [] })
+      }
+      if (path.includes('remotedesktop')) return Promise.resolve({ ok: true, json: async () => ({ devices: [] }) })
+      if (path.includes('plugins')) return Promise.resolve({ ok: true, json: async () => [] })
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const btn = document.querySelector('[data-clear-artifacts]') as HTMLButtonElement
+    btn.click()
+    btn.click()
+    await vi.waitFor(() => expect(artifactFetches).toBe(1))
+    vi.stubGlobal('fetch', realFetch)
+  })
+
+  it('metadata-hydrated queued pills survive into the next streaming turn', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      queuedMsgs: [{ uuid: 'mq1', text: 'hydrated pill' }],
+    })
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false })
+    dispatchEvents([{ type: 'query_start' }])
+    const labels = Array.from(document.querySelectorAll('.queued-bubble span:first-child'))
+      .map((el) => el.textContent)
+    expect(labels).toEqual(['hydrated pill'])
+  })
+
+  it('a page0 cache hit clears the pending-page gate for live events', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const feed = (rev: string) => {
+      dispatch({
+        type: 'metadata', rev,
+        connect: { connected: true, engineID: 'e1', sessionID: 's' },
+        config: { models: [], current: { provider: 'p', model: 'm' } },
+        engines: { engines: [], activeID: 'e1' },
+        stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      })
+      dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false, rev, busy: false })
+    }
+    feed('r1')
+    sent.length = 0
+    feed('r1')
+    // Cache hit: no round trip...
+    expect(sent.filter((m) => (m as { type: string }).type === 'history_request').length).toBe(0)
+    // ...and the page-zero gate opened: this echo applies live.
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'live after hit' } } },
+    })
+    const spans = Array.from(document.querySelectorAll('.max-w-fit span.whitespace-pre-wrap'))
+    expect(spans.map((el) => el.textContent)).toEqual(['live after hit'])
+  })
+
+  it('an idle attachment echo share-presses to its own text', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'standalone echo' } } },
+    })
+    const row = Array.from(document.querySelectorAll('.space-y-7 > div'))
+      .find((el) => (el.textContent ?? '').includes('standalone echo')) as HTMLElement
+    sharePress(row.querySelector('.bg-gradient-to-br') as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('standalone echo')
+  })
+})
+
+describe('chat mutation kills: voice session switch', () => {
+  it('a session switch while the face is open tears the face down', async () => {
+    vi.useFakeTimers()
+    class FakeAC3 {
+      readonly sampleRate = 48000
+      readonly destination = {}
+      readonly audioWorklet = { addModule: async () => {} }
+      resume() { return Promise.resolve() }
+      close() { return Promise.resolve() }
+      createAnalyser() { return { connect() {}, disconnect() {}, getByteTimeDomainData() {} } }
+      createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+    }
+    vi.stubGlobal('AudioContext', FakeAC3)
+    vi.stubGlobal('AudioWorkletNode', class { port = { postMessage() {}, posted: [] as unknown[], onmessage: null }; connect() {} disconnect() {} })
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+    document.body.innerHTML = ''
+    const rootEl = document.createElement('div')
+    rootEl.id = 'root'
+    document.body.appendChild(rootEl)
+    const chat = createChat({ connected: true })
+    rootEl.appendChild(chat.root)
+    dispatch({ type: 'connect_status', connected: true, sessionID: 's1' })
+    dispatch({
+      type: 'config', models: [], current: { provider: 'p', model: 'm' }, stt: true, tts: true,
+    })
+    const mic = document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.advanceTimersByTimeAsync(350)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(document.querySelector('.voice-page')).toBeTruthy()
+    dispatch({ type: 'connect_status', connected: true, sessionID: 's2' })
+    expect(document.querySelector('.voice-page')).toBeNull()
+    expect(document.body.style.overflow).toBe('')
+  })
+})
+
+// ── batch 6: final residual kills ───────────────────────────────────────────
+
+describe('chat mutation kills: final residuals', () => {
+  function page0(stream: unknown[] | undefined, busy: boolean, extra: Record<string, unknown> = {}) {
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+      ...extra,
+    })
+    dispatch({ type: 'history', messages: [], stream, nextCursor: '', hasMore: false, busy, ...extra })
+  }
+
+  it('a tool following a children-carrying tool still copies its own output', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    page0([
+      {
+        kind: 'tool', id: 'agent-1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+        displayOutput: 'AGENT-OUT', startedAt: 0, children: [{
+          kind: 'tool', id: 'inner-1', name: 'Read', summary: '', isSearch: false, isRead: false,
+          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+          displayOutput: 'INNER-OUT', startedAt: 0, children: [],
+        }],
+      },
+      {
+        kind: 'tool', id: 't2', name: 'Bash', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+        displayOutput: 'SECOND-OUT', startedAt: 0, children: [],
+      },
+    ], true)
+    sharePress(toolRootByName('Bash'))
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('SECOND-OUT')
+  })
+
+  it('reminder row press pairs against user blocks only, body wins over narration', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }])
+    dispatch({ type: 'event', event: { type: 'text_start' } })
+    dispatchEvents([{ type: 'text_delta', text: 'narration around it' }])
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: { attachment: { prompt: '<job-notification>\n<summary>mixed body</summary>\n</job-notification>' } },
+      },
+    })
+    dispatchEvents([{ type: 'query_end' }])
+    const row = document.querySelector('[data-reminder-row]') as HTMLElement
+    sharePress(row.querySelector('.font-mono') as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('mixed body')
+  })
+
+  it('reminder press while streaming opens nothing', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }])
+    dispatch({
+      type: 'event',
+      event: {
+        type: 'attachment',
+        message: { attachment: { prompt: '<job-notification>\n<summary>live row</summary>\n</job-notification>' } },
+      },
+    })
+    const row = document.querySelector('[data-reminder-row]') as HTMLElement
+    sharePress(row.querySelector('.font-mono') as HTMLElement)
+    expect(shareMenu()).toBeNull()
+  })
+
+  it('opening the voice face stops an active dictation session', async () => {
+    class FakeAC4 {
+      readonly sampleRate = 48000
+      readonly destination = {}
+      readonly audioWorklet = { addModule: async () => {} }
+      resume() { return Promise.resolve() }
+      close() { return Promise.resolve() }
+      createAnalyser() { return { connect() {}, disconnect() {}, getByteTimeDomainData() {} } }
+      createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+    }
+    vi.stubGlobal('AudioContext', FakeAC4)
+    vi.stubGlobal('AudioWorkletNode', class { port = { postMessage() {}, posted: [] as unknown[], onmessage: null }; connect() {} disconnect() {} })
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+      configurable: true,
+    })
+    document.body.innerHTML = ''
+    const rootEl = document.createElement('div')
+    rootEl.id = 'root'
+    document.body.appendChild(rootEl)
+    const chat = createChat({ connected: true })
+    rootEl.appendChild(chat.root)
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'config', models: [], current: { provider: 'p', model: 'm' }, stt: true, tts: true })
+    const socks = (sttModule as unknown as { __sttSocks: { closed: boolean }[] }).__sttSocks
+    socks.length = 0
+    const mic = document.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+    mic.click()
+    await vi.waitFor(() => expect(socks.length).toBe(1))
+    expect(socks[0].closed).toBe(false)
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+    await vi.waitFor(() => expect(document.querySelector('.voice-page')).not.toBeNull())
+    expect(document.querySelector('.voice-page')).toBeTruthy()
+    // The dictation round was cut short: the stop frame left the socket.
+    const sock0 = socks[0] as unknown as { sentText: string[] }
+    expect(sock0.sentText).toContain('{"type":"stop"}')
+  })
+
+  it('connected freezes the dots animation for good', () => {
+    vi.useFakeTimers()
+    mount()
+    stateCb!('reconnecting')
+    vi.advanceTimersByTime(1000)
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.textContent).toBe('Connection lost, reconnecting..')
+    stateCb!('connected')
+    vi.advanceTimersByTime(2500)
+    // A leaked tick would have advanced to '...' then '.'.
+    expect(banner.textContent).toBe('Connection lost, reconnecting..')
+  })
+
+  it('capsule stays hidden through plain reconnect cycles and after rollback/give-up leaks', () => {
+    vi.useFakeTimers()
+    mount()
+    // Plain reconnect: no upgrade was in flight, no recovered flash.
+    stateCb!('reconnecting')
+    stateCb!('connected')
+    let capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+    // Rollback bail-out with a dead socket dismisses quietly; when the
+    // socket later returns, the cycle must not read as an upgrade recovery.
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    // The socket revives without a state event; the rollback timer finds
+    // it alive and retires quietly — no double recovery later.
+    wsConnected = true
+    vi.advanceTimersByTime(20_000)
+    expect(document.body.hasAttribute('data-upgrading')).toBe(false)
+    stateCb!('connected')
+    capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+  })
+
+  it('upgrading shows the capsule and only freezes a streaming turn', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u0', role: 'user', text: 'settled message' })],
+      nextCursor: '', hasMore: false,
+    })
+    // Idle chat: no stream to freeze.
+    stateCb!('upgrading')
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).not.toContain('opacity-0')
+    expect(document.querySelector('.stream-dim')).toBeNull()
+    stateCb!('connected')
+  })
+
+  it('give-up aborts a second upload staged during the upgrade window and pins the banner', async () => {
+    vi.useFakeTimers()
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((_resolve, reject) => {
+        opts!.signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+    )
+    dispatchEvents([{ type: 'query_start' }])
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    const file = new File(['bytes'], 'a.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('one')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    stateCb!('upgrading')
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments()[0].failed).toBe(true))
+    // Stage a second upload while the capsule is up, then give up.
+    const file2 = new File(['more'], 'b.pdf', { type: 'application/pdf' })
+    Object.defineProperty(docInput, 'files', { value: [file2], configurable: true })
+    docInput.dispatchEvent(new Event('change'))
+    setTextarea('two')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment.mock.calls.length).toBeGreaterThanOrEqual(2))
+    stateCb!('failed')
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments().length).toBe(2))
+    await vi.waitFor(() => expect(chat.inputBar.getAttachments().every((r) => r.failed)).toBe(true))
+    const banner = document.querySelector('.text-\\[12px\\].text-red') as HTMLElement
+    expect(banner.parentElement!.style.opacity).toBe('1')
+  })
+
+  it('prefetch counting: break-at-boundary and threshold edge', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const msgs = Array.from({ length: 12 }, (_, i) =>
+      histMsg({ id: 'u' + i, role: 'user', text: 'm' + i, startedAt: i }))
+    dispatch({ type: 'history', messages: msgs, nextCursor: 'c1', hasMore: true })
+    // The load-time prefetch fired on unmocked geometry; answer it.
+    dispatch({ type: 'history', messages: [], nextCursor: 'c2', hasMore: true })
+    const kids = Array.from(document.querySelector('.space-y-7')!.children) as HTMLElement[]
+    kids.forEach((el, i) => {
+      Object.defineProperty(el, 'offsetTop', { configurable: true, value: i * 100 })
+      Object.defineProperty(el, 'offsetHeight', { configurable: true, value: 50 })
+    })
+    const reqs = () => sent.filter((m) => (m as { type: string }).type === 'history_request') as { cursor: string }[]
+    // Scroll to 950: child 9's bottom is exactly 950 — inclusive break gives
+    // 9 above → below the threshold → the load-time prefetch of the page
+    // itself fires for c2 again.
+    chat.scrollEl.scrollTop = 950
+    dispatch({ type: 'history', messages: [], nextCursor: 'c3', hasMore: true })
+    expect(reqs().some((m) => m.cursor === 'c3')).toBe(true)
+    // Scroll to 1050: exactly ten above → no request leaves.
+    sent.length = 0
+    chat.scrollEl.scrollTop = 1050
+    dispatch({ type: 'history', messages: [], nextCursor: 'c4', hasMore: true })
+    expect(reqs().length).toBe(0)
+  })
+
+  it('hydrated active thinking keeps its server duration at finalize', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    page0([{
+      kind: 'thinking', id: '', text: 'frozen reasoning', durationNs: 5_000_000_000,
+      active: true, startedAt: Date.now() - 1000,
+    }], true)
+    dispatchEvents([{ type: 'query_end' }])
+    const label = Array.from(document.querySelectorAll('.text-amber'))
+      .find((el) => (el.textContent ?? '').startsWith('Thought for ')) as HTMLElement
+    expect(label.textContent).toBe('Thought for 5s')
+  })
+
+  it('an error after the turn closed opens a fresh assistant shell and disarms STOP', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_delta', text: 'done answer' }, { type: 'query_end' }])
+    const shellsBefore = document.querySelectorAll('.space-y-3').length
+    dispatch({ type: 'error', message: 'late failure' })
+    expect(document.querySelectorAll('.space-y-3').length).toBe(shellsBefore + 1)
+    const box = Array.from(document.querySelectorAll('.break-all.text-red'))
+      .find((el) => el.textContent === 'late failure') as HTMLElement
+    expect(box.className).toContain('border-red/40')
+    expect(document.body.textContent).toContain('done answer')
+    expect(Array.from(document.querySelectorAll('button')).some((b) => b.textContent?.includes('STOP'))).toBe(false)
+  })
+
+  it('metadata queryStartMs anchors the busy page elapsed, not the page arrival', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      busy: true,
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 }, queryStartMs: Date.now() - 300000 },
+    })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({
+        id: 'a1', role: 'assistant',
+        blocks: [{ kind: 'tool', tool: { id: 't-1', name: 'Bash', isRunning: true } }],
+      })],
+      stream: [],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    vi.advanceTimersByTime(200)
+    const elapsed = document.querySelector('.status-line .sep-elapsed + span') as HTMLElement
+    expect(elapsed.textContent).toBe('5m 0s')
+  })
+
+  it('nested snapshot tools register: a live tool_start with their id dedupes', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    page0([{
+      kind: 'tool', id: 'agent-1', name: 'Agent', summary: '', isSearch: false, isRead: false,
+      isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+      displayOutput: '', startedAt: Date.now(), children: [{
+        kind: 'tool', id: 'inner-1', name: 'Edit', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+        displayOutput: '', startedAt: Date.now(), children: [],
+      }],
+    }], true)
+    // The nested inner id is known from the snapshot: no duplicate row.
+    dispatchEvents([{ type: 'tool_start', tool_use: { id: 'inner-1', name: 'Edit' } }])
+    expect(document.querySelectorAll('[data-tool-root]').length).toBe(2)
+  })
+
+  it('a buffered event at the page seq boundary is absorbed, not replayed', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'metadata',
+      busy: true,
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+    dispatch({
+      type: 'event', seq: 5,
+      event: { type: 'attachment', message: { attachment: { prompt: 'buffered echo' } } },
+    })
+    dispatch({ type: 'history', messages: [], stream: [], nextCursor: '', hasMore: false, busy: false, seq: 5 })
+    expect(document.querySelector('.max-w-fit')).toBeNull()
+  })
+
+  it('prepend keeps the scrolled-up viewport anchored by the height delta', async () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'live tail' }])
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    Object.defineProperty(chat.scrollEl, 'scrollHeight', {
+      configurable: true,
+      get: () => 2000 + stream.children.length * 100,
+    })
+    Object.defineProperty(chat.scrollEl, 'clientHeight', { configurable: true, value: 500 })
+    chat.scrollEl.scrollTop = 0
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{ kind: 'text', id: '', text: 'older window text' }],
+      nextCursor: '', hasMore: false,
+    })
+    // One prepended block * 100px keeps the viewport anchored.
+    expect(chat.scrollEl.scrollTop).toBe(100)
+    // The prepended window commits with the turn: its markdown source
+    // still resolves through the block pairing.
+    dispatchEvents([{ type: 'query_end' }])
+    const divs = document.querySelectorAll('[data-block-kind="text"]')
+    sharePress(divs[0] as HTMLElement)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('older window text')
+  })
+
+  it('cache creation joins the cached percentage denominator', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'usage', usage_event: { input_tokens: 50, output_tokens: 0, cache_read_input_tokens: 50, cache_creation_input_tokens: 50 } },
+      { type: 'usage', usage_event: { input_tokens: 50, output_tokens: 0, cache_read_input_tokens: 50, cache_creation_input_tokens: 50 } },
+      { type: 'query_end' },
+    ])
+    const bar = document.querySelector('.status-line') as HTMLElement
+    // read 100 of total input 300 → 33.3%.
+    expect(bar.textContent).toContain('33.3% cached')
+  })
+
+  it('thinking fallback without a server value renders auto, caption stays invisible', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'model_switched', contextUsed: 1, contextTotal: 100 })
+    dispatch({ type: 'config', models: [], current: { provider: 'p', model: 'm' } })
+    const caption = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.className.includes('text-[10px]') && b.className.includes('leading-none')) as HTMLElement
+    expect(caption.classList.contains('invisible')).toBe(true)
+    expect(caption.textContent).not.toBe('undefined')
+    expect(document.body.textContent).not.toContain('undefined')
+  })
+
+  it('busy page with no stream window builds the prefill shell and finishes the bar', () => {
+    vi.useFakeTimers()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    stateCb!('reconnecting')
+    page0(undefined, true)
+    expect(document.querySelector('.status-line')).toBeTruthy()
+    const fill = document.querySelector('[data-testid="takeover-bar-fill"]') as HTMLElement
+    expect(fill.style.width).toBe('100%')
+    expect(dbg).toHaveBeenCalledWith(expect.stringContaining('reason=page'))
+  })
+
+  it('near-bottom backfill keeps the viewport pinned to the bottom', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const container = document.querySelector('.space-y-7') as HTMLElement
+    Object.defineProperty(chat.scrollEl, 'scrollHeight', {
+      configurable: true,
+      get: () => 1000 + container.children.length * 100,
+    })
+    Object.defineProperty(chat.scrollEl, 'clientHeight', { configurable: true, value: 500 })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'u0', role: 'user', text: 'seed' })],
+      nextCursor: '', hasMore: false,
+    })
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    // Large snapshot: the tail renders sync, older blocks backfill on rAF
+    // frames — while near bottom the autoscroll must keep winning.
+    const blocks = Array.from({ length: 40 }, (_, i) => ({ kind: 'text' as const, id: '', text: 'blk' + i }))
+    dispatch({ type: 'streamState', blocks })
+    // Wait for the rAF backfill to land every block, then re-pin.
+    await vi.waitFor(() =>
+      expect((document.querySelector('.space-y-3') as HTMLElement).querySelectorAll('[data-block-kind="text"]').length).toBe(40))
+    chat.scrollEl.dispatchEvent(new Event('scroll'))
+    expect(chat.scrollEl.scrollTop).toBe(chat.scrollEl.scrollHeight)
+  })
+})
+
+describe('chat mutation kills: whitespace rewind', () => {
+  it('whitespace-only text is no content: abort rewound rewinds the turn', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('ws question')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: '   ' },
+    ])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.body.textContent).not.toContain('ws question')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('ws question')
+  })
+
+  it('an echo-only abort with rewind commits the turn', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }])
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: { prompt: 'echo only content' } } },
+    })
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.body.textContent).toContain('echo only content')
+    expect(document.body.textContent).toContain('q')
+  })
+})
+
+// ── batch 7: closing stragglers ─────────────────────────────────────────────
+
+describe('chat mutation kills: closing stragglers', () => {
+  it('a delta arriving before the stream shell mounts lands inline at the anchor', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    // Delta with no shell yet: the block text accumulates in the model.
+    dispatchEvents([{ type: 'text_delta', text: 'early bird' }])
+    // The turn starts late; the next delta mounts the div inline.
+    dispatchEvents([{ type: 'turn_start' }, { type: 'text_delta', text: '```js\nlate()\n```' }])
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    const divs = stream.querySelectorAll(':scope > [data-block-kind="text"]')
+    expect(divs.length).toBe(1)
+    const div = divs[0] as HTMLElement
+    expect(div.querySelector('.copy-btn')).toBeTruthy()
+    const bar = stream.querySelector(':scope > .status-line') as HTMLElement
+    expect(div.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('tool_end without a display_output leaves the body empty', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Edit' } },
+      { type: 'tool_end', tool_result: { tool_use_id: 't1' } },
+    ])
+    const root = document.querySelector('[data-tool-root]') as HTMLElement
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    const body = root.querySelector('.md-body') as HTMLElement
+    expect(body.textContent).toBe('')
+  })
+
+  it('upgrade recovery followed by a plain cycle shows no second capsule', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    stateCb!('connected')
+    vi.advanceTimersByTime(1100)
+    // The recovery flag cleared: this plain cycle must stay capsule-free.
+    stateCb!('reconnecting')
+    stateCb!('connected')
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+  })
+
+  it('give-up retire keeps plain cycles capsule-free too', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'x' }])
+    stateCb!('upgrading')
+    stateCb!('failed')
+    stateCb!('reconnecting')
+    stateCb!('connected')
+    const capsule = document.querySelector('[data-status-capsule]') as HTMLElement
+    expect(capsule.className).toContain('opacity-0')
+  })
+
+  it('a prepended running tool registers for its live tool_end', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'text_start' }, { type: 'text_delta', text: 'live tail' }])
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [{
+        kind: 'tool', id: 't-old', name: 'Edit', summary: '', isSearch: false, isRead: false,
+        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+        displayOutput: '', startedAt: Date.now(), children: [],
+      }],
+      nextCursor: '', hasMore: false,
+    })
+    dispatchEvents([{ type: 'tool_end', tool_result: { tool_use_id: 't-old', display_output: 'older tool output' } }])
+    const old = document.querySelector('[data-tool-root][data-tool-name="Edit"]') as HTMLElement
+    ;(old.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(old.querySelector('.md-body')!.textContent).toBe('older tool output\n')
+  })
+
+  it('an agent-tagged text_start never opens a main text block', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'text_start', agent: { parent_tool_use_id: 'agent-1' } },
+    ])
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    expect(stream.querySelectorAll(':scope > [data-block-kind="text"]').length).toBe(0)
+  })
+
+  it('an agent thinking_start expands the running parent children pane', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'thinking_start', agent: { parent_tool_use_id: 'agent-1' } },
+    ])
+    const container = document.querySelector('[data-tool-children]') as HTMLElement
+    expect(container.classList.contains('hidden')).toBe(false)
+  })
+
+  it('an agent text delta as the first child event also expands the running parent pane', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'text_delta', agent: { parent_tool_use_id: 'agent-1' }, text: 'first words' },
+    ])
+    const container = document.querySelector('[data-tool-children]') as HTMLElement
+    expect(container.classList.contains('hidden')).toBe(false)
+  })
+
+  it('the first sub-agent text delta renders its code fence with a copy button', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'agent-1', name: 'Agent' } },
+      { type: 'text_delta', agent: { parent_tool_use_id: 'agent-1' }, text: '```js\nfirst()\n```' },
+    ])
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    expect(children.querySelector('.copy-btn')).toBeTruthy()
+  })
+
+  it('a rewound_text naming an assistant turn matches nothing and keeps history', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [histMsg({ id: 'a0', role: 'assistant', blocks: [{ kind: 'text', text: 'assistant words' }] })],
+      nextCursor: '', hasMore: false,
+    })
+    setTextarea('local q')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true, rewound_text: 'assistant words' }])
+    expect(document.body.textContent).toContain('assistant words')
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('assistant words')
+  })
+
+  it('a legacy rewind with no user messages preserves the draft', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('draft survives')
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('draft survives')
+  })
+
+  it('after a rewind-pop, a later error renders in a fresh shell', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('gone prompt')
+    pressEnter()
+    dispatchEvents([{ type: 'query_start' }, { type: 'thinking_start' }])
+    dispatchEvents([{ type: 'query_end', aborted: true, rewound: true }])
+    expect(document.querySelectorAll('.space-y-3').length).toBe(0)
+    // The popped assistant is gone from the timeline state too: the error
+    // lands in a NEW shell instead of the dead entry.
+    dispatch({ type: 'error', message: 'post rewind failure' })
+    const box = Array.from(document.querySelectorAll('.break-all.text-red'))
+      .find((el) => el.textContent === 'post rewind failure') as HTMLElement
+    expect(box.className).toContain('border-red/40')
+  })
+
+})
+
+// ── residual round two (ledger RESIDUAL section, mutate-wui-chat) ───────────
+
+describe('chat mutation kills: residual round two', () => {
+  const metaFrame = () =>
+    dispatch({
+      type: 'metadata',
+      connect: { connected: true },
+      config: { models: [], current: { provider: 'p', model: 'm' } },
+      engines: { engines: [], activeID: 'e1' },
+      stats: { usage: { input_tokens: 0, output_tokens: 0 } },
+    })
+  const streamTool = (id: string, children: unknown[], extra: Record<string, unknown> = {}) => ({
+    kind: 'tool', id, name: 'Agent', summary: '', isSearch: false, isRead: false,
+    isList: false, isLsp: false, isWeb: false, isTask: false, state: 'running', timingNs: 0,
+    displayOutput: '', startedAt: 0, truncated: 5, truncatedCursor: 'anc', children, ...extra,
+  })
+  const childTool = (id: string, name: string, output: string) => ({
+    kind: 'tool', id, name, summary: '', isSearch: false, isRead: false,
+    isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
+    displayOutput: output, startedAt: 0, children: [],
+  })
+  const stageFileForSend = () => {
+    const docInput = Array.from(document.querySelectorAll('input[type=file]'))
+      .find((i) => (i.getAttribute('accept') ?? '').includes('.pdf')) as HTMLInputElement
+    Object.defineProperty(docInput, 'files', {
+      value: [new File(['bytes'], 'spec.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    docInput.dispatchEvent(new Event('change'))
+  }
+  const retryButtonOfFailedChip = () => {
+    const redChip = document.querySelector('.border-red-500') as HTMLElement
+    return (redChip.parentElement as HTMLElement).querySelectorAll('button')[0] as HTMLButtonElement
+  }
+
+  it('a delta after an empty-text snapshot resume keeps morphing the same div', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    metaFrame()
+    dispatch({
+      type: 'history',
+      // The empty trailing text block rendered no div at hydration, so the
+      // first resumed delta must mount one and REGISTER it: a second delta
+      // that re-mounts instead of morphing leaves a stale twin behind.
+      messages: [],
+      stream: [streamTool('t1', [{ kind: 'text', id: '', text: '' }], { truncated: 0, truncatedCursor: undefined })],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    dispatchEvents([
+      { type: 'text_delta', agent: { parent_tool_use_id: 't1' }, text: 'Hello' },
+      { type: 'text_delta', agent: { parent_tool_use_id: 't1' }, text: ' world' },
+    ])
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    const textDivs = children.querySelectorAll('[data-block-kind="text"]')
+    expect(textDivs.length).toBe(1)
+    expect(textDivs[0].textContent).toContain('Hello world')
+  })
+
+  it('a tool_output_delta without display_output opens no share menu mid-flight', () => {
+    vi.useFakeTimers()
+    armShareBridge()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 't1', name: 'Bash' } },
+      // display_output absent: the pending block's output must stay empty, so
+      // a mid-flight press has nothing to copy and opens nothing.
+      { type: 'tool_output_delta', tool_result: { tool_use_id: 't1' } },
+    ])
+    sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
+    expect(shareMenu()).toBeNull()
+  })
+
+  it('an attachment with neither prompt nor content renders no row', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'event',
+      event: { type: 'attachment', message: { attachment: {} } },
+    })
+    expect((document.querySelector('.space-y-7') as HTMLElement).children.length).toBe(0)
+  })
+
+  it('a paused upload keeps the composer disabled mid-flight', async () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    let finish!: (v: { id: string }) => void
+    vi.mocked(uploadAttachment).mockImplementation(() =>
+      new Promise((resolve) => { finish = resolve }))
+    stageFileForSend()
+    setTextarea('slow upload')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true)
+    finish({ id: 'up-4' })
+    await vi.waitFor(() =>
+      expect((document.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(false))
+  })
+
+  it('STOP aborts a hanging retry upload', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockRejectedValueOnce(new Error('net down'))
+    stageFileForSend()
+    setTextarea('flaky then stranded')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+    // The retry must register its AbortController with the chat: STOP owns
+    // every in-flight upload, retry uploads included.
+    let retryAborted = false
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((_resolve, reject) => {
+        opts!.signal.addEventListener('abort', () => {
+          retryAborted = true
+          reject(new Error('aborted'))
+        })
+      }))
+    dispatchEvents([{ type: 'query_start' }])
+    retryButtonOfFailedChip().click()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(2))
+    ;(document.querySelector('textarea') as HTMLTextAreaElement)
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(sent).toContainEqual({ type: 'stop' })
+    await vi.waitFor(() => expect(retryAborted).toBe(true))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+  })
+
+  it('retry upload progress streams into the chip', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockRejectedValueOnce(new Error('net down'))
+    stageFileForSend()
+    setTextarea('retry with progress')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+    let finish!: (v: { id: string }) => void
+    vi.mocked(uploadAttachment).mockImplementation((_file, opts) =>
+      new Promise((resolve) => {
+        finish = resolve
+        opts!.onProgress!(0.5)
+      }))
+    retryButtonOfFailedChip().click()
+    await vi.waitFor(() =>
+      expect(chat.inputBar.getAttachments()[0].uploadProgress).toBe(0.5))
+    finish({ id: 'up-5' })
+    await vi.waitFor(() =>
+      expect(chat.inputBar.getAttachments()[0].uploadedID).toBe('up-5'))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(false)
+  })
+
+  it('a rejecting retry keeps the chip failed for another tap', async () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    vi.mocked(uploadAttachment).mockRejectedValueOnce(new Error('first try down'))
+    stageFileForSend()
+    setTextarea('retry rejects too')
+    pressEnter()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(1))
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+    vi.mocked(uploadAttachment).mockRejectedValueOnce(new Error('retry down'))
+    retryButtonOfFailedChip().click()
+    await vi.waitFor(() => expect(uploadAttachment).toHaveBeenCalledTimes(2))
+    // Deterministic settle: await the exact rejected promise the retry
+    // consumed (its first consumer is chat's catch), then let the caller's
+    // .then chain run — no timer involved.
+    await expect(vi.mocked(uploadAttachment).mock.results[1]!.value).rejects.toThrow('retry down')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(chat.inputBar.getAttachments()[0].failed).toBe(true)
+    expect(document.querySelector('.border-red-500')).toBeTruthy()
+    expect(document.querySelector('.border-red-500')!.textContent).toContain('spec.pdf')
+  })
+
+  it('long-press rename commits through the session_rename frame', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'session_list', sessions: [{ id: 's1', title: 'original title', updatedAt: 1 }] })
+    const row = document.querySelector('[data-session-row]') as HTMLElement
+    row.dispatchEvent(new Event('touchstart', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    const input = row.querySelector('input') as HTMLInputElement
+    expect(input).toBeTruthy()
+    input.value = 'renamed title'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(sent).toContainEqual({ type: 'session_rename', sessionID: 's1', title: 'renamed title' })
+  })
+
+  it('clear-artifacts refetch re-renders the artifact tree', async () => {
+    const realFetch = globalThis.fetch
+    let getListFetches = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: unknown, init?: { method?: string }) => {
+      const path = typeof url === 'string' ? url : String(url)
+      if (path.includes('artifacts')) {
+        // The sidebar's own DELETE shares the path: only the GET refetch
+        // proves chat's handler ran.
+        if (init?.method === 'DELETE') return Promise.resolve({ ok: true, json: async () => ({}) })
+        getListFetches++
+        return Promise.resolve({ ok: true, json: async () => [{ name: 'logs/run.txt', mtime: 900000000 }] })
+      }
+      if (path.includes('remotedesktop')) return Promise.resolve({ ok: true, json: async () => ({ devices: [] }) })
+      if (path.includes('plugins')) return Promise.resolve({ ok: true, json: async () => [] })
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    const btn = document.querySelector('[data-clear-artifacts]') as HTMLButtonElement
+    btn.click()
+    btn.click()
+    await vi.waitFor(() => expect(getListFetches).toBe(1))
+    const dir = document.querySelector('[data-artifact-dir="logs"]') as HTMLElement
+    expect(dir).toBeTruthy()
+    // The group's children div follows the dir row inside the wrap.
+    const fileRow = (dir.nextElementSibling as HTMLElement).querySelector('.artifact-row') as HTMLElement
+    expect(fileRow.textContent).toContain('run.txt')
+    vi.stubGlobal('fetch', realFetch)
+  })
+
+  it('a running plugin renders into the sidebar and its click opens the card', async () => {
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: unknown) => {
+      const path = typeof url === 'string' ? url : String(url)
+      if (path.includes('plugins')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{ name: 'demo-plugin', ui: '/plugins/demo-plugin/ui.js', running: true }],
+        })
+      }
+      if (path.includes('artifacts')) return Promise.resolve({ ok: true, json: async () => [] })
+      if (path.includes('remotedesktop')) return Promise.resolve({ ok: true, json: async () => ({ devices: [] }) })
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    ;(document.querySelector('button[aria-label="Menu"]') as HTMLElement).click()
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('[data-plugin-row="demo-plugin"]') as HTMLElement
+      expect(el).toBeTruthy()
+      return el
+    })
+    row.click()
+    // The plugin sheet shares the vnc-veil class with the console sheet;
+    // its card body container is the plugin host's unique marker.
+    const cardBody = document.querySelector('.vnc-veil .plugin-card-body') as HTMLElement
+    expect(cardBody).toBeTruthy()
+    expect((cardBody.closest('.vnc-sheet') as HTMLElement).textContent).toContain('demo-plugin')
+    vi.stubGlobal('fetch', realFetch)
+  })
+
+  it('model_switched without thinking keeps the caption on invisible auto', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // No config frame afterwards: a later config frame would re-pin the
+    // caption and mask a bad fallback here.
+    dispatch({ type: 'model_switched', contextUsed: 1, contextTotal: 100 })
+    const caption = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.className.includes('text-[10px] leading-none')) as HTMLElement
+    expect(caption).toBeTruthy()
+    expect(caption.classList.contains('invisible')).toBe(true)
+    expect(caption.textContent).toBe('auto')
+  })
+
+  it('an id-less incoming tool survives a parent text child', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    metaFrame()
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [streamTool('t1', [
+        { kind: 'text', id: '', text: 'kept note' },
+        childTool('c1', 'Read', 'C1 OUTPUT'),
+      ])],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    const nonce = ((sent.find((m) => (m as { type: string }).type === 'subtree_request')) as { nonce: number }).nonce
+    dispatch({
+      type: 'subtree_page',
+      nonce,
+      blockID: 't1',
+      children: [
+        { kind: 'text', id: '', text: 'older note' },
+        childTool('', 'Grep', 'ANON OUTPUT'),
+      ],
+      remaining: 0,
+      nextAnchor: '',
+    })
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    // Dedup is kind-aware: only SEEN TOOL ids drop. The text child's empty
+    // id must not swallow an incoming id-less tool.
+    expect(children.querySelectorAll('[data-tool-root]').length).toBe(2)
+    expect(children.querySelectorAll('[data-tool-root][data-tool-name="Grep"]').length).toBe(1)
+    expect(children.querySelectorAll('[data-block-kind="text"]').length).toBe(2)
+    expect(children.textContent).toContain('older note')
+    expect(children.textContent).toContain('kept note')
+  })
+
+  it('an incoming text child survives a parent id-less tool', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    metaFrame()
+    dispatch({
+      type: 'history',
+      messages: [],
+      stream: [streamTool('t1', [
+        childTool('', 'Legacy', 'LEGACY OUTPUT'),
+        { kind: 'text', id: '', text: 'kept note' },
+      ])],
+      nextCursor: '', hasMore: false, busy: true,
+    })
+    const nonce = ((sent.find((m) => (m as { type: string }).type === 'subtree_request')) as { nonce: number }).nonce
+    dispatch({
+      type: 'subtree_page',
+      nonce,
+      blockID: 't1',
+      children: [
+        { kind: 'text', id: '', text: 'older note' },
+        childTool('c9', 'Read', 'C9 OUTPUT'),
+      ],
+      remaining: 0,
+      nextAnchor: '',
+    })
+    const children = document.querySelector('[data-tool-children]') as HTMLElement
+    // The parent's id-less tool puts '' into the seen set; the kept-filter's
+    // tool-kind conjunct must keep that from dropping incoming text blocks.
+    expect(children.querySelectorAll('[data-block-kind="text"]').length).toBe(2)
+    expect(children.textContent).toContain('older note')
+    expect(children.querySelectorAll('[data-tool-root][data-tool-name="Read"]').length).toBe(1)
+    expect(children.textContent).toContain('kept note')
+  })
+
+  it('an error frame flushes an in-flight snapshot hydration', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // A large snapshot leaves the older blocks on rAF backfill; the error
+    // frame must land them synchronously before its box appends.
+    dispatch({
+      type: 'streamState',
+      blocks: Array.from({ length: 30 }, (_, i) => ({ kind: 'text' as const, id: '', text: 'old ' + i })),
+    })
+    dispatch({ type: 'error', message: 'boom' })
+    const stream = document.querySelector('.space-y-3') as HTMLElement
+    expect(stream.querySelectorAll('[data-block-kind="text"]').length).toBe(30)
+    const box = Array.from(document.querySelectorAll('.break-all.text-red'))
+      .find((el) => el.textContent === 'boom') as HTMLElement
+    expect(box).toBeTruthy()
+    expect(box.className).toContain('border-red/40')
+  })
+
 })

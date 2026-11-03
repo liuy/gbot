@@ -1540,6 +1540,12 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // loadHistory and streaming share it via abs-time-delta rule.
 
     let batch: HistoryChatMsg[] = []
+    // The page's model entries, oldest→newest across ALL batches of this
+    // call (compact boundaries flush mid-page). They are inserted as ONE
+    // block after the final flush: this function prepends OLDER pages too,
+    // so per-item placement at the tail would append old pages after new
+    // ones, and per-item unshift would reverse the in-page order.
+    const pageStates: MessageState[] = []
     const flushBatch = () => {
       if (batch.length === 0) return
       const chats = mapHistoryToChatMessages(batch)
@@ -1577,7 +1583,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           domRoot: outer,
           contentDiv: content,
         }
-        messages.unshift(m)
+        pageStates.push(m)
       }
       batch = []
     }
@@ -1592,6 +1598,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     }
     flushBatch()
 
+    // One block insert keeps the array time-ordered (oldest→newest), the
+    // same order as the DOM below — every tail read (slice(-10), streaming
+    // shell lookups) then addresses the newest message.
+    messages.unshift(...pageStates)
     messagesContainer.insertBefore(frag, before)
     // On first load, lastUserAt was advanced through the page and ended at
     // the newest user message (page is ASC). That's exactly what streaming
