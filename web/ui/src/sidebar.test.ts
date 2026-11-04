@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createSidebar } from './sidebar'
+import { createSidebar, artifactIconFor } from './sidebar'
 import { renderIcon, type IconName } from './icons'
 import type { ArtifactListItem, SessionListItem } from './types'
 import type { RemoteDevice } from './vnc'
@@ -327,10 +327,12 @@ describe('createSidebar', () => {
       const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
       expect(rows.length).toBe(8)
       const expected: IconName[] = ['film', 'film', 'globe', 'globe', 'box', 'box', 'image', 'file']
+      // outerHTML (not innerHTML): the size and className land on the svg
+      // element itself, so innerHTML comparisons cannot see them.
       for (let i = 0; i < expected.length; i++) {
         const svg = rows[i].querySelector('svg') as SVGSVGElement
-        expect(svg.innerHTML, `row ${i} (${(rows[i].textContent || '').trim()})`).toBe(
-          renderIcon(expected[i]).innerHTML,
+        expect(svg.outerHTML, `row ${i} (${(rows[i].textContent || '').trim()})`).toBe(
+          renderIcon(expected[i], { size: 14, className: 'shrink-0 text-t3' }).outerHTML,
         )
       }
     })
@@ -587,5 +589,419 @@ describe('sidebar plugins section', () => {
     expect((rows[0] as HTMLElement).hasAttribute('data-plugin-standby')).toBe(false)
     ;(rows[0] as HTMLElement).click()
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('artifactIconFor anchors', () => {
+  it.each([
+    ['clip.mp4', 'film'],
+    ['a.mp4x.md', 'file'],
+    ['pic.png', 'image'],
+    ['a.png.txt', 'file'],
+    ['photo.jpg', 'image'],
+    ['pack.zip', 'box'],
+    ['a.zip.txt', 'file'],
+    ['page.html', 'globe'],
+    ['a.htmlx.txt', 'file'],
+  ])('%s maps to %s', (name, want) => {
+    expect(artifactIconFor(name)).toBe(want)
+  })
+})
+
+describe('formatRelativeTime boundaries (via session rows)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it.each([
+    ['future 5s', -5000, 'now'],
+    ['exactly now', 0, '0s'],
+    ['2h', 2 * 3600_000, '2h'],
+    ['exactly 24h', 24 * 3600_000, '1d'],
+    ['25h', 25 * 3600_000, '1d'],
+    ['29d', 29 * 24 * 3600_000, '29d'],
+    ['exactly 30d', 30 * 24 * 3600_000, '1mo'],
+    ['40d', 40 * 24 * 3600_000, '1mo'],
+    ['330d', 330 * 24 * 3600_000, '11mo'],
+    ['exactly 360d', 360 * 24 * 3600_000, '1y'],
+    ['400d', 400 * 24 * 3600_000, '1y'],
+  ])('%s renders %s', (_label, agoMs, want) => {
+    vi.useFakeTimers()
+    const now = new Date(2026, 10, 4, 12, 0).getTime()
+    vi.setSystemTime(now)
+    const { sidebar } = setup()
+    sidebar.setSessions([{ id: 's1', title: 'T', updatedAt: now - agoMs }], '')
+    const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+    expect(row.children[1].textContent).toBe(want)
+  })
+
+  it('row spans carry their exact classes and the time span is appended', () => {
+    const { sidebar } = setup()
+    sidebar.setSessions(
+      [
+        { id: 's1', title: 'First', updatedAt: Date.now() - 3600_000 },
+        { id: 's2', title: 'Second', updatedAt: Date.now() - 60_000 },
+      ],
+      's1',
+    )
+    const rows = sidebar.root.querySelectorAll('[data-session-row]')
+    expect((rows[0].children[0] as HTMLElement).className).toBe('text-[13px] truncate flex-1')
+    expect((rows[0].children[1] as HTMLElement).className).toBe('text-[10px] text-t3 shrink-0')
+    expect(rows[0].getAttribute('data-session-row')).toBe('')
+    expect(rows[1].className).toBe(
+      'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+    )
+  })
+
+  it('empty-title sessions fall back to the id prefix', () => {
+    const { sidebar } = setup()
+    sidebar.setSessions([{ id: 'abcdefghijklmnop', title: '', updatedAt: Date.now() }], '')
+    const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+    expect((row.children[0] as HTMLElement).textContent).toBe('abcdefgh')
+  })
+
+  it('a rebuild leaves no stale text node behind', () => {
+    const { sidebar } = setup()
+    const list = sidebar.root.querySelector('[data-sessions-header]')!.nextElementSibling as HTMLElement
+    sidebar.setSessions([{ id: 's1', title: 'A', updatedAt: Date.now() }], '')
+    sidebar.setSessions([{ id: 's2', title: 'B', updatedAt: Date.now() }], '')
+    expect(list.childNodes.length).toBe(1)
+  })
+
+  it('a long-press trigger suppresses the following click', () => {
+    vi.useFakeTimers()
+    try {
+      const { sidebar } = setup()
+      const handler = vi.fn()
+      sidebar.onSessionClick(handler)
+      sidebar.setSessions([{ id: 's1', title: 'T', updatedAt: Date.now() }], '')
+      const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+      row.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+      vi.advanceTimersByTime(600)
+      row.click()
+      expect(handler).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('artifact tree structure pins', () => {
+  it('nested rows indent one step per depth with the pinned pixel ladder', () => {
+    const { sidebar } = setup()
+    sidebar.setArtifacts([{ name: 'video/refs/x.png', size: 10, mtime: Date.now() }])
+    const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+    expect((rows[0] as HTMLElement).style.paddingLeft).toBe('')
+    expect((rows[1] as HTMLElement).style.paddingLeft).toBe('26px')
+    expect((rows[2] as HTMLElement).style.paddingLeft).toBe('44px')
+    expect(rows[0].className).toBe(
+      'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t1',
+    )
+    expect(rows[2].className).toBe(
+      'artifact-row flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+    )
+  })
+
+  it('a depth-2 directory row indents at the 44px step', () => {
+    const { sidebar } = setup()
+    sidebar.setArtifacts([{ name: 'a/b/c/d.png', size: 1, mtime: Date.now() }])
+    const rows = sidebar.root.querySelectorAll('.sidebar-artifacts .artifact-row')
+    expect(rows[0].getAttribute('data-artifact-dir')).toBe('a')
+    expect((rows[1] as HTMLElement).style.paddingLeft).toBe('26px')
+    expect(rows[1].getAttribute('data-artifact-dir')).toBe('b')
+    expect((rows[2] as HTMLElement).style.paddingLeft).toBe('44px')
+    expect(rows[2].getAttribute('data-artifact-dir')).toBe('c')
+  })
+
+  it('dir rows carry the chevron icon and span classes exactly', () => {
+    const { sidebar } = setup()
+    sidebar.setArtifacts([{ name: 'video/a.mp4', size: 1, mtime: Date.now() }])
+    const dirRow = sidebar.root.querySelector('[data-artifact-dir="video"]') as HTMLElement
+    expect(dirRow.querySelector('svg')!.outerHTML).toBe(
+      renderIcon('chevron-right', {
+        size: 14,
+        className: 'shrink-0 text-t3 transition-transform duration-200',
+      }).outerHTML,
+    )
+    expect((dirRow.children[1] as HTMLElement).className).toBe('text-[13px] truncate flex-1')
+    expect((dirRow.children[2] as HTMLElement).className).toBe('text-[10px] text-t3 shrink-0')
+    expect(dirRow.parentElement!.className).toBe('')
+  })
+
+  it('file row spans carry their exact classes', () => {
+    const { sidebar } = setup()
+    sidebar.setArtifacts([{ name: 'game.html', size: 1, mtime: Date.now() }])
+    const fileRow = sidebar.root.querySelector('.sidebar-artifacts .artifact-row') as HTMLElement
+    expect((fileRow.children[1] as HTMLElement).className).toBe('text-[13px] truncate flex-1')
+    expect((fileRow.children[2] as HTMLElement).className).toBe('text-[10px] text-t3 shrink-0')
+    // Top-level file rows carry no indentation.
+    expect(fileRow.style.paddingLeft).toBe('')
+  })
+
+  it('a rebuild leaves no stale text node and the empty state keeps its class', () => {
+    const { sidebar } = setup()
+    sidebar.setArtifacts([{ name: 'game.html', size: 1, mtime: Date.now() }])
+    sidebar.setArtifacts([{ name: 'a.html', size: 1, mtime: Date.now() }])
+    const list = sidebar.root.querySelector('.sidebar-artifacts')!.lastElementChild as HTMLElement
+    expect(list.childNodes.length).toBe(1)
+    sidebar.setArtifacts([])
+    expect((list.children[0] as HTMLElement).className).toBe('px-3 py-2 text-[12px] text-t3')
+  })
+})
+
+describe('clear-artifacts confirm branch', () => {
+  it('confirm resets armed state: a third tap re-arms instead of re-firing', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const { sidebar } = setup()
+      const btn = sidebar.root.querySelector('[data-clear-artifacts]') as HTMLElement
+      btn.click()
+      btn.click()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(btn.style.color).toBe('')
+      expect(btn.getAttribute('aria-pressed')).toBe('false')
+      btn.click()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(btn.style.color).toBe('rgb(248, 81, 73)')
+      expect(btn.getAttribute('aria-pressed')).toBe('true')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a confirm clears the arm timer so a re-arm survives the old deadline', () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn(async () => ({ ok: true }))
+      vi.stubGlobal('fetch', fetchMock)
+      const { sidebar } = setup()
+      const btn = sidebar.root.querySelector('[data-clear-artifacts]') as HTMLElement
+      btn.click()
+      vi.advanceTimersByTime(2000)
+      btn.click()
+      btn.click()
+      // t=5000 is the FIRST arm's deadline: the confirm at t=2000 must have
+      // cleared it, so the re-arm (deadline t=7000) is still armed here.
+      vi.advanceTimersByTime(3000)
+      expect(btn.style.color).toBe('rgb(248, 81, 73)')
+      expect(btn.getAttribute('aria-pressed')).toBe('true')
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('device and plugin row structure pins', () => {
+  it('device rows keep their class and name span, and rebuilds leave no stale node', () => {
+    const { sidebar } = setup()
+    const devices: RemoteDevice[] = [{ name: 'win11', addr: 'ws://127.0.0.1:8006', pass: '' }]
+    sidebar.setRemoteDevices(devices)
+    sidebar.setRemoteDevices(devices)
+    const list = sidebar.root.querySelector('.sidebar-devices')!.lastElementChild as HTMLElement
+    expect(list.childNodes.length).toBe(1)
+    const row = list.children[0] as HTMLElement
+    expect(row.className).toBe(
+      'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+    )
+    expect((row.children[0] as HTMLElement).className).toBe('text-[13px] truncate flex-1')
+  })
+
+  it('non-empty plugin list shows the section and rows carry name text and classes', () => {
+    const { sidebar } = setup()
+    const cards = [
+      { name: 'browser', ui: '/plugins/browser/ui', running: true },
+      { name: 'camera', ui: '/plugins/camera/ui', running: false },
+    ]
+    sidebar.setPlugins(cards)
+    sidebar.setPlugins(cards)
+    const section = sidebar.root.querySelector('.sidebar-plugins') as HTMLElement
+    expect(section.classList.contains('hidden')).toBe(false)
+    const list = section.lastElementChild as HTMLElement
+    expect(list.childNodes.length).toBe(2)
+    const online = list.children[0] as HTMLElement
+    const standby = list.children[1] as HTMLElement
+    expect(online.textContent).toBe('browser')
+    expect(standby.textContent).toBe('camera')
+    expect(online.className).toBe(
+      'flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-ink3/30 text-t2',
+    )
+    expect(standby.className).toBe('flex items-center gap-2 px-3 py-2 rounded-lg text-t3 opacity-50')
+    expect(standby.getAttribute('data-plugin-standby')).toBe('')
+    expect((online.children[0] as HTMLElement).className).toBe('text-[13px] truncate flex-1')
+  })
+})
+
+describe('rename flow structure pins', () => {
+  function startRename(sidebar: ReturnType<typeof createSidebar>) {
+    document.body.appendChild(sidebar.root)
+    sidebar.setSessions([{ id: 'x1', title: 'Original', updatedAt: Date.now() }], '')
+    const row = sidebar.root.querySelector('[data-session-row]') as HTMLElement
+    vi.useFakeTimers()
+    row.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+    vi.advanceTimersByTime(600)
+    return row.querySelector('input') as HTMLInputElement
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.innerHTML = ''
+  })
+
+  it('the edit input carries its class, type, focus and full selection', () => {
+    const { sidebar } = setup()
+    const input = startRename(sidebar)
+    expect(input.className).toBe(
+      'text-[13px] flex-1 bg-ink2 border border-blue/30 rounded px-1 py-0.5 text-t1 outline-none',
+    )
+    expect(input.getAttribute('type')).toBe('text')
+    expect(document.activeElement).toBe(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe('Original'.length)
+    vi.useRealTimers()
+  })
+
+  it('commit trims the typed title before handing it to the handler', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = '  Renamed  '
+    input.dispatchEvent(new Event('blur'))
+    vi.useRealTimers()
+    expect(handler).toHaveBeenCalledWith('x1', 'Renamed')
+  })
+
+  it('empty and unchanged commits restore the original without calling the handler', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = ''
+    input.dispatchEvent(new Event('blur'))
+    const input2 = startRename(sidebar)
+    input2.value = 'Original'
+    input2.dispatchEvent(new Event('blur'))
+    vi.useRealTimers()
+    expect(handler).not.toHaveBeenCalled()
+    const span = sidebar.root.querySelector('[data-session-row] span') as HTMLElement
+    expect(span.textContent).toBe('Original')
+  })
+
+  it('non-Enter keys do not commit; Enter is default-prevented', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = 'Typed'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true }))
+    expect(sidebar.root.querySelector('[data-session-row] input')).not.toBeNull()
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    input.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(handler).toHaveBeenCalledWith('x1', 'Typed')
+    vi.useRealTimers()
+  })
+
+  it('Escape restores the original text and removes the input without committing', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = 'Discard me'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(sidebar.root.querySelector('[data-session-row] input')).toBeNull()
+    expect(handler).not.toHaveBeenCalled()
+    const span = sidebar.root.querySelector('[data-session-row] span') as HTMLElement
+    expect(span.textContent).toBe('Original')
+    vi.useRealTimers()
+  })
+})
+
+describe('sidebar section structure pins', () => {
+  it('sessions header, list, and anchors carry their exact classes and values', () => {
+    const { sidebar } = setup()
+    const header = sidebar.root.querySelector('[data-sessions-header]') as HTMLElement
+    expect(header.className).toBe('flex items-center justify-between pl-3 pr-2 pt-4 pb-1')
+    expect(header.getAttribute('data-sessions-header')).toBe('')
+    expect((header.querySelector('[data-new-session]') as HTMLElement).getAttribute('data-new-session')).toBe('')
+    const list = header.nextElementSibling as HTMLElement
+    expect(list.className).toBe('')
+  })
+
+  it('games and devices headers carry their exact classes, anchors, and lists', () => {
+    const { sidebar } = setup()
+    const gamesSection = sidebar.root.querySelector('.sidebar-games') as HTMLElement
+    expect(gamesSection).not.toBeNull()
+    expect(gamesSection.className).toBe('sidebar-games')
+    const gamesHeader = sidebar.root.querySelector('[data-games-header]') as HTMLElement
+    expect(gamesHeader.className).toBe('text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
+    expect(gamesHeader.getAttribute('data-games-header')).toBe('')
+    expect((gamesHeader.nextElementSibling as HTMLElement).className).toBe('')
+    const devicesHeader = sidebar.root.querySelector('[data-devices-header]') as HTMLElement
+    expect(devicesHeader.className).toBe('text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
+    expect(devicesHeader.getAttribute('data-devices-header')).toBe('')
+    expect((devicesHeader.nextElementSibling as HTMLElement).className).toBe('')
+  })
+
+  it('plugins and artifacts headers carry their exact classes, anchors, and lists', () => {
+    const { sidebar } = setup()
+    const pluginsHeader = sidebar.root.querySelector('[data-plugins-header]') as HTMLElement
+    expect(pluginsHeader.className).toBe('text-[11px] text-t3 px-3 pt-4 pb-1 font-medium')
+    expect(pluginsHeader.getAttribute('data-plugins-header')).toBe('')
+    expect(pluginsHeader.getAttribute('data-i18n')).toBe('sidebarPlugins')
+    expect((pluginsHeader.nextElementSibling as HTMLElement).className).toBe('')
+    const artifactsTitle = sidebar.root.querySelector('.sidebar-artifacts > div > span') as HTMLElement
+    expect(artifactsTitle.className).toBe('text-[11px] text-t3 font-medium')
+    expect(artifactsTitle.textContent).toBe('Artifacts')
+    const artifactsHeader = artifactsTitle.parentElement as HTMLElement
+    expect(artifactsHeader.className).toBe('flex items-center justify-between pl-3 pr-2 pt-4 pb-1')
+    const clearBtn = artifactsHeader.querySelector('[data-clear-artifacts]') as HTMLElement
+    expect(clearBtn.className).toContain('p-1.5 -m-1.5')
+    expect(clearBtn.getAttribute('data-clear-artifacts')).toBe('')
+    expect((sidebar.root.querySelector('.sidebar-artifacts') as HTMLElement).lastElementChild!.className).toBe('')
+  })
+
+  it('settings button anchor value and overlay class are pinned', () => {
+    const { sidebar } = setup()
+    expect(
+      (sidebar.root.querySelector('[data-settings-btn]') as HTMLElement).getAttribute('data-settings-btn'),
+    ).toBe('')
+    expect(sidebar.overlay.className).toBe('fixed inset-0 z-40 bg-black/30 transition-opacity duration-300')
+  })
+
+  it('overlay click closes the sidebar', () => {
+    const { mainContent, sidebar } = setup()
+    sidebar.open()
+    sidebar.overlay.click()
+    expect(sidebar.root.style.transform).toBe('translateX(-100%)')
+    expect(mainContent.style.transform).toBe('translateX(0px)')
+    expect(sidebar.overlay.style.display).toBe('none')
+  })
+
+  it('closeImmediate disables transitions for one frame, then restores them', () => {
+    let raf: (() => void) | null = null
+    const rafSpy = vi.fn((cb: () => void) => {
+      raf = cb
+      return 1
+    })
+    vi.stubGlobal('requestAnimationFrame', rafSpy)
+    try {
+      const { mainContent, sidebar } = setup()
+      sidebar.open()
+      sidebar.closeImmediate()
+      expect(rafSpy).toHaveBeenCalledTimes(1)
+      // The jump itself happens with transitions off…
+      expect(sidebar.root.style.transition).toBe('none')
+      expect(mainContent.style.transition).toBe('none')
+      expect(sidebar.root.style.transform).toBe('translateX(-100%)')
+      // …and the next frame re-enables them.
+      raf!()
+      expect(sidebar.root.style.transition).toBe('')
+      expect(mainContent.style.transition).toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

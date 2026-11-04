@@ -121,6 +121,9 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
     )
     row.setAttribute('data-game-row', g.id)
     const iconSpan = createElement('span', 'text-[16px] shrink-0 leading-none flex items-center')
+    // innerHTML is safe ONLY because BUILTIN_GAMES is a compile-time const —
+    // startsWith('<svg') is a format fork, not sanitization. Any future icon
+    // sourced from config/network/plugin input must be sanitized first.
     if (g.icon.startsWith('<svg')) iconSpan.innerHTML = g.icon
     else iconSpan.textContent = g.icon
     const nameSpan = createElement('span', 'text-[13px] block truncate')

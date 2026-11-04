@@ -13,19 +13,26 @@ import {
   isWalkToggleEnabled,
 } from './artifact'
 import { t } from './i18n'
+import { renderIcon } from './icons'
 import { __record } from './model_viewer_loader'
 import type { Block } from './model'
 
 // The component bundle import is the sheet's external dependency seam —
 // stubbed with a recording factory. __record is the single mechanism tests
 // read; the real module loads Google's <model-viewer> bundle from the
-// daemon, which jsdom must never do (no WebGL).
+// daemon, which jsdom must never do (no WebGL). failNext flips the next
+// loadModelViewer() call to rejection so the sheet's catch path runs.
 vi.mock('./model_viewer_loader', () => {
   const loads: string[] = []
+  const record = { loads, failNext: false }
   return {
-    __record: { loads },
+    __record: record,
     MODEL_VIEWER_URL: '/assets/model-viewer.esm.js',
     loadModelViewer: () => {
+      if (record.failNext) {
+        record.failNext = false
+        return Promise.reject(new Error('bundle offline'))
+      }
       loads.push('load')
       return Promise.resolve()
     },
@@ -662,6 +669,25 @@ describe('createArtifactSheet walk mode', () => {
     expect(hidden.toggle.style.display).toBe('none')
     window.history.replaceState(null, '', '/')
   })
+  it('the walk toggle recovers from none after html-then-glb and close-then-glb', async () => {
+    // syncWalkToggle must write '' (not just any truthy value): a garbage
+    // write is dropped by the CSSOM, so the display would stay 'none' from
+    // the previous hidden state and the toggle would never come back.
+    const w = makeWalkSheet()
+    w.sheet.open('game.html')
+    expect(w.toggle.style.display).toBe('none')
+    w.sheet.open('model.glb')
+    await vi.waitFor(() =>
+      expect(w.sheet.root.querySelector('model-viewer')).not.toBeNull(),
+    )
+    expect(w.toggle.style.display).toBe('')
+    w.sheet.close()
+    w.sheet.open('model.glb')
+    await vi.waitFor(() =>
+      expect(w.sheet.root.querySelector('model-viewer')).not.toBeNull(),
+    )
+    expect(w.toggle.style.display).toBe('')
+  })
 
   it('toggle click enters walk: attribute set, dataset entering, spinner indexing, toggle becomes door icon', async () => {
     const { sheet, toggle, spinner, openGlb } = makeWalkSheet()
@@ -752,6 +778,8 @@ describe('createArtifactSheet walk mode', () => {
     expect(sheet.root.dataset.walk).toBe('')
     expect(spinner.style.display).toBe('none')
     expect(toggle.textContent).toBe(t('walkEnter'))
+    // Exit also clears the icon-only mode's accessibility label.
+    expect(toggle.getAttribute('aria-label')).toBeNull()
     // A late indexed event after exit must not resurrect walk state.
     el.dispatchEvent(new CustomEvent('walk-indexed'))
     expect(sheet.root.dataset.walk).toBe('')
@@ -1112,5 +1140,640 @@ describe('confirmArtifactDownload', () => {
     clickFirst('.share-dl-ok')
     expect(await second).toBe(true)
     expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
+  })
+})
+
+describe('collectArtifactWrites name derivation', () => {
+  it('legacy prefix with a nested /artifacts/ segment derives below the FIRST artifacts dir', () => {
+    const blocks = [toolBlock('Write', 'artifacts/backup/artifacts/old.html', 'done')]
+    expect(collectArtifactWrites(blocks)).toEqual([
+      { name: 'backup/artifacts/old.html', updated: false },
+    ])
+  })
+
+  it('a bare /artifacts/ directory path produces no card', () => {
+    const blocks = [toolBlock('Write', '/pd/artifacts/', 'done')]
+    expect(collectArtifactWrites(blocks)).toEqual([])
+  })
+})
+
+describe('formatArtifactSize boundaries', () => {
+  it.each([
+    [1024, '1.0 KB'],
+    [1024 * 1024, '1.0 MB'],
+  ])('%d bytes formats to %s', (bytes, expected) => {
+    expect(formatArtifactSize(bytes)).toBe(expected)
+  })
+})
+
+describe('createArtifactCard structure', () => {
+  it('builds card-body and card-title-row containers', () => {
+    stubFetchWithLength('10')
+    const card = createArtifactCard({ name: 'game.html', updated: false }, () => {})
+    expect(card.querySelector('.card-body')).not.toBeNull()
+    expect(card.querySelector('.card-title-row')).not.toBeNull()
+  })
+
+  it('updated card meta joins size and Updated with a middle dot', async () => {
+    stubFetchWithLength('1')
+    const card = createArtifactCard({ name: 'a.html', updated: true }, () => {})
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(card.querySelector('.card-meta-inline')?.textContent).toBe('1 B·Updated')
+  })
+
+  it('missing content-length header keeps the em-dash, never NaN', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, headers: new Headers({}) })),
+    )
+    const card = createArtifactCard({ name: 'game.html', updated: false }, () => {})
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(card.querySelector('.card-meta-inline')?.textContent).toBe('—')
+  })
+})
+
+describe('createArtifactSheet mutation kills', () => {
+  beforeEach(() => {
+    __record.loads.length = 0
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function anchorClicks() {
+    const clicked: HTMLAnchorElement[] = []
+    const spy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this)
+      })
+    return { clicked, restore: () => spy.mockRestore() }
+  }
+
+  it('walkToggle click with no mounted viewer changes nothing and raises no window error', async () => {
+    const errors: string[] = []
+    const onErr = (e: Event) => errors.push((e as ErrorEvent).message)
+    window.addEventListener('error', onErr)
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      ;(sheet.root.querySelector('.walk-toggle') as HTMLElement).click()
+      expect(sheet.root.dataset.walk ?? '').toBe('')
+      // A null walkElement takes the silent no-op path — not exitWalk, which
+      // would hide the spinner's block display.
+      expect((sheet.root.querySelector('.walk-loading') as HTMLElement).style.display).toBe('')
+      expect(errors).toEqual([])
+      sheet.root.remove()
+    } finally {
+      window.removeEventListener('error', onErr)
+    }
+  })
+
+  it('model-viewer mounts with the viewer attributes pinned', async () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('model.glb')
+    await vi.waitFor(() => expect(sheet.root.querySelector('model-viewer')).not.toBeNull())
+    const el = sheet.root.querySelector('model-viewer') as HTMLElement
+    expect(el.className).toBe('w-full h-full')
+    expect(el.getAttribute('src')).toBe('/artifacts/model.glb')
+    expect(el.getAttribute('camera-controls')).toBe('')
+    expect(el.getAttribute('tone-mapping')).toBe('neutral')
+    expect(el.getAttribute('shadow-intensity')).toBe('1')
+    expect(el.getAttribute('touch-action')).toBe('pan-y')
+    sheet.root.remove()
+  })
+
+  it('walk-error without detail still lands on the failed copy', async () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('model.glb')
+    const el = await vi.waitFor(() => {
+      const v = sheet.root.querySelector('model-viewer')
+      expect(v).not.toBeNull()
+      return v as HTMLElement
+    })
+    ;(sheet.root.querySelector('.walk-toggle') as HTMLElement).click()
+    el.dispatchEvent(new CustomEvent('walk-error'))
+    expect((sheet.root.querySelector('.walk-loading') as HTMLElement).textContent).toBe(t('walkFailed'))
+    sheet.root.remove()
+  })
+
+  it('error event without detail raises no window error and keeps the walk entering', async () => {
+    stubViewportHeight(768)
+    const errors: string[] = []
+    const onErr = (e: Event) => errors.push((e as ErrorEvent).message)
+    window.addEventListener('error', onErr)
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      sheet.open('model.glb')
+      const el = await vi.waitFor(() => {
+        const v = sheet.root.querySelector('model-viewer')
+        expect(v).not.toBeNull()
+        return v as HTMLElement
+      })
+      ;(sheet.root.querySelector('.walk-toggle') as HTMLElement).click()
+      el.dispatchEvent(new CustomEvent('error'))
+      expect(errors).toEqual([])
+      expect(sheet.root.dataset.walk).toBe('entering')
+      sheet.root.remove()
+    } finally {
+      window.removeEventListener('error', onErr)
+    }
+  })
+
+  it('unrelated error type during walk exits nothing', async () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('model.glb')
+    const el = await vi.waitFor(() => {
+      const v = sheet.root.querySelector('model-viewer')
+      expect(v).not.toBeNull()
+      return v as HTMLElement
+    })
+    ;(sheet.root.querySelector('.walk-toggle') as HTMLElement).click()
+    el.dispatchEvent(new CustomEvent('error', { detail: { type: 'unrelated' } }))
+    expect(el.getAttribute('walk')).toBe('')
+    expect(sheet.root.dataset.walk).toBe('entering')
+    expect((sheet.root.querySelector('.walk-loading') as HTMLElement).textContent).toBe(t('walkIndexing'))
+    sheet.root.remove()
+  })
+
+  it('glTF open leaves the download button disarmed even when clicked', async () => {
+    stubViewportHeight(768)
+    const { clicked, restore } = anchorClicks()
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      sheet.open('model.glb')
+      ;(sheet.root.querySelector('.sheet-download') as HTMLElement).click()
+      expect(clicked).toHaveLength(0)
+      sheet.root.remove()
+    } finally {
+      restore()
+    }
+  })
+
+  it('close disarms the sheet download button against a stale click', () => {
+    stubViewportHeight(768)
+    const { clicked, restore } = anchorClicks()
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      sheet.open('pic.png')
+      sheet.close()
+      ;(sheet.root.querySelector('.sheet-download') as HTMLElement).click()
+      expect(clicked).toHaveLength(0)
+      sheet.root.remove()
+    } finally {
+      restore()
+    }
+  })
+
+  it('superseding glTF open suppresses the first import continuation mount', async () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    const modelHost = sheet.root.querySelector('.gltf-host') as HTMLElement
+    const mounts: string[] = []
+    const spy = vi
+      .spyOn(modelHost, 'replaceChildren')
+      .mockImplementation(function (this: HTMLElement, ...nodes: (Node & { getAttribute?: (a: string) => string | null })[]) {
+        mounts.push(nodes.map((n) => n.getAttribute?.('src') ?? '?').join(','))
+        return Element.prototype.replaceChildren.apply(this, nodes as Node[])
+      })
+    try {
+      sheet.open('a.glb')
+      sheet.open('b.glb')
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      // a's continuation early-returned on the currentName move to b — the
+      // host saw exactly one mount, b's.
+      expect(mounts).toEqual(['/artifacts/b.glb'])
+    } finally {
+      spy.mockRestore()
+      sheet.root.remove()
+    }
+  })
+
+  it('bundle load failure logs the pinned console.error line', async () => {
+    stubViewportHeight(768)
+    __record.failNext = true
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      sheet.open('model.glb')
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      expect(errSpy.mock.calls[0][0]).toBe('glTF: model-viewer bundle failed to load')
+      sheet.root.remove()
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it('bundle load failure on a collapsed sheet logs nothing', async () => {
+    stubViewportHeight(768)
+    __record.failNext = true
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      sheet.open('model.glb')
+      sheet.close()
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      expect(errSpy).not.toHaveBeenCalled()
+      sheet.root.remove()
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it('a superseded open rejects quietly in the catch arm too', async () => {
+    stubViewportHeight(768)
+    __record.failNext = true
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      // a's import fails, but currentName has moved to b — the catch guard
+      // must suppress the log for the superseded name.
+      sheet.open('a.glb')
+      sheet.open('b.glb')
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      expect(errSpy).not.toHaveBeenCalled()
+      sheet.root.remove()
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it('opening HTML after a walk session resets the walk overlay', async () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('model.glb')
+    await vi.waitFor(() => expect(sheet.root.querySelector('model-viewer')).not.toBeNull())
+    ;(sheet.root.querySelector('.walk-toggle') as HTMLElement).click()
+    expect(sheet.root.dataset.walk).toBe('entering')
+    sheet.open('game.html')
+    expect(sheet.root.dataset.walk).toBe('')
+    expect((sheet.root.querySelector('.walk-hint') as HTMLElement).classList.contains('visible')).toBe(false)
+    sheet.root.remove()
+  })
+
+  it('pointerdown on the handle prevents the default gesture', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('game.html')
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    const ev = new PointerEvent('pointerdown', { clientY: 100, bubbles: true, cancelable: true })
+    handle.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    sheet.root.remove()
+  })
+
+  it('stray pointermove without pointerdown neither drags nor resizes', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('game.html')
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    handle.dispatchEvent(new PointerEvent('pointermove', { clientY: 600, bubbles: true }))
+    expect(sheet.root.style.height).toBe('70%')
+    expect(sheet.root.classList.contains('dragging')).toBe(false)
+    sheet.root.remove()
+  })
+
+  it('movement under the drag slop does not start a drag (4px and exactly 5px)', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    const pointer = (el: HTMLElement, type: string, clientY: number) =>
+      el.dispatchEvent(new PointerEvent(type, { clientY, bubbles: true, cancelable: true }))
+    sheet.open('game.html')
+    pointer(handle, 'pointerdown', 500)
+    pointer(handle, 'pointermove', 504)
+    expect(sheet.root.style.height).toBe('70%')
+    expect(sheet.root.classList.contains('dragging')).toBe(false)
+    sheet.open('game.html')
+    pointer(handle, 'pointerdown', 500)
+    pointer(handle, 'pointermove', 505)
+    expect(sheet.root.style.height).toBe('70%')
+    expect(sheet.root.classList.contains('dragging')).toBe(false)
+    sheet.root.remove()
+  })
+
+  it('stray pointerup without pointerdown leaves the sheet open', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheet.open('game.html')
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientY: 100, bubbles: true }))
+    expect(sheet.isOpen()).toBe(true)
+    expect(sheet.root.style.height).toBe('70%')
+    sheet.root.remove()
+  })
+
+  it('pointermove after a finished tap-cycle neither drags nor resizes', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    const pointer = (el: HTMLElement, type: string, clientY: number) =>
+      el.dispatchEvent(new PointerEvent(type, { clientY, bubbles: true, cancelable: true }))
+    sheet.open('game.html')
+    pointer(handle, 'pointerdown', 500)
+    pointer(handle, 'pointerup', 500)
+    sheet.open('game.html')
+    handle.dispatchEvent(new PointerEvent('pointermove', { clientY: 600, bubbles: true }))
+    expect(sheet.root.style.height).toBe('70%')
+    expect(sheet.root.classList.contains('dragging')).toBe(false)
+    sheet.root.remove()
+  })
+
+  it('release at exactly 15% keeps the sheet open', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    const handle = sheet.root.querySelector('.sheet-handle') as HTMLElement
+    const pointer = (el: HTMLElement, type: string, clientY: number) =>
+      el.dispatchEvent(new PointerEvent(type, { clientY, bubbles: true, cancelable: true }))
+    sheet.open('game.html')
+    // Two drags land heightPct on EXACTLY 15.0 in IEEE doubles: 70-25 (dy
+    // -192 → 45) then -30 (dy -230.4 → 15). Float-only single drags always
+    // land epsilon off the boundary.
+    pointer(handle, 'pointerdown', 500)
+    pointer(handle, 'pointermove', 308)
+    pointer(handle, 'pointerup', 308)
+    expect(sheet.root.style.height).toBe('45%')
+    pointer(handle, 'pointerdown', 500)
+    pointer(handle, 'pointermove', 269.6)
+    expect(sheet.root.style.height).toBe('15%')
+    pointer(handle, 'pointerup', 269.6)
+    expect(sheet.root.style.height).toBe('15%')
+    expect(sheet.isOpen()).toBe(true)
+    sheet.root.remove()
+  })
+})
+
+describe('createArtifactSheet walk-mode mutation kills', () => {
+  const sheetRoots: HTMLElement[] = []
+  const restores: (() => void)[] = []
+  beforeEach(() => {
+    __record.loads.length = 0
+  })
+  afterEach(() => {
+    for (const r of sheetRoots) r.remove()
+    sheetRoots.length = 0
+    for (const r of restores) r()
+    restores.length = 0
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 })
+    const mm = (window as unknown as { __mm?: unknown }).__mm
+    if (mm) {
+      window.matchMedia = mm as typeof matchMedia
+      delete (window as unknown as { __mm?: unknown }).__mm
+    }
+    vi.useRealTimers()
+  })
+
+  const stubMatchMedia = (coarse: boolean) => {
+    if (!(window as unknown as { __mm?: unknown }).__mm) {
+      ;(window as unknown as { __mm: unknown }).__mm = window.matchMedia
+    }
+    window.matchMedia = ((q: string) =>
+      ({ matches: coarse, media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, dispatchEvent: () => false })) as unknown as typeof matchMedia
+  }
+
+  function makeSheet() {
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    sheetRoots.push(sheet.root)
+    const toggle = sheet.root.querySelector('.walk-toggle') as HTMLButtonElement
+    const spinner = sheet.root.querySelector('.walk-loading') as HTMLElement
+    const hint = sheet.root.querySelector('.walk-hint') as HTMLElement
+    const openGlb = async (name = 'model.glb') => {
+      sheet.open(name)
+      await vi.waitFor(() => expect(sheet.root.querySelector('model-viewer')).not.toBeNull())
+      return sheet.root.querySelector('model-viewer') as HTMLElement
+    }
+    return { sheet, toggle, spinner, hint, openGlb }
+  }
+
+  it('walk-failure spinner wears neither the failed-only notice class', async () => {
+    const { toggle, spinner, openGlb } = makeSheet()
+    const el = await openGlb()
+    toggle.click()
+    el.dispatchEvent(new CustomEvent('walk-error', { detail: { message: 'x' } }))
+    expect(spinner.classList.contains('failed')).toBe(true)
+    expect(spinner.classList.contains('notice')).toBe(false)
+  })
+
+  it('indexing spinner wears neither failed nor notice', async () => {
+    const { toggle, spinner, openGlb } = makeSheet()
+    await openGlb()
+    toggle.click()
+    expect(spinner.classList.contains('failed')).toBe(false)
+    expect(spinner.classList.contains('notice')).toBe(false)
+    expect(spinner.textContent).toBe(t('walkIndexing'))
+  })
+
+  it('exit icon is the door glyph at size 14', async () => {
+    const { renderIcon: ri } = await import('./icons')
+    const { toggle, openGlb } = makeSheet()
+    await openGlb()
+    toggle.click()
+    expect(toggle.querySelector('svg')?.outerHTML).toBe(ri('door-exit', { size: 14 }).outerHTML)
+  })
+
+  it('re-entering walk re-renders the hint (no stale touch copy)', async () => {
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 1 })
+    stubMatchMedia(true)
+    const { toggle, hint, openGlb } = makeSheet()
+    await openGlb()
+    toggle.click()
+    expect(hint.textContent).toBe(t('walkHintTouch'))
+    toggle.click()
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 })
+    stubMatchMedia(false)
+    toggle.click()
+    expect(hint.textContent).toBe('WASD' + t('walkHintMove') + '·' + t('walkHintLook'))
+  })
+
+  it('coarse matchMedia wins over zero touch points; fine matchMedia wins over touch points', async () => {
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 })
+    stubMatchMedia(true)
+    {
+      const { toggle, hint, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      expect(hint.textContent).toBe(t('walkHintTouch'))
+    }
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 })
+    stubMatchMedia(false)
+    {
+      const { toggle, hint, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      expect(hint.textContent).toBe('WASD' + t('walkHintMove') + '·' + t('walkHintLook'))
+    }
+  })
+
+  it('the coarse query string is what matchMedia answers about', async () => {
+    if (!(window as unknown as { __mm?: unknown }).__mm) {
+      ;(window as unknown as { __mm: unknown }).__mm = window.matchMedia
+    }
+    window.matchMedia = ((q: string) =>
+      ({ matches: q === '(pointer: coarse)', media: q, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, dispatchEvent: () => false })) as unknown as typeof matchMedia
+    const { toggle, hint, openGlb } = makeSheet()
+    await openGlb()
+    toggle.click()
+    expect(hint.textContent).toBe(t('walkHintTouch'))
+  })
+
+  it('without matchMedia the touch-point count decides both ways', async () => {
+    if (!(window as unknown as { __mm?: unknown }).__mm) {
+      ;(window as unknown as { __mm: unknown }).__mm = window.matchMedia
+    }
+    const saved = window.matchMedia
+    ;(window as unknown as { matchMedia: unknown }).matchMedia = undefined
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 })
+    {
+      const { toggle, hint, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      expect(hint.textContent).toBe(t('walkHintTouch'))
+    }
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 })
+    {
+      const { toggle, hint, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      expect(hint.textContent).toBe('WASD' + t('walkHintMove') + '·' + t('walkHintLook'))
+    }
+    window.matchMedia = saved
+  })
+
+  it('back-to-back no-floor refusals keep the notice until the newest timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sheet, toggle, spinner, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      sheet.root.querySelector('model-viewer')!.dispatchEvent(
+        new CustomEvent('walk-error', { detail: { message: 'no-walkable-floor' } }),
+      )
+      vi.advanceTimersByTime(1000)
+      toggle.click()
+      sheet.root.querySelector('model-viewer')!.dispatchEvent(
+        new CustomEvent('walk-error', { detail: { message: 'no-walkable-floor' } }),
+      )
+      // The FIRST refusal's 3s timer must have been cleared by the second:
+      // at t=3000 (the first timer's original deadline; the second runs at
+      // t=4000) the notice is still up.
+      vi.advanceTimersByTime(2000)
+      expect(spinner.style.display).toBe('')
+      expect(spinner.textContent).toBe(t('walkNoFloor'))
+      vi.advanceTimersByTime(1000)
+      expect(spinner.style.display).toBe('none')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a refusal timer never dismisses a newer transition copy', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sheet, toggle, spinner, openGlb } = makeSheet()
+      await openGlb()
+      toggle.click()
+      sheet.root.querySelector('model-viewer')!.dispatchEvent(
+        new CustomEvent('walk-error', { detail: { message: 'no-walkable-floor' } }),
+      )
+      // Re-enter walk within the window: the pending timer must spare the
+      // indexing copy.
+      toggle.click()
+      expect(spinner.textContent).toBe(t('walkIndexing'))
+      vi.advanceTimersByTime(3000)
+      expect(spinner.style.display).toBe('')
+      expect(spinner.textContent).toBe(t('walkIndexing'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('confirmArtifactDownload mutation kills', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+  const query = (selector: string) => document.querySelector(selector) as HTMLElement | null
+
+  it('non-Escape keys do not dismiss; the actions row is structured', async () => {
+    const pending = confirmArtifactDownload('app.apk')
+    try {
+      expect(query('.share-dl-actions')).not.toBeNull()
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
+      expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(2)
+    } finally {
+      ;(query('.share-dl-ok') as HTMLElement).click()
+      await pending
+    }
+  })
+})
+
+describe('createArtifactSheet construction pins', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a fresh sheet hides the 3D host, carries the sheet-ui overlay, and starts orbit-labeled', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    expect(sheet.root.className).toBe('artifact-sheet')
+    expect((sheet.root.querySelector('.gltf-host') as HTMLElement).style.display).toBe('none')
+    expect(sheet.root.querySelector('.sheet-ui')).not.toBeNull()
+    const toggle = sheet.root.querySelector('.walk-toggle') as HTMLElement
+    expect(toggle.textContent).toBe(t('walkEnter'))
+    expect(toggle.classList.contains('icon-only')).toBe(false)
+    expect(toggle.getAttribute('aria-label')).toBeNull()
+    expect(sheet.current()).toBe('')
+    sheet.root.remove()
+  })
+
+  it('the download button icon is the size-16 download glyph', () => {
+    stubViewportHeight(768)
+    const sheet = createArtifactSheet()
+    document.body.appendChild(sheet.root)
+    const btn = sheet.root.querySelector('.sheet-download') as HTMLElement
+    expect(btn.querySelector('svg')?.outerHTML).toBe(renderIcon('download', { size: 16 }).outerHTML)
+    sheet.root.remove()
+  })
+
+  it('the download button on a never-opened sheet fires nothing', () => {
+    stubViewportHeight(768)
+    const clicked: HTMLAnchorElement[] = []
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this)
+      })
+    try {
+      const sheet = createArtifactSheet()
+      document.body.appendChild(sheet.root)
+      ;(sheet.root.querySelector('.sheet-download') as HTMLElement).click()
+      expect(clicked).toHaveLength(0)
+      sheet.root.remove()
+    } finally {
+      clickSpy.mockRestore()
+    }
   })
 })

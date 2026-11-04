@@ -20,6 +20,14 @@ import {
   streamTextChars,
   VOICE_MSG_MARKER,
   stripVoiceMarker,
+  formatDuration,
+  formatDurationNs,
+  formatTokenCount,
+  nounFor,
+  pluralize,
+  positionAnchoredPopup,
+  stripAnsi,
+  createOutsideClick,
 } from './utils'
 import type { Block } from './model'
 
@@ -962,5 +970,375 @@ describe('stripVoiceMarker', () => {
   })
   it('empty string stays empty', () => {
     expect(stripVoiceMarker('')).toBe('')
+  })
+})
+
+describe('formatDuration', () => {
+  it.each([
+    [0.34, '0.3s'],
+    [5, '5s'],
+    [59, '59s'],
+    [75, '1m 15s'],
+    [3600, '1h 0m 0s'],
+    [3661, '1h 1m 1s'],
+  ])('%fs formats to %s', (seconds, want) => {
+    expect(formatDuration(seconds)).toBe(want)
+  })
+})
+
+describe('formatDurationNs', () => {
+  it.each([
+    [0, '0s'],
+    [-5e9, '0s'],
+    [0.3e9, '0.3s'],
+    [1.2e9, '1s'],
+    [90e9, '1m 30s'],
+  ])('%sns formats to %s', (nanos, want) => {
+    expect(formatDurationNs(nanos)).toBe(want)
+  })
+})
+
+describe('formatTokenCount', () => {
+  it.each([
+    [0, '0'],
+    [999, '999'],
+    [1000, '1.0k'],
+    [1024 * 1024, '1.0M'],
+    [1024 * 1024 * 1024, '1.0G'],
+    [1.5 * 1024 * 1024 * 1024, '1.5G'],
+  ])('%d formats to %s', (n, want) => {
+    expect(formatTokenCount(n)).toBe(want)
+  })
+})
+
+describe('parseDurationFromOutput mutation kills', () => {
+  it('JSON number payload decodes to a non-string and yields 0', () => {
+    // decoded=42 is not a string and has no prefix: both arms must return 0
+    // without the string-only guard crashing on startsWith.
+    expect(parseDurationFromOutput('42')).toBe(0)
+  })
+
+  it('no-prefix string with a later bracket still yields 0', () => {
+    expect(parseDurationFromOutput('aaaaaaaaaaaa 7]')).toBe(0)
+  })
+
+  it('inner "s" before the end (no trailing s) yields 0', () => {
+    expect(parseDurationFromOutput('[Tool spent s1]')).toBe(0)
+  })
+})
+
+describe('nounFor', () => {
+  it('maps each tool noun exactly', () => {
+    expect(nounFor('Bash', true)).toBe('List')
+    expect(nounFor('Grep')).toBe('Search')
+    expect(nounFor('Glob')).toBe('Search')
+    expect(nounFor('Read')).toBe('Read')
+    expect(nounFor('Lsp')).toBe('LSP')
+    expect(nounFor('Web')).toBe('Web')
+    expect(nounFor('Bash')).toBe('Bash')
+  })
+})
+
+describe('pluralize', () => {
+  it('s-suffix nouns take -es, not just ch-nouns', () => {
+    expect(pluralize('Status', 2)).toBe('2 Statuses')
+    expect(pluralize('Search', 2)).toBe('2 Searches')
+    expect(pluralize('Read', 2)).toBe('2 Reads')
+    expect(pluralize('Status', 1)).toBe('1 Status')
+  })
+})
+
+describe('positionAnchoredPopup', () => {
+  it('anchors left to the trigger and bottoms gap-above its top', () => {
+    vi.stubGlobal('innerHeight', 800)
+    try {
+      const trigger = document.createElement('button')
+      trigger.getBoundingClientRect = () =>
+        ({ left: 50, top: 100, right: 150, bottom: 140, width: 100, height: 40, x: 50, y: 100, toJSON: () => ({}) }) as DOMRect
+      const popup = document.createElement('div')
+      positionAnchoredPopup(popup, trigger)
+      expect(popup.style.left).toBe('50px')
+      expect(popup.style.bottom).toBe('706px')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('bindLongPress mouseleave', () => {
+  it('mouseleave cancels the mouse-path timer before 500ms', () => {
+    vi.useFakeTimers()
+    try {
+      const el = document.createElement('div')
+      const onTrigger = vi.fn()
+      bindLongPress(el, onTrigger, { useMouse: true })
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      vi.advanceTimersByTime(300)
+      el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
+      vi.advanceTimersByTime(500)
+      expect(onTrigger).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('createPopupHost lazy append guard', () => {
+  it('reopen does not move the panel behind elements appended after it', () => {
+    document.body.innerHTML = ''
+    const trigger = document.createElement('button')
+    const panel = document.createElement('div')
+    document.body.append(trigger, panel)
+    const host = createPopupHost({ trigger, panel })
+    host.open()
+    const marker = document.createElement('div')
+    document.body.appendChild(marker)
+    host.close()
+    host.open()
+    const kids = [...document.body.children]
+    expect(kids.indexOf(panel)).toBeLessThan(kids.indexOf(marker))
+  })
+
+  it('a second open() on an open host does not re-fire onOpen', () => {
+    document.body.innerHTML = ''
+    const trigger = document.createElement('button')
+    const panel = document.createElement('div')
+    const onOpen = vi.fn()
+    const host = createPopupHost({ trigger, panel, onOpen })
+    host.open()
+    host.open()
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('a second close() on a closed host does not re-fire onClose', () => {
+    document.body.innerHTML = ''
+    const trigger = document.createElement('button')
+    const panel = document.createElement('div')
+    const onClose = vi.fn()
+    const host = createPopupHost({ trigger, panel, onClose })
+    host.open()
+    host.close()
+    host.close()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('timeDividerLabel boundary kills', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('exactly 6 days ago is still a weekday label', () => {
+    vi.useFakeTimers()
+    const now = new Date(2026, 6, 18, 10, 0).getTime()
+    vi.setSystemTime(now)
+    const curr = now - 6 * 24 * 3600 * 1000
+    const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(curr)
+    const label = timeDividerLabel(null, curr, 'en-US')
+    expect(label.startsWith(weekday + ' ')).toBe(true)
+  })
+
+  it('same-year 10-day label omits the year; prior-year includes it (exact)', () => {
+    vi.useFakeTimers()
+    const now = new Date(2026, 6, 18, 10, 0).getTime()
+    vi.setSystemTime(now)
+    const sameYear = now - 10 * 24 * 3600 * 1000
+    expect(timeDividerLabel(null, sameYear, 'en-US')).toBe(
+      new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(sameYear) +
+        ' ' +
+        new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(sameYear),
+    )
+    vi.setSystemTime(new Date(2026, 0, 5, 10, 0).getTime())
+    const priorYear = new Date(2025, 11, 25, 10, 0).getTime()
+    expect(timeDividerLabel(null, priorYear, 'en-US')).toBe(
+      new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(priorYear) +
+        ' ' +
+        new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(priorYear),
+    )
+  })
+
+  it('omitted locale falls back to navigator.language', () => {
+    vi.useFakeTimers()
+    const now = new Date(2026, 6, 18, 10, 0).getTime()
+    vi.setSystemTime(now)
+    expect(timeDividerLabel(null, now)).toMatch(/Today|今天/)
+  })
+
+  it('with navigator absent the en-US fallback still formats', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('navigator', undefined)
+    try {
+      const now = new Date(2026, 6, 18, 10, 0).getTime()
+      vi.setSystemTime(now)
+      expect(timeDividerLabel(null, now)).toMatch(/^Today\b/)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('unwrapQueuedReminder partial envelope', () => {
+  it('prefix without suffix yields null', () => {
+    expect(
+      unwrapQueuedReminder(
+        '<system-reminder>\nThe user sent a new message while you were working:\nhi',
+      ),
+    ).toBeNull()
+  })
+})
+
+describe('message-delivery envelope negatives', () => {
+  it('no head but an id-shaped span and suffix is not a delivery', () => {
+    expect(unwrapEnvelopeDisplay('xxxxxxxxxxxxxxxxxxmain" tail </message>')).toBeNull()
+  })
+
+  it('head with no closing quote and no suffix is not a delivery', () => {
+    expect(unwrapEnvelopeDisplay('<message from="abc')).toBeNull()
+  })
+})
+
+describe('classifyReminderMessage command rows', () => {
+  const wrap = (xml: string) =>
+    '<system-reminder>\nA background command completed:\n' + xml + '\n</system-reminder>'
+
+  it('no summary falls back to job-id in the summary text', () => {
+    const row = classifyReminderMessage(
+      wrap('<job-notification>\n<job-id>bg-7</job-id>\n</job-notification>'),
+    )
+    expect(row).toEqual({ name: 'Reminder', summary: 'command bg-7', body: wrap('<job-notification>\n<job-id>bg-7</job-id>\n</job-notification>') })
+  })
+
+  it('no quoted span and no job-id renders the bare "command" summary', () => {
+    const row = classifyReminderMessage(
+      wrap('<job-notification>\n<summary>stalled</summary>\n</job-notification>'),
+    )
+    expect(row?.name).toBe('Reminder')
+    expect(row?.summary).toBe('command')
+  })
+
+  it('status without an exit code renders desc · status', () => {
+    const row = classifyReminderMessage(
+      wrap(
+        '<job-notification>\n<job-id>bg-4</job-id>\n<status>running</status>\n' +
+          '<summary>Background command &quot;read -p&quot; appears stalled</summary>\n</job-notification>',
+      ),
+    )
+    expect(row?.name).toBe('Reminder')
+    expect(row?.summary).toBe('command read -p · running')
+  })
+
+  it('multi-digit exit codes keep every digit', () => {
+    const row = classifyReminderMessage(
+      wrap(
+        '<job-notification>\n<job-id>bg-8</job-id>\n' +
+          '<summary>Background command &quot;big&quot; completed (exit code 10)</summary>\n</job-notification>',
+      ),
+    )
+    expect(row?.summary).toBe('command big · exit 10')
+  })
+})
+
+describe('classifyReminderMessage agent rows', () => {
+  const wrapAgent = (xml: string) =>
+    '<system-reminder>\nA background agent completed a job:\n' + xml + '\n</system-reminder>'
+
+  it('agent-type plus status renders "agent <type> · <status>"', () => {
+    const row = classifyReminderMessage(
+      wrapAgent(
+        '<job-notification>\n<job-id>agent-1</job-id>\n<status>completed</status>\n' +
+          '<agent-type>fork</agent-type>\n<summary>Background agent &quot;r&quot; completed</summary>\n</job-notification>',
+      ),
+    )
+    expect(row?.name).toBe('Reminder')
+    expect(row?.summary).toBe('agent fork · completed')
+  })
+
+  it('missing agent-type falls back to the job-id noun', () => {
+    const row = classifyReminderMessage(
+      wrapAgent('<job-notification>\n<job-id>e1</job-id>\n</job-notification>'),
+    )
+    expect(row?.name).toBe('Reminder')
+    expect(row?.summary).toBe('agent e1')
+  })
+
+  it('neither agent-type nor job-id renders the bare "agent" summary', () => {
+    const row = classifyReminderMessage(
+      wrapAgent('<job-notification>\n<summary>s</summary>\n</job-notification>'),
+    )
+    expect(row?.name).toBe('Reminder')
+    expect(row?.summary).toBe('agent')
+  })
+
+  it('agent-type without a status omits the status half', () => {
+    const row = classifyReminderMessage(
+      wrapAgent(
+        '<job-notification>\n<job-id>agent-2</job-id>\n<agent-type>fork</agent-type>\n</job-notification>',
+      ),
+    )
+    expect(row?.summary).toBe('agent fork')
+  })
+})
+
+describe('messageDeliveryDisplay newline trims', () => {
+  it('unpadded body stays total; trailing-only newline is dropped', () => {
+    expect(unwrapEnvelopeDisplay('<message from="m">ab</message>')).toBe('ab')
+    expect(unwrapEnvelopeDisplay('<message from="m">ab\n</message>')).toBe('ab')
+  })
+})
+
+describe('jobNotificationDisplay result padding', () => {
+  const notif = (result: string) =>
+    `<job-notification>\n<job-id>bg-9</job-id>\n<summary>S</summary>\n${result}\n</job-notification>`
+
+  it('result without padding newlines keeps every character', () => {
+    expect(unwrapEnvelopeDisplay(notif('<result>ab</result>'))).toBe('S\n\nab')
+  })
+
+  it('leading-only newline is trimmed once', () => {
+    expect(unwrapEnvelopeDisplay(notif('<result>\nab</result>'))).toBe('S\n\nab')
+  })
+
+  it('whitespace-only result appends nothing', () => {
+    expect(unwrapEnvelopeDisplay(notif('<result>\n  \n</result>'))).toBe('S')
+  })
+})
+
+describe('unwrapEnvelopeDisplay arm-3 head', () => {
+  it('prose before the bare suffix is not an arm-3 body', () => {
+    expect(unwrapEnvelopeDisplay('blah\n</system-reminder>')).toBeNull()
+  })
+})
+
+describe('streamTextChars empty text', () => {
+  it('empty-string text contributes zero characters', () => {
+    expect(streamTextChars([{ kind: 'text', id: '', text: '' }])).toBe(0)
+  })
+})
+
+describe('formatDuration minute boundary', () => {
+  it('exactly 60s formats as a minute pair', () => {
+    expect(formatDuration(60)).toBe('1m 0s')
+  })
+})
+
+describe('stripAnsi', () => {
+  it('strips multi-parameter CSI sequences whole', () => {
+    expect(stripAnsi('\x1b[31;42mdone\x1b[0m')).toBe('done')
+  })
+})
+
+describe('createOutsideClick unit', () => {
+  it('remove() disarms the handler so later outside mousedowns do nothing', () => {
+    document.body.innerHTML = ''
+    const trigger = document.createElement('button')
+    const panel = document.createElement('div')
+    document.body.append(trigger, panel)
+    const onClose = vi.fn()
+    const oc = createOutsideClick(trigger, panel, onClose)
+    oc.add()
+    oc.remove()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(onClose).not.toHaveBeenCalled()
   })
 })
