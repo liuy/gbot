@@ -1066,13 +1066,6 @@ export function createInputBar(initial: {
       return
     }
 
-    // ArrowUp while streaming — pop all queued messages back to input
-    if (streaming && e.key === 'ArrowUp' && queuedMsgs.length > 0) {
-      e.preventDefault()
-      cancelCb?.()
-      return
-    }
-
     const mod = e.metaKey || e.ctrlKey
     if (!mod) return
 

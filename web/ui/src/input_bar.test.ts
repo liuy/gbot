@@ -27,6 +27,68 @@ function submitForm(ta: HTMLTextAreaElement) {
   form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
 }
 
+// Drives the beforeinput paste-compression path (threshold: >800 chars or
+// >2 newlines) without a real clipboard.
+function bigPaste(ta: HTMLTextAreaElement, text: string) {
+  ta.dispatchEvent(
+    new InputEvent('beforeinput', {
+      inputType: 'insertFromPaste',
+      data: text,
+      bubbles: true,
+      cancelable: true,
+    }),
+  )
+}
+
+// ClipboardEvent.clipboardData is read-only on the real event; jsdom lets us
+// install a plain fake. items is the canonical route, files the fallback —
+// a null files list exercises the "engine gave us nothing" guard.
+function pasteClipboardFiles(
+  ta: HTMLTextAreaElement,
+  entries: { kind?: string; file?: File | null }[],
+  files: File[] | null = [],
+) {
+  const ev = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(ev, 'clipboardData', {
+    value: {
+      items: entries.map((e) => ({
+        kind: e.kind ?? 'file',
+        getAsFile: () => e.file ?? null,
+      })),
+      files,
+    },
+  })
+  ta.dispatchEvent(ev)
+  return ev
+}
+
+function dropFiles(ib: ReturnType<typeof createInputBar>, files: File[]) {
+  const card = ib.root.querySelector('.card-bg') as HTMLElement
+  const ev = new Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(ev, 'dataTransfer', { value: { files } })
+  card.dispatchEvent(ev)
+  return ev
+}
+
+function sendBtnOf(ib: ReturnType<typeof createInputBar>): HTMLButtonElement {
+  return ib.root.querySelector('button[aria-label="Send"]') as HTMLButtonElement
+}
+
+function micOf(ib: ReturnType<typeof createInputBar>): HTMLButtonElement {
+  return ib.root.querySelector('button[aria-label="Voice input"]') as HTMLButtonElement
+}
+
+function cancelableKeydown(el: HTMLElement, key: string, init: KeyboardEventInit = {}) {
+  const ev = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  })
+  el.dispatchEvent(ev)
+  return ev
+}
+
 describe('createInputBar', () => {
   it('renders textarea placeholder Sup?', () => {
     const ib = mount()
@@ -891,6 +953,18 @@ describe('createInputBar — STT rendering', () => {
     ib.commitSttUtterance('定稿')
     expect(ib.textarea.selectionStart).toBe(2)
   })
+  it('a same-value delta still parks the caret at the end', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('你好')
+    // Whichever way the browser parks the caret after a value assignment,
+    // park it at the top; the next delta is whitespace-only after CJK, so
+    // joinSttText produces a same-value assignment and jsdom leaves the
+    // caret alone — only caretToEnd() brings it back to the transcript end.
+    ib.textarea.setSelectionRange(0, 0)
+    ib.appendSttDelta(' ')
+    expect(ib.textarea.selectionStart).toBe(2)
+  })
 
   it('commitSttUtterance replaces an unedited span with the final text', () => {
     const ib = mount()
@@ -1047,5 +1121,1070 @@ describe('mic long-press (voice entry)', () => {
     expect(hold).toHaveBeenCalledTimes(1)
     expect(hold).toHaveBeenCalledWith(false)
     vi.useRealTimers()
+  })
+})
+
+// ── Mutation kill tests (StrykerJS census 2026-11-04) ──
+// Each group pins survivors from one functional area of input_bar.ts.
+
+describe('input bar mutation kills: send click routing and history picker gating', () => {
+  function openHist(ib: ReturnType<typeof createInputBar>, items: string[]) {
+    ib.onHistoryPicker(() => items)
+    sendBtnOf(ib).click()
+    return document.body.querySelector('div[role="button"]')?.parentElement as HTMLElement
+  }
+
+  it('streaming with a pending attachment (no text) sends instead of stopping', () => {
+    const ib = mount()
+    const sendSpy = vi.fn()
+    const stopSpy = vi.fn()
+    ib.onSend(sendSpy)
+    ib.onStop(stopSpy)
+    ib.setStreaming(true)
+    ib.addRestoredAttachment({ id: 'r1', mime: 'text/plain', name: 'n.txt', size: 3 })
+    sendBtnOf(ib).click()
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    expect(sendSpy).toHaveBeenCalledWith('')
+    expect(stopSpy).not.toHaveBeenCalled()
+  })
+
+  it('streaming with whitespace-only input (no attachments) still STOPs', () => {
+    const ib = mount()
+    const sendSpy = vi.fn()
+    const stopSpy = vi.fn()
+    ib.onSend(sendSpy)
+    ib.onStop(stopSpy)
+    ib.setStreaming(true)
+    // Whitespace without an input event keeps the STOP affordance mounted.
+    ib.textarea.value = '   '
+    const stopBtn = ib.root.querySelector('button[aria-label="Stop"]') as HTMLButtonElement
+    stopBtn.click()
+    expect(stopSpy).toHaveBeenCalledTimes(1)
+    expect(sendSpy).not.toHaveBeenCalled()
+  })
+
+  it('the STOP click preventDefaults the event', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    const btn = ib.root.querySelector('button[aria-label="Stop"]') as HTMLButtonElement
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+    btn.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('empty-input send click preventDefaults and re-click closes the history panel', () => {
+    const ib = mount()
+    ib.onHistoryPicker(() => ['alpha'])
+    const btn = sendBtnOf(ib)
+    const ev1 = new MouseEvent('click', { bubbles: true, cancelable: true })
+    btn.dispatchEvent(ev1)
+    expect(ev1.defaultPrevented).toBe(true)
+    const histList = document.body.querySelector('div[role="button"]')?.parentElement as HTMLElement
+    const panel = histList.parentElement as HTMLElement
+    expect(panel.classList.contains('hidden')).toBe(false)
+    const ev2 = new MouseEvent('click', { bubbles: true, cancelable: true })
+    btn.dispatchEvent(ev2)
+    expect(ev2.defaultPrevented).toBe(true)
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('send click with no picker registered renders nothing', () => {
+    const ib = mount()
+    sendBtnOf(ib).click()
+    expect(document.body.querySelector('div[role="button"]')).toBeNull()
+    expect(document.body.querySelector('[data-i18n-placeholder="histSearch"]')).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('Stryker')
+  })
+
+  it('send click with an empty history never opens the panel (no No-history fallback)', () => {
+    const ib = mount()
+    ib.onHistoryPicker(() => [])
+    sendBtnOf(ib).click()
+    expect(document.body.querySelector('[data-i18n-placeholder="histSearch"]')).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('No history')
+  })
+
+  it('a search matching nothing renders the No-history empty state exactly once', () => {
+    const ib = mount()
+    const histList = openHist(ib, ['alpha', 'beta'])
+    const search = histList.parentElement!.querySelector('textarea') as HTMLTextAreaElement
+    search.value = 'zzz'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(histList.textContent).toContain('No history')
+    expect(histList.querySelectorAll('div[role="button"]').length).toBe(0)
+    const empty = histList.querySelector('div') as HTMLElement
+    expect(empty.classList.contains('text-t3')).toBe(true)
+    expect(empty.classList.contains('py-4')).toBe(true)
+    expect(histList.childNodes.length).toBe(1)
+  })
+
+  it('the search query is trimmed and lowercased before matching', () => {
+    const ib = mount()
+    const histList = openHist(ib, ['apple pie', 'banana split', 'apple juice'])
+    const search = histList.parentElement!.querySelector('textarea') as HTMLTextAreaElement
+    search.value = '  APPLE '
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    const items = histList.querySelectorAll('div[role="button"]')
+    expect(items.length).toBe(2)
+    expect(items[0].textContent).toBe('apple pie')
+    expect(items[1].textContent).toBe('apple juice')
+  })
+
+  it('re-rendering the list replaces the previous items instead of appending', () => {
+    const ib = mount()
+    const histList = openHist(ib, ['apple pie', 'banana split', 'apple juice'])
+    const search = histList.parentElement!.querySelector('textarea') as HTMLTextAreaElement
+    search.value = 'apple'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(histList.childNodes.length).toBe(2)
+    expect(histList.textContent).toBe('apple pieapple juice')
+  })
+
+  it('history items are keyboard-focusable (tabIndex 0)', () => {
+    const ib = mount()
+    const histList = openHist(ib, ['one', 'two'])
+    const items = histList.querySelectorAll('div[role="button"]')
+    expect((items[0] as HTMLElement).tabIndex).toBe(0)
+    expect((items[1] as HTMLElement).tabIndex).toBe(0)
+  })
+
+  it('picking an item focuses the textarea and undims send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    const histList = openHist(ib, ['hello world'])
+    const item = histList.querySelector('div[role="button"]') as HTMLElement
+    item.click()
+    expect(document.activeElement).toBe(ib.textarea)
+    expect(btn.className).not.toContain('opacity-50')
+  })
+
+  it('picking an item equal to the current whitespace text parks the caret at its end', () => {
+    const ib = mount()
+    ib.textarea.value = '  '
+    const histList = openHist(ib, ['  '])
+    // The diff-value assignment above parked the caret at the end already —
+    // rewind it so only the item-click handler can restore it.
+    ib.textarea.setSelectionRange(0, 0)
+    const item = histList.querySelector('div[role="button"]') as HTMLElement
+    item.click()
+    expect(ib.textarea.selectionStart).toBe(2)
+  })
+})
+
+describe('input bar mutation kills: send long-press effort strip mechanics', () => {
+  const strip = (ib: ReturnType<typeof createInputBar>) =>
+    ib.root.querySelector('[data-effort-strip]') as HTMLElement
+  const sendBtn = (ib: ReturnType<typeof createInputBar>) => sendBtnOf(ib)
+
+  it('releasing before 500ms cancels the pending long-press', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const btn = sendBtn(ib)
+    btn.dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(100)
+    btn.dispatchEvent(new MouseEvent('pointerup'))
+    vi.advanceTimersByTime(400)
+    expect(strip(ib).classList.contains('hidden')).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('the click swallowed after a long-press is preventDefaulted', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const btn = sendBtn(ib)
+    btn.dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true })
+    btn.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('the strip marks the current effort and styles the others as idle', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    const buttons = Array.from(strip(ib).querySelectorAll('button')) as HTMLElement[]
+    expect(buttons.length).toBe(6)
+    for (const b of buttons) {
+      expect(b.classList.contains('cursor-pointer')).toBe(true)
+      expect(b.classList.contains('text-[13px]')).toBe(true)
+    }
+    const current = buttons.find((b) => b.textContent === 'auto')!
+    expect(current.classList.contains('text-t2')).toBe(true)
+    expect(current.classList.contains('underline')).toBe(true)
+    expect(current.classList.contains('decoration-t2/60')).toBe(true)
+    const idle = buttons.find((b) => b.textContent === 'max')!
+    expect(idle.classList.contains('text-t3')).toBe(true)
+    expect(idle.classList.contains('underline')).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it('the strip rebuild contains exactly the six effort buttons', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    expect(strip(ib).childNodes.length).toBe(6)
+    expect(strip(ib).textContent).toBe('noneautolowmediumhighmax')
+    vi.useRealTimers()
+  })
+
+  it('setThinking collapses an open strip', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    expect(strip(ib).classList.contains('hidden')).toBe(false)
+    ib.setThinking('high')
+    expect(strip(ib).classList.contains('hidden')).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('focus moving within the strip keeps it open', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
+    vi.advanceTimersByTime(500)
+    const first = strip(ib).querySelector('button')!
+    strip(ib).dispatchEvent(new FocusEvent('focusout', { relatedTarget: first }))
+    expect(strip(ib).classList.contains('hidden')).toBe(false)
+    vi.useRealTimers()
+  })
+})
+
+describe('input bar mutation kills: mic gating, hold timer, and pointer tracking', () => {
+  const pd = (el: HTMLElement, x = 10, y = 10) =>
+    el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+  const pu = (el: HTMLElement) =>
+    el.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }))
+  const mv = (el: HTMLElement, x: number, y: number) =>
+    el.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+
+  it('clicking the mic while STT is unavailable fires nothing', () => {
+    const ib = mount()
+    const toggle = vi.fn()
+    ib.onMicToggle(toggle)
+    micOf(ib).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(toggle).not.toHaveBeenCalled()
+  })
+
+  it('pointerdown on the disabled mic never arms the hold timer', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    pd(micOf(ib), 5, 5)
+    vi.advanceTimersByTime(600)
+    expect(hold).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('a second pointerdown restarts the hold window instead of stacking timers', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    pd(mic, 5, 5)
+    vi.advanceTimersByTime(300)
+    pd(mic, 5, 5)
+    vi.advanceTimersByTime(100)
+    expect(hold).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('after a completed hold the first click is suppressed and the second toggles', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    const toggle = vi.fn()
+    ib.onMicHold(hold)
+    ib.onMicToggle(toggle)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    pd(mic, 5, 5)
+    vi.advanceTimersByTime(350)
+    pu(mic)
+    mic.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(toggle).not.toHaveBeenCalled()
+    mic.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(toggle).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  it('right-click cancels an armed hold timer so the hold never double-fires', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    const mic = micOf(ib)
+    pd(mic, 5, 5)
+    vi.advanceTimersByTime(100)
+    mic.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    vi.advanceTimersByTime(600)
+    expect(hold).toHaveBeenCalledTimes(1)
+    expect(hold).toHaveBeenCalledWith(false)
+    vi.useRealTimers()
+  })
+
+  it('right-click on the disabled mic does not enter voice', () => {
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    micOf(ib).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    expect(hold).not.toHaveBeenCalled()
+  })
+
+  it('a system pointercancel clears the armed hold timer', () => {
+    vi.useFakeTimers()
+    const ib = mount()
+    const hold = vi.fn()
+    ib.onMicHold(hold)
+    ib.setSttAvailable(true)
+    pd(micOf(ib), 5, 5)
+    window.dispatchEvent(new Event('pointercancel'))
+    vi.advanceTimersByTime(600)
+    expect(hold).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('move-cancel thresholds: 13px cancels, 12px and 7px do not, on both axes (OR)', () => {
+    vi.useFakeTimers()
+    const holdsAfter = (to: [number, number]) => {
+      document.body.innerHTML = ''
+      const ib = mount()
+      const hold = vi.fn()
+      ib.onMicHold(hold)
+      ib.setSttAvailable(true)
+      const mic = micOf(ib)
+      pd(mic, 10, 10)
+      mv(mic, to[0], to[1])
+      vi.advanceTimersByTime(600)
+      return hold
+    }
+    expect(holdsAfter([23, 10])).not.toHaveBeenCalled()
+    expect(holdsAfter([10, 23])).not.toHaveBeenCalled()
+    expect(holdsAfter([22, 23])).not.toHaveBeenCalled()
+    expect(holdsAfter([22, 10])).toHaveBeenCalledTimes(1)
+    expect(holdsAfter([10, 22])).toHaveBeenCalledTimes(1)
+    expect(holdsAfter([3, 10])).toHaveBeenCalledTimes(1)
+    expect(holdsAfter([10, 3])).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+})
+
+describe('input bar mutation kills: paste chip compression and clipboard naming', () => {
+  it('non-paste inputTypes never become chips regardless of size', () => {
+    const ib = mount()
+    const ev = new InputEvent('beforeinput', {
+      inputType: 'insertReplacementText',
+      data: 'x'.repeat(900),
+      bubbles: true,
+      cancelable: true,
+    })
+    ib.textarea.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    expect(ib.root.querySelector('[data-paste-chip]')).toBeNull()
+  })
+
+  it('a large paste renders a full paste chip and undims send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    bigPaste(ib.textarea, 'aaaa\nbbbb\ncccc\nddddddd')
+    const chip = ib.root.querySelector('[data-paste-chip]') as HTMLElement
+    expect(chip).toBeTruthy()
+    expect(chip.getAttribute('data-paste-chip')).toBe('')
+    expect(chip.getAttribute('role')).toBe('button')
+    expect(chip.tabIndex).toBe(0)
+    expect(chip.classList.contains('cursor-pointer')).toBe(true)
+    expect(chip.innerHTML).toContain('<rect')
+    expect(chip.innerHTML).toContain('<path')
+    expect(chip.innerHTML).toContain('</svg>')
+    const label = chip.querySelector('.whitespace-nowrap') as HTMLElement
+    expect(label.classList.contains('font-mono')).toBe(true)
+    expect(label.classList.contains('text-[11px]')).toBe(true)
+    expect(label.textContent).toBe('#1 +4 lines')
+    const preview = chip.querySelector('.max-w-\\[140px\\]') as HTMLElement
+    expect(preview.classList.contains('truncate')).toBe(true)
+    expect(preview.textContent).toBe('aaaa bbbb cccc ddddd')
+    const stack = chip.querySelector('div.min-w-0') as HTMLElement
+    expect(stack.classList.contains('flex-col')).toBe(true)
+    expect(chip.parentElement!.classList.contains('relative')).toBe(true)
+    expect(btn.className).not.toContain('opacity-50')
+  })
+
+  it('colliding extension-less names get -2/-3 before the (absent) extension', () => {
+    const ib = mount()
+    const mk = () => new File(['data'], 'aaa', { type: 'text/plain' })
+    pasteClipboardFiles(ib.textarea, [{ file: mk() }, { file: mk() }, { file: mk() }])
+    const chips = ib.root.querySelectorAll('span.font-mono.bg-ink2')
+    expect(chips.length).toBe(3)
+    expect(chips[1].textContent).toBe('[aaa-2 4 B]')
+    expect(chips[2].textContent).toBe('[aaa-3 4 B]')
+  })
+
+  it('dotfile collisions keep the full name as the base', () => {
+    const ib = mount()
+    const mk = () => new File(['data'], '.gitignore', { type: 'text/plain' })
+    pasteClipboardFiles(ib.textarea, [{ file: mk() }, { file: mk() }])
+    const chips = ib.root.querySelectorAll('span.font-mono.bg-ink2')
+    expect(chips.length).toBe(2)
+    expect(chips[1].textContent).toBe('[.gitignore-2 4 B]')
+  })
+
+  it('a file whose name is kept is attached as the original object', () => {
+    const ib = mount()
+    const orig = new File(['data'], 'keep.txt', { type: 'text/plain' })
+    pasteClipboardFiles(ib.textarea, [{ file: orig }])
+    expect(ib.getAttachments()[0].file).toBe(orig)
+  })
+
+  it('only file-kind clipboard items attach; string items are skipped', () => {
+    const ib = mount()
+    const f = new File(['abc'], 'q.txt', { type: 'text/plain' })
+    pasteClipboardFiles(ib.textarea, [{ kind: 'string', file: null }, { file: f }])
+    const chips = ib.root.querySelectorAll('span.font-mono.bg-ink2')
+    expect(chips.length).toBe(1)
+    expect(chips[0].textContent).toBe('[q.txt 3 B]')
+  })
+
+  it('clipboard with only files (no items) falls back to the files list', () => {
+    const ib = mount()
+    const f = new File(['xyz'], 'z.txt', { type: 'text/plain' })
+    pasteClipboardFiles(ib.textarea, [], [f])
+    const chips = ib.root.querySelectorAll('span.font-mono.bg-ink2')
+    expect(chips.length).toBe(1)
+    expect(chips[0].textContent).toBe('[z.txt 3 B]')
+  })
+
+  it('clipboard with neither items nor files is a no-op', () => {
+    const ib = mount()
+    const ev = pasteClipboardFiles(ib.textarea, [], null)
+    expect(ib.root.querySelectorAll('span.font-mono.bg-ink2').length).toBe(0)
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  it('engine-synthesized image.png names get stamped and collide with -2', () => {
+    const ib = mount()
+    const mk = () => new File(['x'], 'image.png', { type: 'image/png' })
+    pasteClipboardFiles(ib.textarea, [{ file: mk() }, { file: mk() }])
+    const alts = Array.from(ib.root.querySelectorAll('img')).map((i) => (i as HTMLImageElement).alt)
+    expect(alts.length).toBe(2)
+    expect(alts[0]).toMatch(/^pasted-\d{6}\.png$/)
+    expect(alts[1]).toMatch(/^pasted-\d{6}-2\.png$/)
+  })
+
+  it('removeAttachments keeps numbering while a paste chip remains, resets after the last', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    bigPaste(ib.textarea, 'b'.repeat(900))
+    ib.removeAttachments([ib.getAttachments()[0]])
+    bigPaste(ib.textarea, 'c'.repeat(900))
+    const chips = ib.root.querySelectorAll('[data-paste-chip] .whitespace-nowrap')
+    expect(chips.length).toBe(2)
+    expect(chips[chips.length - 1].textContent).toBe('#3 +1 lines')
+    ib.removeAttachments(ib.getAttachments())
+    bigPaste(ib.textarea, 'd'.repeat(900))
+    const fresh = ib.root.querySelector('[data-paste-chip] .whitespace-nowrap')!
+    expect(fresh.textContent).toBe('#1 +1 lines')
+  })
+
+  it('removeAttachments resets numbering once no paste chip remains (docs only left)', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    ib.addRestoredAttachment({ id: 'd1', mime: 'text/plain', name: 'a.txt' })
+    ib.removeAttachments([ib.getAttachments()[0]])
+    expect(ib.getAttachments()[0].kind).toBe('document')
+    bigPaste(ib.textarea, 'c'.repeat(900))
+    const labels = Array.from(ib.root.querySelectorAll('[data-paste-chip] .whitespace-nowrap')).map(
+      (el) => el.textContent,
+    )
+    expect(labels).toEqual(['#1 +1 lines'])
+    // Dropping the last chip re-dims send once the input is empty again.
+    ib.removeAttachments(ib.getAttachments())
+    expect(sendBtnOf(ib).className).toContain('opacity-50')
+  })
+})
+
+describe('input bar mutation kills: chip removal numbering via the × button', () => {
+  function chipLabels(ib: ReturnType<typeof createInputBar>): (string | null)[] {
+    return Array.from(ib.root.querySelectorAll('[data-paste-chip] .whitespace-nowrap')).map(
+      (el) => el.textContent,
+    )
+  }
+  function clickRemove(ib: ReturnType<typeof createInputBar>, index: number) {
+    const xs = ib.root.querySelectorAll('button[aria-label="Remove attachment"]')
+    ;(xs[index] as HTMLButtonElement).click()
+  }
+
+  it('removing the last remaining paste chip restarts numbering', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    clickRemove(ib, 0)
+    expect(ib.getAttachments().length).toBe(0)
+    bigPaste(ib.textarea, 'b'.repeat(900))
+    expect(chipLabels(ib)).toEqual(['#1 +1 lines'])
+  })
+
+  it('removing one paste chip keeps numbering for the survivor', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    bigPaste(ib.textarea, 'b'.repeat(900))
+    clickRemove(ib, 0)
+    bigPaste(ib.textarea, 'c'.repeat(900))
+    expect(chipLabels(ib)).toEqual(['#2 +1 lines', '#3 +1 lines'])
+  })
+
+  it('removing a doc chip while a paste chip remains keeps numbering', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    ib.addRestoredAttachment({ id: 'd1', mime: 'text/plain', name: 'a.txt' })
+    ib.addRestoredAttachment({ id: 'd2', mime: 'text/plain', name: 'b.txt' })
+    clickRemove(ib, 1)
+    bigPaste(ib.textarea, 'c'.repeat(900))
+    expect(chipLabels(ib)).toEqual(['#1 +1 lines', '#2 +1 lines'])
+  })
+
+  it('removing the only paste chip among docs restarts numbering', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'a'.repeat(900))
+    ib.addRestoredAttachment({ id: 'd1', mime: 'text/plain', name: 'a.txt' })
+    clickRemove(ib, 0)
+    bigPaste(ib.textarea, 'c'.repeat(900))
+    expect(chipLabels(ib)).toEqual(['#1 +1 lines'])
+  })
+})
+
+describe('input bar mutation kills: drag-drop ring and attachment removal effects', () => {
+  it('dragenter preventDefaults and depth-tracking keeps the ring through nested leaves', () => {
+    const ib = mount()
+    const card = ib.root.querySelector('.card-bg') as HTMLElement
+    const enter = new Event('dragenter', { bubbles: true, cancelable: true })
+    card.dispatchEvent(enter)
+    expect(enter.defaultPrevented).toBe(true)
+    expect(card.classList.contains('ring-2')).toBe(true)
+    card.dispatchEvent(new Event('dragenter', { bubbles: true }))
+    card.dispatchEvent(new Event('dragleave'))
+    expect(card.classList.contains('ring-2')).toBe(true)
+    card.dispatchEvent(new Event('dragleave'))
+    expect(card.classList.contains('ring-2')).toBe(false)
+  })
+
+  it('dropping an image chip revokes its blob URL on × and re-dims send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    dropFiles(ib, [new File(['img'], 'pic.png', { type: 'image/png' })])
+    const img = ib.root.querySelector('img[alt="pic.png"]') as HTMLImageElement
+    expect(img).toBeTruthy()
+    expect(btn.className).not.toContain('opacity-50')
+    const previewURL = (ib.getAttachments()[0] as { previewURL: string }).previewURL
+    expect(img.src).toBe(previewURL)
+    expect(previewURL.startsWith('blob:')).toBe(true)
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    try {
+      const x = ib.root.querySelector('button[aria-label="Remove attachment"]') as HTMLButtonElement
+      expect(x.classList.contains('absolute')).toBe(true)
+      expect(x.classList.contains('-top-1')).toBe(true)
+      x.click()
+      expect(revoke).toHaveBeenCalledWith(previewURL)
+    } finally {
+      revoke.mockRestore()
+    }
+    expect(ib.root.querySelector('img[alt="pic.png"]')).toBeNull()
+    expect(btn.className).toContain('opacity-50')
+  })
+
+  it('dropping a document renders a plain (unfailed) doc chip and preventDefaults the drop', () => {
+    const ib = mount()
+    const ev = dropFiles(ib, [new File(['abc'], 'note.txt', { type: 'text/plain' })])
+    expect(ev.defaultPrevented).toBe(true)
+    const span = ib.root.querySelector('span.text-\\[12px\\]') as HTMLElement
+    expect(span).toBeTruthy()
+    expect(span.classList.contains('bg-ink2')).toBe(true)
+    expect(span.classList.contains('border-red-500')).toBe(false)
+    expect(span.textContent).toBe('[note.txt 3 B]')
+  })
+
+  it('clearAttachments wipes the chip strip and re-dims send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    dropFiles(ib, [new File(['abc'], 'note.txt', { type: 'text/plain' })])
+    ib.clearAttachments({ keepSentBlobURLs: true })
+    expect(ib.getAttachments().length).toBe(0)
+    expect(ib.root.querySelector('button[aria-label="Remove attachment"]')).toBeNull()
+    expect(btn.className).toContain('opacity-50')
+  })
+})
+
+describe('input bar mutation kills: failed chip retry affordances', () => {
+  function failedDocChip() {
+    const ib = mount()
+    dropFiles(ib, [new File(['abc'], 'note.txt', { type: 'text/plain' })])
+    ib.markAttachmentFailures(ib.getAttachments())
+    const span = ib.root.querySelector('span.text-\\[12px\\]') as HTMLElement
+    return { ib, span }
+  }
+
+  it('a failed doc chip gets the red border and a positioned retry button', () => {
+    const { ib, span } = failedDocChip()
+    expect(span.classList.contains('border-red-500')).toBe(true)
+    const retry = ib.root.querySelector('button[aria-label="Retry upload"]') as HTMLButtonElement
+    expect(retry).toBeTruthy()
+    expect(retry.classList.contains('absolute')).toBe(true)
+    expect(retry.classList.contains('disabled:opacity-40')).toBe(true)
+  })
+
+  it('retry without a registered callback leaves the chip failed', () => {
+    const { ib, span } = failedDocChip()
+    const retry = ib.root.querySelector('button[aria-label="Retry upload"]') as HTMLButtonElement
+    retry.click()
+    expect(span.classList.contains('border-red-500')).toBe(true)
+    expect(ib.root.querySelector('button[aria-label="Retry upload"]')).toBeTruthy()
+  })
+
+  it('a second retry click while one is in flight is ignored', () => {
+    const { ib } = failedDocChip()
+    const cb = vi.fn(() => new Promise<boolean>(() => {}))
+    ib.onRetryAttachment(cb)
+    const retry = ib.root.querySelector('button[aria-label="Retry upload"]') as HTMLButtonElement
+    retry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    retry.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
+  it('a successful retry clears the failed state and re-renders', async () => {
+    const { ib } = failedDocChip()
+    const refs = ib.getAttachments()
+    ib.onRetryAttachment(async (ref) => {
+      expect(ref).toBe(refs[0])
+      return true
+    })
+    const retry = ib.root.querySelector('button[aria-label="Retry upload"]') as HTMLButtonElement
+    retry.click()
+    // renderChips rebuilds the strip: re-query inside the wait, the captured
+    // span is detached by the re-render.
+    await vi.waitFor(() => {
+      const fresh = ib.root.querySelector('span.text-\\[12px\\]') as HTMLElement
+      expect(fresh.classList.contains('border-red-500')).toBe(false)
+    })
+    expect(ib.root.querySelector('button[aria-label="Retry upload"]')).toBeNull()
+  })
+
+  it('upload progress paints a half-width bar inside the chip', () => {
+    const ib = mount()
+    dropFiles(ib, [new File(['abcdef'], 'p.txt', { type: 'text/plain' })])
+    ib.setAttachmentProgress(ib.getAttachments()[0], 0.5)
+    const chipSpan = ib.root.querySelector('span.text-\\[12px\\]') as HTMLElement
+    const bar = chipSpan.parentElement!.querySelector('.h-0\\.5') as HTMLElement
+    expect(bar).toBeTruthy()
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('50%')
+  })
+})
+
+describe('input bar mutation kills: paste chip edit popup interactions', () => {
+  const editPopup = () => document.body.querySelector('[data-edit-popup]') as HTMLElement
+  const editTa = () => editPopup().querySelector('textarea') as HTMLTextAreaElement
+
+  function openPopup(ib: ReturnType<typeof createInputBar>) {
+    bigPaste(ib.textarea, 'line1\nline2\nline3\nline4')
+    const chip = ib.root.querySelector('[data-paste-chip]') as HTMLElement
+    chip.click()
+    return chip
+  }
+
+  it('chip click opens the popup focused with the paste text', () => {
+    const ib = mount()
+    openPopup(ib)
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+    expect(editTa().value).toBe('line1\nline2\nline3\nline4')
+    expect(document.activeElement).toBe(editTa())
+  })
+
+  it('Enter and Space open the popup from the keyboard; other keys do not', () => {
+    const ib = mount()
+    bigPaste(ib.textarea, 'line1\nline2\nline3\nline4')
+    const chip = ib.root.querySelector('[data-paste-chip]') as HTMLElement
+    const enterEv = cancelableKeydown(chip, 'Enter')
+    expect(enterEv.defaultPrevented).toBe(true)
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+    cancelableKeydown(editTa(), 'Escape')
+    expect(editPopup().classList.contains('hidden')).toBe(true)
+    cancelableKeydown(chip, ' ')
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+    cancelableKeydown(editTa(), 'Escape')
+    cancelableKeydown(chip, 'x')
+    expect(editPopup().classList.contains('hidden')).toBe(true)
+  })
+
+  it('typing a plain key in the popup keeps it open; Escape closes', () => {
+    const ib = mount()
+    openPopup(ib)
+    cancelableKeydown(editTa(), 'a')
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+    cancelableKeydown(editTa(), 'Escape')
+    expect(editPopup().classList.contains('hidden')).toBe(true)
+  })
+
+  it('mousedown inside the popup does not dismiss it', () => {
+    const ib = mount()
+    openPopup(ib)
+    editTa().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+  })
+})
+
+describe('input bar mutation kills: STT span state machine edges', () => {
+  it('deltas, partials, and commits before begin are all no-ops', () => {
+    const ib = mount()
+    ib.textarea.value = '既有'
+    ib.appendSttDelta('新')
+    ib.replaceSttSpan('新')
+    ib.commitSttUtterance('新')
+    expect(ib.textarea.value).toBe('既有')
+  })
+
+  it('commit before begin on an empty textarea is a no-op', () => {
+    const ib = mount()
+    ib.commitSttUtterance('X')
+    expect(ib.textarea.value).toBe('')
+  })
+
+  it('the caret rides the end on same-value partial and commit renders', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('你好')
+    ib.textarea.setSelectionRange(0, 0)
+    ib.commitSttUtterance('你好')
+    expect(ib.textarea.value).toBe('你好')
+    expect(ib.textarea.selectionStart).toBe(2)
+    ib.beginSttUtterance()
+    ib.textarea.setSelectionRange(0, 0)
+    ib.replaceSttSpan('')
+    expect(ib.textarea.selectionStart).toBe(2)
+  })
+
+  it('STT renders recompute send availability as text arrives', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    ib.beginSttUtterance()
+    ib.appendSttDelta('你')
+    expect(btn.className).not.toContain('opacity-50')
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(btn.className).toContain('opacity-50')
+    ib.beginSttUtterance()
+    ib.replaceSttSpan('好')
+    expect(btn.className).not.toContain('opacity-50')
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    ib.beginSttUtterance()
+    ib.commitSttUtterance('定稿')
+    expect(btn.className).not.toContain('opacity-50')
+  })
+
+  it('endSttUtterance freezes the span so a later commit is inert at the boundary', () => {
+    const ib = mount()
+    ib.beginSttUtterance()
+    ib.appendSttDelta('a')
+    ib.endSttUtterance()
+    ib.commitSttUtterance('X')
+    expect(ib.textarea.value).toBe('a')
+  })
+
+  it('setSttStatus logs the error line exactly and stays silent on recovery', () => {
+    const ib = mount()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      ib.setSttStatus('boom')
+      expect(log).toHaveBeenCalledWith('[stt] boom')
+      log.mockClear()
+      ib.setSttStatus(null)
+      expect(log).not.toHaveBeenCalled()
+    } finally {
+      log.mockRestore()
+    }
+  })
+})
+
+describe('input bar mutation kills: desktop keyboard routing edges', () => {
+  it('Escape while idle neither stops nor preventDefaults', () => {
+    const ib = mount()
+    const stop = vi.fn()
+    ib.onStop(stop)
+    const ev = cancelableKeydown(ib.textarea, 'Escape')
+    expect(ev.defaultPrevented).toBe(false)
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('Escape while streaming stops and preventDefaults', () => {
+    const ib = mount()
+    const stop = vi.fn()
+    ib.onStop(stop)
+    ib.setStreaming(true)
+    const ev = cancelableKeydown(ib.textarea, 'Escape')
+    expect(ev.defaultPrevented).toBe(true)
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('the ArrowUp cancel-queued branch preventDefaults', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'hello' }])
+    const ev = cancelableKeydown(ib.textarea, 'ArrowUp')
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('cursor at position 0 of a leading-newline value navigates history', () => {
+    const ib = mount()
+    const up = vi.fn(() => 'replaced' as string | null)
+    ib.onHistoryUp(up)
+    ib.textarea.value = '\nabc'
+    ib.textarea.setSelectionRange(0, 0)
+    cancelableKeydown(ib.textarea, 'ArrowUp')
+    expect(up).toHaveBeenCalledTimes(1)
+    expect(ib.textarea.value).toBe('replaced')
+  })
+
+  it('cursor before the newline of line 0 still navigates history', () => {
+    const ib = mount()
+    const up = vi.fn(() => 'replaced' as string | null)
+    ib.onHistoryUp(up)
+    ib.textarea.value = 'ab\ncd'
+    ib.textarea.setSelectionRange(2, 2)
+    cancelableKeydown(ib.textarea, 'ArrowUp')
+    expect(up).toHaveBeenCalledTimes(1)
+  })
+
+  it('history navigation on an empty input preventDefaults and undims send (up and down)', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    ib.onHistoryUp(() => 'old query')
+    const upEv = cancelableKeydown(ib.textarea, 'ArrowUp')
+    expect(upEv.defaultPrevented).toBe(true)
+    expect(btn.className).not.toContain('opacity-50')
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(btn.className).toContain('opacity-50')
+    ib.onHistoryDown(() => 'restored')
+    const downEv = cancelableKeydown(ib.textarea, 'ArrowDown')
+    expect(downEv.defaultPrevented).toBe(true)
+    expect(btn.className).not.toContain('opacity-50')
+  })
+
+  it('ArrowDown parks the caret at the end when the restored text equals the current one', () => {
+    const ib = mount()
+    ib.onHistoryDown(() => 'x')
+    ib.textarea.value = 'x'
+    ib.textarea.setSelectionRange(0, 0)
+    cancelableKeydown(ib.textarea, 'ArrowDown')
+    expect(ib.textarea.selectionStart).toBe(1)
+  })
+
+  it('unhandled keys while streaming with a queue do not cancel', () => {
+    const ib = mount()
+    const cancel = vi.fn()
+    ib.onCancelQueued(cancel)
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: 'u-1', text: 'hello' }])
+    const ev = cancelableKeydown(ib.textarea, 'z')
+    expect(cancel).not.toHaveBeenCalled()
+    expect(ev.defaultPrevented).toBe(false)
+  })
+})
+
+describe('input bar mutation kills: uploading and connection gating', () => {
+  it('setUploading(false) keeps every control gated by connection and STT config', () => {
+    const offline = createInputBar({ connected: false })
+    document.body.appendChild(offline.root)
+    offline.setUploading(false)
+    const plus = offline.root.querySelector(
+      'button[aria-label="Attach file"]',
+    ) as HTMLButtonElement
+    expect(plus.disabled).toBe(true)
+    const ib = mount()
+    ib.setUploading(false)
+    expect(micOf(ib).disabled).toBe(true)
+    ib.setSttAvailable(true)
+    ib.setUploading(false)
+    expect(micOf(ib).disabled).toBe(false)
+  })
+
+  it('an upload finishing does not close an open attach panel', () => {
+    const ib = mount()
+    const plus = ib.root.querySelector('button[aria-label="Attach file"]') as HTMLButtonElement
+    plus.click()
+    const open = () => {
+      for (const p of document.body.querySelectorAll('div')) {
+        if (p.classList.contains('hidden')) continue
+        const hasAttach =
+          !!p.querySelector('button[aria-label="Camera"]')
+          || !!p.querySelector('button[aria-label="Image"]')
+          || !!p.querySelector('button[aria-label="File"]')
+        if (hasAttach) return p as HTMLElement
+      }
+      return null
+    }
+    expect(open()).not.toBeNull()
+    ib.setUploading(false)
+    expect(open()).not.toBeNull()
+    // A full upload cycle disables + while in flight and re-enables after.
+    ib.setUploading(true)
+    expect(plus.disabled).toBe(true)
+    ib.setUploading(false)
+    expect(plus.disabled).toBe(false)
+  })
+
+  it('setInputText and appendQueuedText focus the textarea and undim send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    ib.setInputText('hi')
+    expect(document.activeElement).toBe(ib.textarea)
+    expect(btn.className).not.toContain('opacity-50')
+    ib.textarea.value = ''
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(btn.className).toContain('opacity-50')
+    // setInputText above already focused the textarea — blur so only
+    // appendQueuedText can reclaim focus.
+    ib.textarea.blur()
+    expect(document.activeElement).not.toBe(ib.textarea)
+    ib.appendQueuedText('queued')
+    expect(document.activeElement).toBe(ib.textarea)
+    expect(btn.className).not.toContain('opacity-50')
+  })
+})
+
+describe('input bar mutation kills: queue bubble +N more badge', () => {
+  it('the first bubble of a multi-message queue shows +N more with idle styling', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([
+      { uuid: 'a', text: 'one' },
+      { uuid: 'b', text: 'two' },
+      { uuid: 'c', text: 'three' },
+    ])
+    expect(ib.bubbles.textContent).toContain('+2 more')
+    const badges = Array.from(ib.bubbles.querySelectorAll('span')).filter((s) =>
+      (s.textContent ?? '').endsWith(' more'),
+    )
+    expect(badges.length).toBe(1)
+    expect(ib.bubbles.children[0].textContent).toContain('+2 more')
+    expect(ib.bubbles.children[1].textContent).not.toContain('more')
+    expect(badges[0].classList.contains('text-t3')).toBe(true)
+    ib.setQueuedMsgs([{ uuid: 'a', text: 'one' }])
+    expect(ib.bubbles.textContent).not.toContain('more')
+  })
+
+  it('bubble label and cancel hint carry their truncation and idle styling', () => {
+    const ib = mount()
+    ib.setStreaming(true)
+    ib.setQueuedMsgs([{ uuid: 'a', text: 'one' }])
+    const bubble = ib.bubbles.children[0] as HTMLElement
+    const label = bubble.querySelector('span.truncate') as HTMLElement
+    expect(label.textContent).toBe('one')
+    expect(label.classList.contains('text-t2')).toBe(true)
+    const cancel = bubble.querySelector('span.mono') as HTMLElement
+    expect(cancel.textContent).toBe('Tap to CANCEL')
+    expect(cancel.classList.contains('text-t3')).toBe(true)
+  })
+})
+
+describe('input bar mutation kills: restored attachment metadata', () => {
+  it('document restore without a name renders the generic label and a typed stub File', () => {
+    const ib = mount()
+    ib.addRestoredAttachment({ id: 'r1', mime: 'application/pdf', size: 2048 })
+    const chip = ib.root.querySelector('span.text-\\[12px\\]') as HTMLElement
+    expect(chip.textContent).toBe('[document 0 B]')
+    const ref = ib.getAttachments()[0]
+    expect(ref.kind).toBe('document')
+    expect(ref.file.type).toBe('application/pdf')
+    expect(ref.file.size).toBe(0)
+    expect((ref as { restoredSize?: number }).restoredSize).toBe(2048)
+  })
+
+  it('image restore with a bare image mime falls back to the png extension', () => {
+    const ib = mount()
+    ib.addRestoredAttachment({ id: 'r2', mime: 'image/', size: 8 })
+    const img = ib.root.querySelector('img') as HTMLImageElement
+    expect(img).toBeTruthy()
+    expect(img.alt).toBe('image.png')
+  })
+
+  it('image restore stubs an empty, correctly-typed File', () => {
+    const ib = mount()
+    ib.addRestoredAttachment({ id: 'r4', mime: 'image/jpeg', size: 4096, name: 'cam.jpg' })
+    const ref = ib.getAttachments()[0]
+    expect(ref.kind).toBe('image')
+    expect(ref.file.type).toBe('image/jpeg')
+    expect(ref.file.size).toBe(0)
+    expect((ref as { uploadedID?: string }).uploadedID).toBe('r4')
+  })
+
+  it('restoring an attachment undims send', () => {
+    const ib = mount()
+    const btn = sendBtnOf(ib)
+    expect(btn.className).toContain('opacity-50')
+    ib.addRestoredAttachment({ id: 'r3', mime: 'text/plain', size: 1 })
+    expect(btn.className).not.toContain('opacity-50')
+  })
+})
+
+describe('input bar mutation kills: attach panel close on selection and disabled plus', () => {
+  const visiblePanel = () => {
+    for (const p of document.body.querySelectorAll('div')) {
+      if (p.classList.contains('hidden')) continue
+      const hasAttach =
+        !!p.querySelector('button[aria-label="Camera"]')
+        || !!p.querySelector('button[aria-label="Image"]')
+        || !!p.querySelector('button[aria-label="File"]')
+      if (hasAttach) return p as HTMLElement
+    }
+    return null
+  }
+
+  it('picking any attach action closes the panel', () => {
+    const ib = mount()
+    const plus = ib.root.querySelector('button[aria-label="Attach file"]') as HTMLButtonElement
+    for (const label of ['Camera', 'Image', 'File']) {
+      plus.click()
+      expect(visiblePanel()).not.toBeNull()
+      const action = visiblePanel()!.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement
+      action.click()
+      expect(visiblePanel()).toBeNull()
+    }
+  })
+
+  it('clicking the disabled + button never opens the panel', () => {
+    const ib = createInputBar({ connected: false })
+    document.body.appendChild(ib.root)
+    const plus = ib.root.querySelector('button[aria-label="Attach file"]') as HTMLButtonElement
+    plus.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(visiblePanel()).toBeNull()
+  })
+
+  it('setConnected gates the + button, re-enables send without typing, and only closes the panel on disconnect', () => {
+    const ib = createInputBar({ connected: false })
+    document.body.appendChild(ib.root)
+    const plus = ib.root.querySelector('button[aria-label="Attach file"]') as HTMLButtonElement
+    const send = ib.root.querySelector('button[aria-label="Send"]') as HTMLButtonElement
+    ib.setConnected(true)
+    expect(plus.disabled).toBe(false)
+    expect(send.disabled).toBe(false)
+    plus.click()
+    expect(visiblePanel()).not.toBeNull()
+    // A reconnect while already open must not steal the panel.
+    ib.setConnected(true)
+    expect(visiblePanel()).not.toBeNull()
+    ib.setConnected(false)
+    expect(plus.disabled).toBe(true)
+    expect(visiblePanel()).toBeNull()
   })
 })
