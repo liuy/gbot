@@ -918,6 +918,10 @@ export function createSettingsPage(): SettingsPageHandles {
     restartArmed = on
     if (restartDisarmTimer) { clearTimeout(restartDisarmTimer); restartDisarmTimer = null }
     restartBtn.className = on ? RESTART_ARMED : RESTART_REST
+    // The wholesale write above drops the dim class the refresh just added
+    // when a busy turn disarms in the same tick — a disabled button must
+    // stay visibly disabled, so re-assert the dim from live state.
+    restartBtn.classList.toggle('opacity-40', restartBtn.disabled)
     if (on) {
       // Drop the data-i18n anchor while armed: a live locale switch must
       // not rewrite the armed label back to the resting one.

@@ -6,15 +6,26 @@ import { openAvatarCropper } from './avatar_crop'
 import type { RemoteDevice } from './vnc'
 import {
   fetchSettings,
+  fetchAdminState,
   fetchRawSettings,
   saveSettings,
+  saveDefaultModel,
+  saveSttDefault,
+  saveTTSDefault,
+  postRestart,
+  nativeRestartAvailable,
+  postReloadConfig,
   testProvider,
   fetchProviderModels,
   createSettingsPage,
   type SettingsPayload,
   type SettingsProvider,
   type ModelsResult,
+  type ReloadReport,
 } from './settings'
+import { dict as enDict } from './i18n/locales/en'
+import { dict as zhDict } from './i18n/locales/zh'
+import { dict as zhTWDict } from './i18n/locales/zh-TW'
 
 // markUpgrading must be a no-op spy here: settings.ts arms upgrade mode
 // on a 202, and the real one would touch module state no WS exists for.
@@ -31,6 +42,72 @@ vi.mock('./avatar_crop', () => ({
   openAvatarCropper: vi.fn(),
 }))
 
+// log.ts's ring buffer is module state with no reset hook; merging the two
+// suites into one file made its app-log tests share that state, so the
+// buffer is mocked with an interface-identical, resettable twin — afterEach
+// drains it so every test starts from an empty WUI console.
+const logMock = vi.hoisted(() => {
+  const buffer: string[] = []
+  const pad = (n: number, w: number) => String(n).padStart(w, '0')
+  return {
+    buffer,
+    getDebugLogs: (): string[] => buffer.slice(),
+    pushDebugLog: (...args: unknown[]): void => {
+      const now = new Date()
+      const ts = `${pad(now.getHours(), 2)}:${pad(now.getMinutes(), 2)}:${pad(now.getSeconds(), 2)}.${pad(now.getMilliseconds(), 3)}`
+      const text = args
+        .map((a) => {
+          if (typeof a === 'object' && a !== null) {
+            try {
+              return JSON.stringify(a)
+            } catch {
+              return String(a)
+            }
+          }
+          return String(a)
+        })
+        .join(' ')
+      buffer.push(`${ts} ${text}`)
+      if (buffer.length > 1000) buffer.shift()
+    },
+  }
+})
+vi.mock('./log', () => ({
+  getDebugLogs: logMock.getDebugLogs,
+  pushDebugLog: logMock.pushDebugLog,
+}))
+
+// vitest's jsdom pipeline resolves every highlight.js `?raw` CSS import to
+// '' — darkCss and lightCss are then byte-identical and the dark/light
+// branch at the chip handler is unobservable. Feed each module a fixture
+// that encodes its file and role so the applied variant is assertable.
+vi.mock('highlight.js/styles/github-dark.css?raw', () => ({ default: 'FIXTURE:github-dark' }))
+vi.mock('highlight.js/styles/github.css?raw', () => ({ default: 'FIXTURE:github-light' }))
+vi.mock('highlight.js/styles/atom-one-dark.css?raw', () => ({ default: 'FIXTURE:atom-one-dark' }))
+vi.mock('highlight.js/styles/atom-one-light.css?raw', () => ({ default: 'FIXTURE:atom-one-light' }))
+vi.mock('highlight.js/styles/a11y-dark.css?raw', () => ({ default: 'FIXTURE:a11y-dark' }))
+vi.mock('highlight.js/styles/a11y-light.css?raw', () => ({ default: 'FIXTURE:a11y-light' }))
+vi.mock('highlight.js/styles/gradient-dark.css?raw', () => ({ default: 'FIXTURE:gradient-dark' }))
+vi.mock('highlight.js/styles/gradient-light.css?raw', () => ({ default: 'FIXTURE:gradient-light' }))
+vi.mock('highlight.js/styles/isbl-editor-dark.css?raw', () => ({ default: 'FIXTURE:isbl-editor-dark' }))
+vi.mock('highlight.js/styles/isbl-editor-light.css?raw', () => ({ default: 'FIXTURE:isbl-editor-light' }))
+vi.mock('highlight.js/styles/kimbie-dark.css?raw', () => ({ default: 'FIXTURE:kimbie-dark' }))
+vi.mock('highlight.js/styles/kimbie-light.css?raw', () => ({ default: 'FIXTURE:kimbie-light' }))
+vi.mock('highlight.js/styles/nnfx-dark.css?raw', () => ({ default: 'FIXTURE:nnfx-dark' }))
+vi.mock('highlight.js/styles/nnfx-light.css?raw', () => ({ default: 'FIXTURE:nnfx-light' }))
+vi.mock('highlight.js/styles/panda-syntax-dark.css?raw', () => ({ default: 'FIXTURE:panda-syntax-dark' }))
+vi.mock('highlight.js/styles/panda-syntax-light.css?raw', () => ({ default: 'FIXTURE:panda-syntax-light' }))
+vi.mock('highlight.js/styles/paraiso-dark.css?raw', () => ({ default: 'FIXTURE:paraiso-dark' }))
+vi.mock('highlight.js/styles/paraiso-light.css?raw', () => ({ default: 'FIXTURE:paraiso-light' }))
+vi.mock('highlight.js/styles/qtcreator-dark.css?raw', () => ({ default: 'FIXTURE:qtcreator-dark' }))
+vi.mock('highlight.js/styles/qtcreator-light.css?raw', () => ({ default: 'FIXTURE:qtcreator-light' }))
+vi.mock('highlight.js/styles/stackoverflow-dark.css?raw', () => ({ default: 'FIXTURE:stackoverflow-dark' }))
+vi.mock('highlight.js/styles/stackoverflow-light.css?raw', () => ({ default: 'FIXTURE:stackoverflow-light' }))
+vi.mock('highlight.js/styles/tokyo-night-dark.css?raw', () => ({ default: 'FIXTURE:tokyo-night-dark' }))
+vi.mock('highlight.js/styles/tokyo-night-light.css?raw', () => ({ default: 'FIXTURE:tokyo-night-light' }))
+vi.mock('highlight.js/styles/rose-pine.css?raw', () => ({ default: 'FIXTURE:rose-pine-dark' }))
+vi.mock('highlight.js/styles/rose-pine-dawn.css?raw', () => ({ default: 'FIXTURE:rose-pine-dawn-light' }))
+
 // Two providers with the default on the SECOND one — discriminates name-match
 // from index-0 in the default-pill rendering. First provider has no type
 // (AUTO badge), second is typed with extra_params for round-trip checks.
@@ -38,7 +115,9 @@ const PAYLOAD: SettingsPayload = {
   providers: [
     {
       name: 'xiaomi',
-      url: 'https://api.xiaomimimo.com/anthropic',
+      // The mutate suites' home-rendering assertion pins this URL verbatim;
+      // no assertion on the main side reads it, so the union takes theirs.
+      url: 'https://api.xiaomivivo.com/anthropic',
       keys: ['sk-xiaomi'],
       models: { 'mimo-v2.5': { context: '500k', input: ['text', 'image'] } },
     },
@@ -54,23 +133,80 @@ const PAYLOAD: SettingsPayload = {
   default: { provider: 'zhipu', model: 'glm-5.3' },
 }
 
+// The main and mutate suites pin different reports through one base shape:
+// the main variant's 3 files drive banner 2/0/1 and expanded-failure rows,
+// the mutate variant's 2 files drive banner 1/1/0 with settingsChanged off.
+// One parameterized fixture keeps both assertable without drifting copies.
+function makeReloadReport(variant: 'main' | 'mutate'): ReloadReport {
+  if (variant === 'mutate') {
+    return {
+      applied: true,
+      phase: 4,
+      files: [
+        { path: '/root/.gbot/settings.json', status: 'reloaded' },
+        { path: '/root/.gbot/prompt.md', status: 'unchanged' },
+      ],
+      counts: { reloaded: 1, unchanged: 1, failed: 0 },
+      promptChanged: true,
+      enginesRefreshed: 2,
+      settingsChanged: false,
+      lastReloadAt: '2026-11-03T00:00:00Z',
+    }
+  }
+  return {
+    applied: true,
+    phase: 4,
+    files: [
+      { path: '~/.gbot/settings.json', status: 'reloaded', note: 'max_tokens: 32768 → 16384', noteKey: 'newSessionsOnly' },
+      { path: '~/.gbot/plugins/browser/mcp.json', status: 'reloaded' },
+      {
+        path: '~/.gbot/plugins/dbquery/mcp.json',
+        status: 'failed',
+        errLine: 'line 7: invalid character',
+      },
+    ],
+    counts: { reloaded: 2, unchanged: 0, failed: 1 },
+    promptChanged: true,
+    enginesRefreshed: 2,
+    settingsChanged: true,
+    lastReloadAt: '2026-10-09T04:12:58Z',
+  }
+}
+
+const OK_REPORT: ReloadReport = makeReloadReport('main')
+
 interface MockOptions {
   payload?: SettingsPayload
+  providersGetError?: boolean
   raw?: string
   rawError?: boolean
-  models?: ModelsResult
+  models?: unknown
   testResult?: { ok: boolean; latencyMs?: number; error?: string }
   putError?: string
   onPutStt?: (body: { provider: string; model: string }) => void
-    onPutTts?: (body: { provider: string; model: string }) => void
+  onPutTts?: (body: { provider: string; model: string; voice?: string }) => void
+  onPutDefault?: (body: { provider: string; model: string }) => void
+  sttPutError?: boolean
+  ttsPutError?: boolean
+  sttPutReject?: unknown
+  ttsPutReject?: unknown
+  deviceTestRejectWith?: unknown
+  testRejectWith?: unknown
+  ttsVoices?: string[]
+  ttsVoicesError?: boolean
+  ttsVoicesAbsent?: boolean
   logs?: string
   logsError?: boolean
   devices?: RemoteDevice[]
   devicesError?: boolean
+  devicesPutError?: boolean
   deviceTest?: { ok: boolean; latencyMs?: number; error?: string }
+  deviceTestReject?: boolean
+  onDeviceTest?: (body: { addr: string; pass: string }) => void
   admin?: { busy: boolean; items: unknown[]; upgradable: boolean; build: string, reason?: string }
   restartPostStatus?: number
   restartPost?: { status: number; body: unknown }
+  restartPostReject?: boolean
   reloadReport?: ReloadReport
   reloadError?: string
   // Avatar endpoint surface. HEAD defaults to 404 (no custom avatar); a
@@ -80,6 +216,10 @@ interface MockOptions {
   avatarPutError?: string
   avatarDeleteStatus?: number
 }
+
+// Captures every POST body sent to /api/settings/models so tests can pin
+// url/key/type/free without reaching into the mock's call log.
+const modelsBodies: Array<Record<string, unknown>> = []
 
 // makeFetchHandler stubs the settings endpoints, routing by URL+method and
 // capturing PUT bodies via opts.onPut / opts.onPutDevices.
@@ -92,6 +232,9 @@ function makeFetchHandler(
   return vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     if (url === '/api/settings/providers') {
+      if (method === 'GET' && opts.providersGetError) {
+        return { ok: false, status: 503, json: async () => ({}) }
+      }
       if (method === 'PUT') {
         opts.onPut?.(JSON.parse(String(init?.body)) as SettingsProvider[])
         if (opts.putError) {
@@ -102,8 +245,12 @@ function makeFetchHandler(
       return {
         ok: true,
         status: 200,
-        json: async () => opts.payload ?? { providers: [], default: { provider: '', model: '' } },
+        json: async () => structuredClone(opts.payload ?? { providers: [], default: { provider: '', model: '' } }),
       }
+    }
+    if (url === '/api/settings/default' && method === 'PUT') {
+      opts.onPutDefault?.(JSON.parse(String(init?.body)) as { provider: string; model: string })
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
     if (url === '/api/settings/raw') {
       if (opts.rawError) {
@@ -113,6 +260,9 @@ function makeFetchHandler(
     }
     if (url === '/api/settings/remotedesktop') {
       if (method === 'PUT') {
+        if (opts.devicesPutError) {
+          return { ok: false, status: 500, json: async () => ({ error: 'devices write failed' }) }
+        }
         opts.onPutDevices?.(JSON.parse(String(init?.body)) as RemoteDevice[])
         return { ok: true, status: 200, json: async () => ({ ok: true }) }
       }
@@ -122,6 +272,10 @@ function makeFetchHandler(
       return { ok: true, status: 200, json: async () => ({ devices: opts.devices ?? [] }) }
     }
     if (url === '/api/settings/remotedesktop/test') {
+      if (opts.deviceTestRejectWith !== undefined) throw opts.deviceTestRejectWith
+      if (opts.deviceTestReject) throw new TypeError('fetch failed')
+      const body = JSON.parse(String(init?.body ?? '{}')) as { addr?: string; pass?: string }
+      opts.onDeviceTest?.({ addr: body.addr ?? '', pass: body.pass ?? '' })
       return { ok: true, status: 200, json: async () => opts.deviceTest ?? { ok: true, latencyMs: 12 } }
     }
     if (url === '/api/logs?tail=500') {
@@ -131,10 +285,14 @@ function makeFetchHandler(
       return { ok: true, status: 200, text: async () => opts.logs ?? '' }
     }
     if (url === '/api/settings/test') {
+      if (opts.testRejectWith !== undefined) throw opts.testRejectWith
       return { ok: true, status: 200, json: async () => opts.testResult ?? { ok: true, latencyMs: 412 } }
     }
     if (url === '/api/admin/restart') {
       if (method === 'POST') {
+        if (opts.restartPostReject) {
+          throw new TypeError('fetch failed')
+        }
         if (opts.restartPost) return { ok: opts.restartPost.status < 400, status: opts.restartPost.status, json: async () => opts.restartPost!.body }
         return { ok: opts.restartPostStatus !== 409, status: opts.restartPostStatus ?? 202, json: async () => ({ status: 'upgrading' }) }
       }
@@ -149,18 +307,33 @@ function makeFetchHandler(
       }
     }
     if (url === '/api/settings/models') {
+      modelsBodies.push(JSON.parse(String(init?.body ?? '{}')))
       return { ok: true, status: 200, json: async () => opts.models ?? { mode: 'fetched', models: [] } }
     }
     if (url === '/api/settings/stt' && method === 'PUT') {
+      if (opts.sttPutReject !== undefined) throw opts.sttPutReject
+      if (opts.sttPutError) {
+        return { ok: false, status: 400, json: async () => ({ error: 'stt write failed' }) }
+      }
       opts.onPutStt?.(JSON.parse(String(init?.body)) as { provider: string; model: string })
       return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
     if (url === '/api/settings/tts' && method === 'PUT') {
+      if (opts.ttsPutReject !== undefined) throw opts.ttsPutReject
+      if (opts.ttsPutError) {
+        return { ok: false, status: 400, json: async () => ({ error: 'tts write failed' }) }
+      }
       opts.onPutTts?.(JSON.parse(String(init?.body)) as { provider: string; model: string; voice?: string })
       return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
     if (url === '/api/tts/voices') {
-      return { ok: true, status: 200, json: async () => ({ voices: opts.ttsVoices ?? [] }) }
+      if (opts.ttsVoicesError) {
+        return { ok: false, status: 500, json: async () => ({}) }
+      }
+      if (opts.ttsVoicesAbsent) {
+        return { ok: true, status: 200, json: async () => ({}) }
+      }
+      return { ok: true, status: 200, json: async () => ({ voices: opts.ttsVoices ?? ['Aiden', 'Serena'] }) }
     }
     if (url.startsWith('/api/avatar/')) {
       if (method === 'HEAD') {
@@ -201,15 +374,9 @@ async function openPage(
   return page
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals()
-  vi.useRealTimers()
-  localStorage.removeItem('gbot-language')
-  // Avatar module state survives across pages; without the reset one test's
-  // probe result flips every later page's holders to <img>.
-  resetAvatarStateForTest()
-  document.body.innerHTML = ''
-})
+function toastText(page: { root: HTMLElement }): string {
+  return (page.root.querySelector('[data-toast]') as HTMLElement).textContent ?? ''
+}
 
 // Flush the open() fetch→render chain with microtasks only — usable under
 // fake timers (which must not be advanced past the toast window).
@@ -222,6 +389,48 @@ function input(el: HTMLInputElement, value: string) {
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+function body0(page: { root: HTMLElement }): HTMLElement {
+  return page.root.querySelector('[data-applog-lines]') as HTMLElement
+}
+
+beforeEach(() => {
+  setLocale('en')
+  Element.prototype.scrollIntoView = vi.fn()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+  localStorage.removeItem('gbot-language')
+  // Avatar module state survives across pages; without the reset one test's
+  // probe result flips every later page's holders to <img>.
+  resetAvatarStateForTest()
+  logMock.buffer.length = 0
+  delete window.GBotNative
+  delete (window as unknown as Record<string, unknown>).GBotAppLogs
+  document.body.innerHTML = ''
+})
+
+const RESTART_REST =
+  'ml-auto shrink-0 bg-transparent border-none px-2 py-1 rounded-lg text-[13px] font-medium text-t1 cursor-pointer'
+const RESTART_ARMED =
+  'ml-auto shrink-0 bg-red/10 border-none px-2 py-1 rounded-lg text-[13px] font-semibold text-red cursor-pointer'
+
+const AUDIO_PAYLOAD: SettingsPayload = {
+  providers: [
+    ...PAYLOAD.providers,
+    {
+      name: 'audiocpp',
+      url: 'http://127.0.0.1:8082/v1',
+      type: 'audio',
+      keys: [],
+      models: { 'stt-stream': {}, 'tts-voice': {} },
+    },
+  ],
+  default: PAYLOAD.default,
+  stt: { provider: 'audiocpp', model: 'stt-stream' },
+  tts: { provider: 'audiocpp', model: 'tts-voice', voice: 'Aiden' },
+}
 describe('fetchSettings', () => {
   it('GETs /api/settings/providers and returns the payload as-is', async () => {
     const mock = makeFetchHandler({ payload: PAYLOAD })
@@ -2271,29 +2480,6 @@ describe('SYSTEM card (native restart bridge)', () => {
 // Config reload card
 // ---------------------------------------------------------------------------
 
-import type { ReloadReport } from './settings'
-import { dict as enDict } from './i18n/locales/en'
-import { dict as zhDict } from './i18n/locales/zh'
-import { dict as zhTWDict } from './i18n/locales/zh-TW'
-
-const OK_REPORT: ReloadReport = {
-  applied: true,
-  phase: 4,
-  files: [
-    { path: '~/.gbot/settings.json', status: 'reloaded', note: 'max_tokens: 32768 → 16384', noteKey: 'newSessionsOnly' },
-    { path: '~/.gbot/plugins/browser/mcp.json', status: 'reloaded' },
-    {
-      path: '~/.gbot/plugins/dbquery/mcp.json',
-      status: 'failed',
-      errLine: 'line 7: invalid character',
-    },
-  ],
-  counts: { reloaded: 2, unchanged: 0, failed: 1 },
-  promptChanged: true,
-  enginesRefreshed: 2,
-  settingsChanged: true,
-  lastReloadAt: '2026-10-09T04:12:58Z',
-}
 
 describe('config reload card', () => {
   beforeEach(() => {
@@ -2977,3 +3163,3903 @@ describe('avatar row', () => {
     }
   })
 })
+
+
+describe('wire helpers', () => {
+  it('fetchSettings rejects with the HTTP status on !ok', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })),
+    )
+    await expect(fetchSettings()).rejects.toThrow('settings fetch failed: 503')
+  })
+
+  it('fetchAdminState rejects with the HTTP status on !ok', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 502, json: async () => ({}) })),
+    )
+    await expect(fetchAdminState()).rejects.toThrow('admin state fetch failed: 502')
+  })
+
+  it('postRestart returns the exact 202 envelope without error keys', async () => {
+    vi.stubGlobal('fetch', makeFetchHandler({}))
+    await expect(postRestart()).resolves.toStrictEqual({ status: 202 })
+  })
+
+  it('postRestart maps a non-202 JSON body to status+error+reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      makeFetchHandler({
+        restartPost: { status: 501, body: { error: 'TUI mode cannot restart', reason: 'tui_mode' } },
+      }),
+    )
+    await expect(postRestart()).resolves.toStrictEqual({
+      status: 501,
+      error: 'TUI mode cannot restart',
+      reason: 'tui_mode',
+    })
+  })
+
+  it('postRestart keeps a 409 empty body as the bare status envelope', async () => {
+    vi.stubGlobal('fetch', makeFetchHandler({ restartPost: { status: 409, body: {} } }))
+    await expect(postRestart()).resolves.toStrictEqual({ status: 409, error: undefined, reason: undefined })
+  })
+
+  it('postRestart survives a non-JSON refusal body', async () => {
+    const mock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      json: async () => {
+        throw new SyntaxError('Unexpected token')
+      },
+    }))
+    vi.stubGlobal('fetch', mock)
+    await expect(postRestart()).resolves.toStrictEqual({ status: 500, error: undefined, reason: undefined })
+  })
+
+  it('fetchRawSettings rejects with the HTTP status on !ok', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })),
+    )
+    await expect(fetchRawSettings()).rejects.toThrow('settings fetch failed: 404')
+  })
+
+  it('postReloadConfig rejects with the HTTP status on !ok', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })),
+    )
+    await expect(postReloadConfig()).rejects.toThrow('reload failed: 500')
+  })
+
+  it('saveSettings keeps the HTTP status when the failure body is not JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => {
+          throw new SyntaxError('no json')
+        },
+      })),
+    )
+    await expect(saveSettings(PAYLOAD.providers)).rejects.toThrow('HTTP 400')
+  })
+
+  it('saveDefaultModel PUTs the pair and surfaces the server error text', async () => {
+    const mock = makeFetchHandler({ onPutDefault: undefined })
+    vi.stubGlobal('fetch', mock)
+    await saveDefaultModel('zhipu', 'glm-5.3')
+    expect(mock).toHaveBeenCalledWith(
+      '/api/settings/default',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ provider: 'zhipu', model: 'glm-5.3' }),
+      }),
+    )
+  })
+
+  it('saveDefaultModel rejects with the server error, and with the status on non-JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'no such provider' }) })),
+    )
+    await expect(saveDefaultModel('x', 'y')).rejects.toThrow('no such provider')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        json: async () => {
+          throw new SyntaxError('no json')
+        },
+      })),
+    )
+    await expect(saveDefaultModel('x', 'y')).rejects.toThrow('HTTP 422')
+  })
+
+  it('saveSttDefault PUTs the pair and rejects through both error paths', async () => {
+    const mock = makeFetchHandler({})
+    vi.stubGlobal('fetch', mock)
+    await saveSttDefault('audiocpp', 'stt-stream')
+    expect(mock).toHaveBeenCalledWith(
+      '/api/settings/stt',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ provider: 'audiocpp', model: 'stt-stream' }),
+      }),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'stt invalid' }) })),
+    )
+    await expect(saveSttDefault('a', 'b')).rejects.toThrow('stt invalid')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new SyntaxError('no json')
+        },
+      })),
+    )
+    await expect(saveSttDefault('a', 'b')).rejects.toThrow('HTTP 500')
+  })
+
+  it('saveTTSDefault PUTs the triple and rejects through both error paths', async () => {
+    const mock = makeFetchHandler({})
+    vi.stubGlobal('fetch', mock)
+    await saveTTSDefault('audiocpp', 'tts-1', 'Aiden')
+    expect(mock).toHaveBeenCalledWith(
+      '/api/settings/tts',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ provider: 'audiocpp', model: 'tts-1', voice: 'Aiden' }),
+      }),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'tts invalid' }) })),
+    )
+    await expect(saveTTSDefault('a', 'b', 'c')).rejects.toThrow('tts invalid')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => {
+          throw new SyntaxError('no json')
+        },
+      })),
+    )
+    await expect(saveTTSDefault('a', 'b', 'c')).rejects.toThrow('HTTP 503')
+  })
+
+  it('testProvider maps a non-2xx reply to the HTTP error envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })))
+    await expect(testProvider(PAYLOAD.providers[0])).resolves.toEqual({ ok: false, error: 'HTTP 401' })
+  })
+
+  it('fetchProviderModels maps a non-2xx reply to the error mode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 502, json: async () => ({}) })))
+    await expect(fetchProviderModels('https://x', 'k', 'openai')).resolves.toEqual({
+      mode: 'error',
+      error: 'HTTP 502',
+    })
+  })
+
+  it('nativeRestartAvailable follows the hostname allowlist', async () => {
+    window.GBotNative = { restartDaemon: () => {} }
+    // jsdom runs on localhost — the allowlist admits it when the bridge is up.
+    expect(nativeRestartAvailable()).toBe(true)
+
+    vi.stubGlobal('location', { hostname: '127.0.0.1' })
+    expect(nativeRestartAvailable()).toBe(true)
+
+    vi.stubGlobal('location', { hostname: '::1' })
+    expect(nativeRestartAvailable()).toBe(true)
+
+    vi.stubGlobal('location', { hostname: '100.117.35.55' })
+    expect(nativeRestartAvailable()).toBe(false)
+
+    vi.stubGlobal('location', { hostname: 'localhost' })
+    delete window.GBotNative
+    expect(nativeRestartAvailable()).toBe(false)
+
+    window.GBotNative = { notRestart: () => {} } as unknown as { restartDaemon: () => void }
+    expect(nativeRestartAvailable()).toBe(false)
+    delete window.GBotNative
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Default-model cards — LLM picker selection, group headers, TTS voices.
+// ---------------------------------------------------------------------------
+
+describe('default model cards', () => {
+  it('LLM panel marks exactly the default row selected with the full dot and label classes', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-default-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    const sel = page.root.querySelector('[data-default-model="zhipu/glm-5.3"]') as HTMLElement
+    expect(sel).toBeTruthy()
+    const unselected = page.root.querySelector('[data-default-model="xiaomi/mimo-v2.5"]') as HTMLElement
+    expect(unselected).toBeTruthy()
+    const selDot = sel.firstElementChild as HTMLElement
+    const unsDot = unselected.firstElementChild as HTMLElement
+    expect(selDot.className).toBe('w-[14px] h-[14px] rounded-full border flex items-center justify-center border-blue')
+    expect(selDot.firstElementChild!.className).toBe('w-[7px] h-[7px] rounded-full bg-blue')
+    expect(unsDot.className).toBe('w-[14px] h-[14px] rounded-full border flex items-center justify-center border-t3')
+    expect(unsDot.firstElementChild).toBeNull()
+    const selLabel = sel.children[1] as HTMLElement
+    const unsLabel = unselected.children[1] as HTMLElement
+    expect(selLabel.className).toBe('text-xs font-mono text-blue')
+    expect(unsLabel.className).toBe('text-xs font-mono')
+  })
+
+  it('LLM panel selection is provider+model scoped — a same-id model elsewhere stays unselected', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'a', url: 'https://a', keys: [], models: { 'shared-id': {} } },
+        { name: 'b', url: 'https://b', keys: [], models: { 'shared-id': {} } },
+      ],
+      default: { provider: 'b', model: 'shared-id' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    ;(page.root.querySelector('[data-default-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    const rows = page.root.querySelectorAll('[data-default-model]')
+    expect(rows.length).toBe(2)
+    const selected = Array.from(rows).filter(
+      (r) => (r.firstElementChild as HTMLElement).className.includes('border-blue'),
+    )
+    expect(selected.length).toBe(1)
+    expect(selected[0].getAttribute('data-default-model')).toBe('b/shared-id')
+  })
+
+  it('selecting an LLM default PUTs the pair, updates the title, and toasts savedRestart', async () => {
+    let putBody: { provider: string; model: string } | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPutDefault: (b) => (putBody = b) }))
+    const cardTitle = (page.root.querySelector('[data-default-card]') as HTMLElement).querySelector('.font-mono') as HTMLElement
+    ;(page.root.querySelector('[data-default-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    ;(page.root.querySelector('[data-default-model="xiaomi/mimo-v2.5"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toEqual({ provider: 'xiaomi', model: 'mimo-v2.5' }))
+    await vi.waitFor(() => expect(cardTitle.textContent).toBe('xiaomi / mimo-v2.5'))
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('savedRestart')))
+  })
+
+  it('a provider whose every model is task-gated off leaves no group header', async () => {
+    const models = {
+      mode: 'fetched',
+      models: [
+        { id: 'stt-stream', task: 'tts' },
+        { id: 'tts-voice', task: 'tts' },
+      ],
+    }
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD, models }), AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    // Tasks land after the open; the still-open panel re-renders with every
+    // audiocpp row gated off — no rows and no orphan group header either.
+    const panel = page.root.querySelector('[data-stt-panel]') as HTMLElement
+    await vi.waitFor(() => {
+      expect(panel.children.length).toBe(0)
+    })
+  })
+
+  it('STT card selection styles exactly the configured stt default', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    const sel = page.root.querySelector('[data-stt-model="audiocpp/stt-stream"]') as HTMLElement
+    const uns = page.root.querySelector('[data-stt-model="audiocpp/tts-voice"]') as HTMLElement
+    expect(sel).toBeTruthy()
+    expect(uns).toBeTruthy()
+    expect((sel.firstElementChild as HTMLElement).className).toContain('border-blue')
+    expect((sel.firstElementChild as HTMLElement).firstElementChild).toBeTruthy()
+    expect((uns.firstElementChild as HTMLElement).className).toContain('border-t3')
+    expect((uns.firstElementChild as HTMLElement).firstElementChild).toBeNull()
+  })
+
+  it('a failed STT select PUT toasts saveFailed and keeps the old title', async () => {
+    const page = await openPage(makeFetchHandler({ payload: { ...AUDIO_PAYLOAD, stt: undefined }, sttPutError: true }), { ...AUDIO_PAYLOAD })
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    ;(page.root.querySelector('[data-stt-model="audiocpp/stt-stream"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('stt write failed')))
+  })
+
+  it('a failed TTS select PUT toasts saveFailed', async () => {
+    const page = await openPage(makeFetchHandler({ payload: { ...AUDIO_PAYLOAD, tts: undefined }, ttsPutError: true }), { ...AUDIO_PAYLOAD })
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    ;(page.root.querySelector('[data-tts-model="audiocpp/tts-voice"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('tts write failed')))
+  })
+
+  it('the TTS voice catalog renders as rows with the configured voice selected', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(page.root.querySelectorAll('[data-tts-voice]').length).toBe(3)
+    })
+    const def = page.root.querySelector('[data-tts-voice=""]') as HTMLElement
+    const aiden = page.root.querySelector('[data-tts-voice="Aiden"]') as HTMLElement
+    const serena = page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement
+    // Configured voice carries the blue selection; default and others do not.
+    expect((aiden.firstElementChild as HTMLElement).className).toContain('border-blue')
+    expect((aiden.firstElementChild as HTMLElement).firstElementChild).toBeTruthy()
+    expect((def.firstElementChild as HTMLElement).className).toContain('border-t3')
+    expect((serena.firstElementChild as HTMLElement).className).toContain('border-t3')
+    expect((aiden.children[1] as HTMLElement).className).toBe('text-xs font-mono text-blue')
+    expect((serena.children[1] as HTMLElement).className).toBe('text-xs font-mono')
+    expect(def.textContent).toBe(t('ttsVoiceDefault'))
+    // The voice group is the second non-row header (after the provider group).
+    const headers = Array.from((page.root.querySelector('[data-tts-panel]') as HTMLElement).children).filter(
+      (el) => !el.hasAttribute('data-tts-voice') && !el.hasAttribute('data-tts-model'),
+    )
+    expect(headers.map((h) => h.textContent)).toEqual(['audiocpp', t('ttsVoice')])
+    expect((headers[1] as HTMLElement).className).toBe(
+      'text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1 border-t border-hairline',
+    )
+    expect((headers[0] as HTMLElement).className).toBe('text-[11px] text-t3 font-medium px-3.5 pt-2.5 pb-1')
+  })
+
+  it('selecting a voice PUTs the triple with the voice, re-renders, and no-ops on the same voice', async () => {
+    let putBody: { provider: string; model: string; voice?: string } | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: { ...AUDIO_PAYLOAD, tts: { provider: 'audiocpp', model: 'tts-voice' } },
+        onPutTts: (b) => (putBody = b),
+      }),
+      { ...AUDIO_PAYLOAD, tts: { provider: 'audiocpp', model: 'tts-voice' } },
+    )
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Serena"]')).toBeTruthy())
+    ;(page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toEqual({ provider: 'audiocpp', model: 'tts-voice', voice: 'Serena' }))
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement).firstElementChild!
+        .className).toContain('border-blue')
+    })
+    putBody = undefined
+    ;(page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(putBody).toBeUndefined()
+  })
+
+  it('voice rows stay inert while no tts default is configured', async () => {
+    const mock = makeFetchHandler({ payload: { ...AUDIO_PAYLOAD, tts: undefined } })
+    const page = await openPage(mock, { ...AUDIO_PAYLOAD, tts: undefined })
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Serena"]')).toBeTruthy())
+    const row = page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement
+    expect(row.className).toBe('flex items-center gap-2.5 px-3.5 py-2 cursor-default opacity-55')
+    row.click()
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/tts' && i?.method === 'PUT')).toHaveLength(0)
+  })
+
+  it('a voices reply without the field renders only the default row', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD, ttsVoicesAbsent: true }), AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(page.root.querySelectorAll('[data-tts-voice]').length).toBe(1)
+    expect(page.root.querySelector('[data-tts-voice=""]')).toBeTruthy()
+  })
+
+  it('the voices catalog is cached per page — reopening does not refetch', async () => {
+    const mock = makeFetchHandler({ payload: AUDIO_PAYLOAD })
+    const page = await openPage(mock, AUDIO_PAYLOAD)
+    const card = page.root.querySelector('[data-tts-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Serena"]')).toBeTruthy())
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true })) // collapse
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true })) // reopen
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u]) => u === '/api/tts/voices')).toHaveLength(1)
+  })
+
+  it('a failed voices fetch clears the cache so the next open retries', async () => {
+    let fail = true
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/tts/voices') {
+        if (fail) return { ok: false, status: 500, json: async () => ({}) }
+        return { ok: true, status: 200, json: async () => ({ voices: ['Aiden'] }) }
+      }
+      return (makeFetchHandler({ payload: AUDIO_PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>, AUDIO_PAYLOAD)
+    const card = page.root.querySelector('[data-tts-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(page.root.querySelectorAll('[data-tts-voice]').length).toBe(1))
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true })) // collapse
+    fail = false
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true })) // reopen retries
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Aiden"]')).toBeTruthy())
+  })
+
+  it('a stale voices reply never overwrites a newer panel render', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/tts/voices') {
+        await gate
+        return { ok: true, status: 200, json: async () => ({ voices: ['StaleVoice'] }) }
+      }
+      return (makeFetchHandler({ payload: AUDIO_PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>, AUDIO_PAYLOAD)
+    const card = page.root.querySelector('[data-tts-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    // collapse + reopen → a newer render owns the panel; both renders share
+    // the one cached voices promise, so both callbacks fire on resolve —
+    // the stale one must drop, leaving exactly one row, not two.
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    release()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(page.root.querySelectorAll('[data-tts-voice="StaleVoice"]')).toHaveLength(1)
+  })
+
+  it('audio tasks are probed when an STT card opens, never for the LLM card', async () => {
+    const models = { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }] }
+    const mock = makeFetchHandler({ payload: AUDIO_PAYLOAD, models })
+    const page = await openPage(mock, AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-default-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(0)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+    })
+  })
+
+  it('task knowledge rerenders a still-open panel; opening the chevron rotates it', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    const card = page.root.querySelector('[data-stt-card]') as HTMLElement
+    const head = card.firstElementChild as HTMLElement
+    const chev = head.querySelector('span:last-child') as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    head.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    head.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('an STT-card open never renders the closed tts panel — zero /api/tts/voices fetches', async () => {
+    // rerenderIfOpen must skip CLOSED panels: rendering the unseen tts card
+    // cache-misses fetchTTSVoices and fires a catalog request nothing asked
+    // for. jsdom's classList.contains('') returns false (real browsers throw
+    // SyntaxError) — asserted per actual jsdom behavior.
+    const mock = makeFetchHandler({ payload: AUDIO_PAYLOAD })
+    const page = await openPage(mock, AUDIO_PAYLOAD)
+    const ttsPanel = page.root.querySelector('[data-tts-panel]') as HTMLElement
+    expect(ttsPanel.classList.contains('hidden')).toBe(true)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    // The audio task probe settling is what drives rerenderIfOpen — wait for
+    // it before judging the fetch log.
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+    })
+    await flushMicrotasks()
+    expect(ttsPanel.classList.contains('hidden')).toBe(true)
+    expect(mock.mock.calls.filter(([u]) => u === '/api/tts/voices')).toHaveLength(0)
+  })
+
+  it('with zero audio providers a pending voices reply still lands (empty-probe early return)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/tts/voices') {
+        await gate
+        return { ok: true, status: 200, json: async () => ({ voices: ['Aiden'] }) }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>, PAYLOAD)
+    const card = page.root.querySelector('[data-tts-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    release()
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Aiden"]')).toBeTruthy())
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GENERAL rows — scroll reveals, segment restyles, avatar panel extras.
+// ---------------------------------------------------------------------------
+
+describe('general rows', () => {
+  const SEL = 'flex-1 py-1.5 text-[10px] rounded-lg cursor-pointer border text-blue border-blue/40 bg-blue/10'
+  const UNSEL = 'flex-1 py-1.5 text-[10px] rounded-lg cursor-pointer border bg-ink3 text-t2 border-transparent'
+
+  it('avatar, language and theme rows scroll their panel in on open only', async () => {
+    const spy = vi.fn()
+    Element.prototype.scrollIntoView = spy
+    try {
+      const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+      const rows = page.root.querySelectorAll('[data-general-row]')
+      for (const idx of [0, 1, 2]) {
+        spy.mockClear()
+        rows[idx].click()
+        expect(spy).toHaveBeenCalledTimes(1)
+        expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+        spy.mockClear()
+        rows[idx].click() // collapse — no scroll
+        expect(spy).not.toHaveBeenCalled()
+      }
+    } finally {
+      Element.prototype.scrollIntoView = vi.fn()
+    }
+  })
+
+  it('avatar and language rows rotate their chevron with the panel', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const rows = page.root.querySelectorAll('[data-general-row]')
+    const chevOf = (row: Element) => row.lastElementChild as HTMLElement
+    for (const idx of [0, 1]) {
+      const chev = chevOf(rows[idx])
+      expect(chev.classList.contains('rotate-90')).toBe(false)
+      ;(rows[idx] as HTMLElement).click()
+      expect(chev.classList.contains('rotate-90')).toBe(true)
+      ;(rows[idx] as HTMLElement).click()
+      expect(chev.classList.contains('rotate-90')).toBe(false)
+    }
+  })
+
+  it('avatar remove failure toasts saveFailed with the thrown message', async () => {
+    const fallback = makeFetchHandler({ payload: PAYLOAD })
+    const failing = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/avatar/') && init?.method === 'DELETE') {
+        return { ok: false, status: 500, json: async () => ({ error: 'avatar unlink failed' }) }
+      }
+      return (fallback as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(failing as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-general-row]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-avatar-remove="agent"]') as HTMLElement).click()
+    // deleteAvatar surfaces the bare status on !ok (avatar.ts contract).
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('HTTP 500')))
+  })
+
+  it('an avatar cropper error that is not the size cap toasts the raw message', async () => {
+    const { openAvatarCropper } = await import('./avatar_crop')
+    vi.mocked(openAvatarCropper).mockRejectedValueOnce(new Error('decoder crashed'))
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-general-row]') as HTMLElement).click()
+    const fileInput = page.root.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', {
+      value: [new File([new Uint8Array([1])], 'a.png', { type: 'image/png' })],
+      configurable: true,
+    })
+    fileInput.dataset.target = 'agent'
+    fileInput.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('decoder crashed')))
+  })
+
+  it('an avatar change without a target or file is a silent no-op', async () => {
+    const { openAvatarCropper } = await import('./avatar_crop')
+    vi.mocked(openAvatarCropper).mockClear()
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-general-row]') as HTMLElement).click()
+    const fileInput = page.root.querySelector('input[type="file"]') as HTMLInputElement
+    // File present but no target, then target set but no file.
+    Object.defineProperty(fileInput, 'files', {
+      value: [new File([new Uint8Array([1])], 'a.png', { type: 'image/png' })],
+      configurable: true,
+    })
+    fileInput.dispatchEvent(new Event('change'))
+    Object.defineProperty(fileInput, 'files', { value: [], configurable: true })
+    fileInput.dataset.target = 'agent'
+    fileInput.dispatchEvent(new Event('change'))
+    await flushMicrotasks()
+    expect(openAvatarCropper).not.toHaveBeenCalled()
+    expect(toastText(page)).toBe('')
+  })
+
+  it('theme select updates the value, anchor and every segment style', async () => {
+    localStorage.setItem('gbot-theme', 'system')
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const rows = page.root.querySelectorAll('[data-general-row]')
+    ;(rows[2] as HTMLElement).click()
+    const seg = (page.root.querySelector('[data-language-panel]') as HTMLElement).previousElementSibling as HTMLElement
+    void seg
+    const themePanel = (rows[2] as HTMLElement).nextElementSibling as HTMLElement
+    const light = themePanel.querySelector('[data-theme-opt="light"]') as HTMLElement
+    const dark = themePanel.querySelector('[data-theme-opt="dark"]') as HTMLElement
+    const system = themePanel.querySelector('[data-theme-opt="system"]') as HTMLElement
+    light.click()
+    const value = (rows[2] as HTMLElement).children[1] as HTMLElement
+    expect(value.textContent).toBe(t('lightTheme'))
+    expect(value.getAttribute('data-i18n')).toBe('lightTheme')
+    expect(light.className).toBe(SEL)
+    expect(dark.className).toBe(UNSEL)
+    expect(system.className).toBe(UNSEL)
+    // Theme application also lands: the html dataset follows the pref.
+    expect(document.documentElement.dataset.theme).toBe('light')
+  })
+
+  it('theme chevron rotates with the fold', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const row = page.root.querySelectorAll('[data-general-row]')[2] as HTMLElement
+    const chev = row.lastElementChild as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('hljs chip select restyles every chip, updates the value, and applies the right CSS', async () => {
+    localStorage.setItem('gbot-theme', 'light')
+    try {
+      const { HLJS_THEMES } = await import('./hljs_themes')
+      const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+      const rows = page.root.querySelectorAll('[data-general-row]')
+      ;(rows[3] as HTMLElement).click()
+      const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
+      const chips = Array.from(panel.querySelectorAll('[data-hljs-opt]')) as HTMLElement[]
+      const atomOne = panel.querySelector('[data-hljs-opt="atom-one"]') as HTMLElement
+      atomOne.click()
+      const value = (rows[3] as HTMLElement).children[1] as HTMLElement
+      expect(value.textContent).toBe('Atom One')
+      expect(localStorage.getItem('gbot-hljs-theme')).toBe('atom-one')
+      const SELCHIP = 'py-1.5 text-[11px] rounded-lg cursor-pointer border truncate text-blue border-blue/40 bg-blue/10'
+      const UNSCHIP = 'py-1.5 text-[11px] rounded-lg cursor-pointer border truncate bg-ink3 text-t2 border-transparent'
+      for (const chip of chips) {
+        expect(chip.className).toBe(chip === atomOne ? SELCHIP : UNSCHIP)
+      }
+      // Light pref resolves light — the style element carries the light CSS.
+      const theme = HLJS_THEMES.find((x) => x.key === 'atom-one')!
+      expect((document.getElementById('hljs-theme-css') as HTMLStyleElement).textContent).toBe(theme.lightCss)
+    } finally {
+      localStorage.removeItem('gbot-theme')
+      localStorage.removeItem('gbot-hljs-theme')
+    }
+  })
+
+  it('hljs chip select under a dark pref applies the dark CSS', async () => {
+    localStorage.setItem('gbot-theme', 'dark')
+    try {
+      const { HLJS_THEMES } = await import('./hljs_themes')
+      const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+      const rows = page.root.querySelectorAll('[data-general-row]')
+      ;(rows[3] as HTMLElement).click()
+      const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
+      ;(panel.querySelector('[data-hljs-opt="github"]') as HTMLElement).click()
+      const theme = HLJS_THEMES.find((x) => x.key === 'github')!
+      expect((document.getElementById('hljs-theme-css') as HTMLStyleElement).textContent).toBe(theme.darkCss)
+    } finally {
+      localStorage.removeItem('gbot-theme')
+      localStorage.removeItem('gbot-hljs-theme')
+    }
+  })
+
+  it('hljs chevron rotates with the fold', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const row = page.root.querySelectorAll('[data-general-row]')[3] as HTMLElement
+    const chev = row.lastElementChild as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('a language save failure toasts saveFailed with the storage error', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const rows = page.root.querySelectorAll('[data-general-row]')
+    ;(rows[1] as HTMLElement).click()
+    const err = Object.defineProperty(new Error('quota full'), 'name', { value: 'QuotaExceededError' })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw err
+    })
+    ;(page.root.querySelector('[data-lang-opt="zh"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('quota full')))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SYSTEM card — armed-state bookkeeping, disabled gating, POST statuses.
+// ---------------------------------------------------------------------------
+
+describe('SYSTEM card', () => {
+  it('not upgradable, no reason, no bridge: disabled with the dim class', async () => {
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: false, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => {
+      expect(btn.disabled).toBe(true)
+      expect(btn.classList.contains('opacity-40')).toBe(true)
+    })
+  })
+
+  it('idle + upgradable keeps the button enabled and undimmed', async () => {
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => {
+      expect(btn.disabled).toBe(false)
+      expect(btn.classList.contains('opacity-40')).toBe(false)
+    })
+  })
+
+  it('arming drops the i18n anchor and wears the armed class; disarm restores both', async () => {
+    vi.useFakeTimers()
+    try {
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+        }),
+      )
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => expect(btn.disabled).toBe(false))
+      btn.click()
+      expect(btn.className).toBe(RESTART_ARMED)
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      expect(btn.getAttribute('data-i18n')).toBeNull()
+      vi.advanceTimersByTime(5000)
+      expect(btn.className).toBe(RESTART_REST)
+      expect(btn.textContent).toBe(t('restartBtn'))
+      expect(btn.getAttribute('data-i18n')).toBe('restartBtn')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a fresh arm clears the previous window — no early disarm from a stale timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          restartPost: { status: 202, body: { status: 'upgrading' } },
+          admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+        }),
+      )
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => expect(btn.disabled).toBe(false))
+      btn.click() // arm at t=0
+      vi.advanceTimersByTime(1000)
+      btn.click() // fire → disarm
+      await flushMicrotasks()
+      btn.click() // re-arm at t≈1000, its own 5s window
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      vi.advanceTimersByTime(3999)
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      // t=5000 is where the FIRST window would fire if it survived the fire.
+      vi.advanceTimersByTime(2)
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      vi.advanceTimersByTime(1000)
+      expect(btn.textContent).toBe(t('restartBtn'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a busy turn during the armed window disarms the red label', async () => {
+    vi.useFakeTimers()
+    try {
+      const admin = { busy: false, items: [] as unknown[], upgradable: true, build: '1.2.3 · abc1234' }
+      const page = await openPage(makeFetchHandler({ payload: PAYLOAD, admin }))
+      const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+      await vi.waitFor(() => expect(btn.disabled).toBe(false))
+      btn.click()
+      expect(btn.textContent).toBe(t('restartConfirmArm'))
+      admin.busy = true
+      vi.advanceTimersByTime(5000) // the poll refresh sees the busy turn
+      await vi.waitFor(() => {
+        expect(btn.disabled).toBe(true)
+        expect(btn.textContent).toBe(t('restartBtn'))
+        expect(btn.className).toBe(RESTART_REST + ' opacity-40')
+        expect(btn.getAttribute('data-i18n')).toBe('restartBtn')
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a disabled button ignores clicks entirely — no arming, no POST', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: true, items: [{}], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(true))
+    btn.click()
+    btn.click()
+    await flushMicrotasks()
+    expect(btn.textContent).toBe(t('restartBtn'))
+    expect(btn.className).toBe(RESTART_REST + ' opacity-40')
+    expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
+  })
+
+  it('firing disarms first, then arms upgrade mode on 202', async () => {
+    const { markUpgrading } = await import('./ws')
+    vi.mocked(markUpgrading).mockClear()
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        restartPost: { status: 202, body: { status: 'upgrading' } },
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+    btn.click()
+    btn.click()
+    await flushMicrotasks()
+    expect(markUpgrading).toHaveBeenCalledTimes(1)
+    expect(btn.textContent).toBe(t('restartBtn'))
+    expect(btn.className).toBe(RESTART_REST)
+  })
+
+  it('a non-202/409/501 POST toasts restartFailed and never touches the capsule', async () => {
+    const { refuseUpgrade } = await import('./upgrade_mode')
+    const { markUpgrading } = await import('./ws')
+    vi.mocked(markUpgrading).mockClear()
+    vi.mocked(refuseUpgrade).mockClear()
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        restartPost: { status: 500, body: { error: 'boom' } },
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+    btn.click()
+    btn.click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('restartFailed')))
+    expect(refuseUpgrade).not.toHaveBeenCalled()
+    expect(markUpgrading).not.toHaveBeenCalled()
+  })
+
+  it('a POST network failure toasts restartFailed', async () => {
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        restartPostReject: true,
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+    btn.click()
+    btn.click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('restartFailed')))
+  })
+
+  it('a 501 with an empty body routes empty strings into the capsule', async () => {
+    const { refuseUpgrade } = await import('./upgrade_mode')
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        restartPost: { status: 501, body: {} },
+        admin: { busy: false, items: [], upgradable: true, build: '1.2.3 · abc1234' },
+      }),
+    )
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+    btn.click()
+    btn.click()
+    await vi.waitFor(() => expect(refuseUpgrade).toHaveBeenCalledWith('', ''))
+  })
+
+  it('build long-press copies through the clipboard API and toasts success', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: true, build: '9.9.9 · deadbee' },
+      }),
+    )
+    const build = page.root.querySelector('[data-system-build]') as HTMLElement
+    await vi.waitFor(() => expect(build.textContent).toBe('9.9.9 · deadbee'))
+    build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('appLogCopied')))
+    expect(writeText).toHaveBeenCalledWith('9.9.9 · deadbee')
+  })
+
+  it('a clipboard write rejection toasts the copy failure', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        admin: { busy: false, items: [], upgradable: true, build: '9.9.9 · deadbee' },
+      }),
+    )
+    const build = page.root.querySelector('[data-system-build]') as HTMLElement
+    await vi.waitFor(() => expect(build.textContent).toBe('9.9.9 · deadbee'))
+    build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('appLogCopyFailed')))
+  })
+
+  it('long-press without the clipboard API copies via a scratch textarea', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+      const execSpy = vi.fn(() => true)
+      document.execCommand = execSpy as unknown as typeof document.execCommand
+      const selectSpy = vi.spyOn(HTMLTextAreaElement.prototype, 'select').mockReturnValue(undefined)
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          admin: { busy: false, items: [], upgradable: true, build: '7.7.7 · cafebabe' },
+        }),
+      )
+      const build = page.root.querySelector('[data-system-build]') as HTMLElement
+      await vi.waitFor(() => expect(build.textContent).toBe('7.7.7 · cafebabe'))
+      build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      vi.advanceTimersByTime(500)
+      expect(execSpy).toHaveBeenCalledWith('copy')
+      expect(toastText(page)).toBe(t('appLogCopied'))
+      expect(selectSpy).toHaveBeenCalled()
+      expect(document.querySelector('textarea')).toBeNull()
+      expect(execSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('a short tap on the build value cancels the press — nothing is copied', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+      const execSpy = vi.fn(() => true)
+      document.execCommand = execSpy as unknown as typeof document.execCommand
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          admin: { busy: false, items: [], upgradable: true, build: '7.7.7 · cafebabe' },
+        }),
+      )
+      const build = page.root.querySelector('[data-system-build]') as HTMLElement
+      await vi.waitFor(() => expect(build.textContent).toBe('7.7.7 · cafebabe'))
+      build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      build.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      vi.advanceTimersByTime(600)
+      expect(execSpy).not.toHaveBeenCalled()
+      expect(toastText(page)).toBe('')
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Remote endpoints (GBotNative bridge) — prefill, validation, persistence.
+// ---------------------------------------------------------------------------
+
+describe('remote endpoints', () => {
+  interface NativeStub {
+    getRemoteTargets: () => string
+    setRemoteTargets: ReturnType<typeof vi.fn>
+  }
+  const ENDPOINTS = [
+    { name: 'desk', host: '192.168.1.5', port: 8765 },
+    { name: 'nas', host: 'nas.box.local', port: 9000 },
+  ]
+  const stubNative = (remotes: unknown[] = [], setImpl?: NativeStub['setRemoteTargets']): NativeStub => {
+    const stub: NativeStub = {
+      getRemoteTargets: () => JSON.stringify(remotes),
+      setRemoteTargets: setImpl ?? vi.fn(),
+    }
+    vi.stubGlobal('GBotNative', stub)
+    return stub
+  }
+  const card = (page: { root: HTMLElement }): HTMLElement =>
+    page.root.querySelector('[data-remote-card]') as HTMLElement
+  const entries = (page: { root: HTMLElement }): HTMLElement[] =>
+    Array.from(card(page).querySelectorAll('[data-remote-entry]')) as HTMLElement[]
+  const formInput = (page: { root: HTMLElement }, sel: string): HTMLInputElement =>
+    card(page).querySelector(sel) as HTMLInputElement
+  const formVisible = (page: { root: HTMLElement }): boolean =>
+    !(card(page).querySelector('[data-remote-form]') as HTMLElement).classList.contains('hidden')
+
+  it('entry cards carry the full class string, chevron glyph, and host:port subtitle', async () => {
+    stubNative(ENDPOINTS)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const e0 = entries(page)[0]
+    expect(e0.className).toBe('mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer')
+    expect(e0.children[0].className).toBe('flex items-center gap-2')
+    expect((e0.children[0].children[0] as HTMLElement).className).toBe('text-sm font-semibold flex-1')
+    expect((e0.children[0].children[1] as HTMLElement).className).toBe('text-t3 text-[13px]')
+    expect((e0.children[0].children[1] as HTMLElement).textContent).toBe('›')
+    expect((e0.children[1] as HTMLElement).className).toBe('text-[11px] text-t3 font-mono mt-0.5 truncate')
+    expect((e0.children[1] as HTMLElement).textContent).toBe('192.168.1.5:8765')
+  })
+
+  it('opening the FIRST entry prefills index 0 exactly; + opens empty fields', async () => {
+    const spy = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>
+    stubNative(ENDPOINTS)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    page.root.scrollTop = 123
+    entries(page)[0].click()
+    expect(formInput(page, '[data-remote-name]').value).toBe('desk')
+    expect(formInput(page, '[data-remote-host]').value).toBe('192.168.1.5')
+    expect(formInput(page, '[data-remote-port]').value).toBe('8765')
+    // Opening the form resets the page scroll and scrolls the form in.
+    expect(page.root.scrollTop).toBe(0)
+    expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    // Delete is offered for an existing entry, hidden for the add flow.
+    expect((card(page).querySelector('[data-remote-delete]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    ;(card(page).querySelector('[data-remote-back]') as HTMLElement).click()
+    expect(page.root.scrollTop).toBe(0)
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    expect(formInput(page, '[data-remote-name]').value).toBe('')
+    expect(formInput(page, '[data-remote-host]').value).toBe('')
+    expect(formInput(page, '[data-remote-port]').value).toBe('')
+    expect((card(page).querySelector('[data-remote-delete]') as HTMLElement).classList.contains('hidden')).toBe(true)
+  })
+
+  it('saving through the bridge sends parsed ports and survives a true return', async () => {
+    const set = vi.fn(() => true)
+    stubNative(ENDPOINTS, set)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'pi')
+    input(formInput(page, '[data-remote-host]'), 'pi.local')
+    input(formInput(page, '[data-remote-port]'), '9090')
+    ;(card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+    expect(set).toHaveBeenCalledWith(
+      JSON.stringify([...ENDPOINTS, { name: 'pi', host: 'pi.local', port: 9090 }]),
+    )
+    expect(formVisible(page)).toBe(false)
+  })
+
+  it('a bridge rejection skips the saved toast and keeps the form open', async () => {
+    const set = vi.fn(() => false)
+    stubNative(ENDPOINTS, set)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'pi')
+    input(formInput(page, '[data-remote-host]'), 'pi.local')
+    input(formInput(page, '[data-remote-port]'), '9090')
+    ;(card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(toastText(page)).not.toBe(t('remoteSaved'))
+    expect(formVisible(page)).toBe(true)
+  })
+
+  it('editing the first entry replaces it in place — no duplicate push', async () => {
+    const set = vi.fn(() => true)
+    stubNative(ENDPOINTS, set)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    entries(page)[0].click()
+    input(formInput(page, '[data-remote-name]'), 'desk2')
+    ;(card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+    const sent = JSON.parse(set.mock.calls[0][0]) as Array<{ name: string; host: string; port: number }>
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toEqual({ name: 'desk2', host: '192.168.1.5', port: 8765 })
+    expect(sent[1]).toEqual(ENDPOINTS[1])
+  })
+
+  it('deleting the first entry removes exactly it; delete in the add form is inert', async () => {
+    const set = vi.fn(() => true)
+    stubNative(ENDPOINTS, set)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    entries(page)[0].click()
+    ;(card(page).querySelector('[data-remote-delete]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+    const sent = JSON.parse(set.mock.calls[0][0]) as unknown[]
+    expect(sent).toEqual([ENDPOINTS[1]])
+    expect(entries(page)).toHaveLength(1)
+    // Add flow: the hidden delete must not persist anything.
+    set.mockClear()
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    ;(card(page).querySelector('[data-remote-delete]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(set).not.toHaveBeenCalled()
+    expect(toastText(page)).toBe(t('remoteSaved')) // unchanged from the real delete
+  })
+
+  it('a bare host with an embedded https:// stays invalid (anchored scheme test)', async () => {
+    stubNative([])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(card(page).querySelector('[data-remote-add]') as HTMLElement).click()
+    input(formInput(page, '[data-remote-name]'), 'x')
+    input(formInput(page, '[data-remote-host]'), 'evil.box/https://inner')
+    input(formInput(page, '[data-remote-port]'), '9090')
+    ;(card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(toastText(page)).toBe(t('remoteHostInvalid'))
+  })
+
+  it('an http:// full origin saves; port 65535 is in range', async () => {
+    const set = vi.fn(() => true)
+    stubNative(ENDPOINTS, set)
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    entries(page)[0].click()
+    input(formInput(page, '[data-remote-host]'), 'http://nas.local:9000/base')
+    input(formInput(page, '[data-remote-port]'), '65535')
+    ;(card(page).querySelector('[data-remote-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+    const sent = JSON.parse(set.mock.calls[0][0]) as Array<{ host: string; port: number }>
+    expect(sent[0].host).toBe('http://nas.local:9000/base')
+    expect(sent[0].port).toBe(65535)
+  })
+
+  it('a malformed bridge payload renders an empty list; partial entries fall back per field', async () => {
+    stubNative([{ host: 'h1', port: 1 }, { name: 'n2' }, { name: 'n3', host: 'h3', port: 0 }])
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const list = entries(page)
+    expect(list).toHaveLength(3)
+    expect((list[0].children[0].children[0] as HTMLElement).textContent).toBe('')
+    expect((list[0].children[1] as HTMLElement).textContent).toBe('h1:1')
+    expect((list[1].children[0].children[0] as HTMLElement).textContent).toBe('n2')
+    expect((list[1].children[1] as HTMLElement).textContent).toBe(':')
+    expect((list[2].children[1] as HTMLElement).textContent).toBe('h3:0')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Remote desktop devices — prefill, trims, probe, delete guards.
+// ---------------------------------------------------------------------------
+
+describe('remote desktop', () => {
+  const DEVICES: RemoteDevice[] = [
+    { name: 'mac', addr: '192.168.1.9:5900', pass: 'pw1' },
+    { name: 'win', addr: '192.168.1.10:5900' },
+  ]
+  const card = (page: { root: HTMLElement }): HTMLElement =>
+    page.root.querySelector('[data-rd-card]') as HTMLElement
+  const entries = (page: { root: HTMLElement }): HTMLElement[] =>
+    Array.from(card(page).querySelectorAll('[data-rd-entry]')) as HTMLElement[]
+  const formInput = (page: { root: HTMLElement }, sel: string): HTMLInputElement =>
+    card(page).querySelector(sel) as HTMLInputElement
+  const openForm = (page: { root: HTMLElement }, idx: number) => entries(page)[idx].click()
+
+  it('device cards carry the exact classes, chevron, and addr text', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    const e0 = entries(page)[0]
+    expect(e0.className).toBe('mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer')
+    expect((e0.children[0].children[0] as HTMLElement).className).toBe('text-sm font-semibold flex-1')
+    expect((e0.children[0].children[1] as HTMLElement).textContent).toBe('›')
+    expect((e0.children[1] as HTMLElement).className).toBe('text-[11px] text-t3 font-mono mt-0.5 truncate')
+    expect((e0.children[1] as HTMLElement).textContent).toBe('192.168.1.9:5900')
+  })
+
+  it('opening device 0 prefills it and resets the probe line; missing pass renders empty', async () => {
+    const spy = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    openForm(page, 0)
+    expect(formInput(page, '[data-rd-name]').value).toBe('mac')
+    expect(formInput(page, '[data-rd-addr]').value).toBe('192.168.1.9:5900')
+    expect(formInput(page, '[data-rd-pass]').value).toBe('pw1')
+    expect((card(page).querySelector('[data-rd-delete]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    const result = card(page).querySelector('[data-rd-test-result]') as HTMLElement
+    expect(result.className).toBe('text-[11px] text-t3')
+    openForm(page, 1)
+    expect(formInput(page, '[data-rd-pass]').value).toBe('')
+    expect((card(page).querySelector('[data-rd-delete]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    ;(card(page).querySelector('[data-rd-add]') as HTMLElement).click()
+    expect(formInput(page, '[data-rd-name]').value).toBe('')
+    expect(formInput(page, '[data-rd-addr]').value).toBe('')
+    expect((card(page).querySelector('[data-rd-delete]') as HTMLElement).classList.contains('hidden')).toBe(true)
+  })
+
+  it('reopening the form clears a previous probe result', async () => {
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, deviceTest: { ok: true, latencyMs: 44 } }),
+    )
+    openForm(page, 0)
+    ;(card(page).querySelector('[data-rd-test]') as HTMLElement).click()
+    await vi.waitFor(() =>
+      expect((card(page).querySelector('[data-rd-test-result]') as HTMLElement).textContent).toBe('✓ 44ms'),
+    )
+    openForm(page, 0)
+    const result = card(page).querySelector('[data-rd-test-result]') as HTMLElement
+    expect(result.textContent).toBe('')
+    expect(result.className).toBe('text-[11px] text-t3')
+  })
+
+  it('saving trims name and addr before the PUT', async () => {
+    let putBody: RemoteDevice[] | undefined
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, onPutDevices: (b) => (putBody = b) }),
+    )
+    ;(card(page).querySelector('[data-rd-add]') as HTMLElement).click()
+    input(formInput(page, '[data-rd-name]'), '  pi  ')
+    input(formInput(page, '[data-rd-addr]'), ' 10.0.0.4:5901 ')
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![2]).toEqual({ name: 'pi', addr: '10.0.0.4:5901', pass: '' })
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+  })
+
+  it('a failed devices PUT toasts saveFailed and keeps the form open', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, devicesPutError: true }))
+    openForm(page, 0)
+    input(formInput(page, '[data-rd-name]'), 'mac2')
+    ;(card(page).querySelector('[data-rd-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('devices write failed')))
+    expect((card(page).querySelector('[data-rd-form]') as HTMLElement).classList.contains('hidden')).toBe(false)
+  })
+
+  it('deleting device 0 removes exactly it; the add-form delete is inert', async () => {
+    let putBody: RemoteDevice[] | undefined
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, onPutDevices: (b) => (putBody = b) }),
+    )
+    openForm(page, 0)
+    ;(card(page).querySelector('[data-rd-delete]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toEqual([DEVICES[1]]))
+    await vi.waitFor(() => expect(entries(page)).toHaveLength(1))
+    putBody = undefined
+    ;(card(page).querySelector('[data-rd-add]') as HTMLElement).click()
+    ;(card(page).querySelector('[data-rd-delete]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(putBody).toBeUndefined()
+  })
+
+  it('the probe sends a trimmed addr and maps both failure shapes', async () => {
+    let probeBody: { addr: string; pass: string } | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        devices: DEVICES,
+        deviceTest: { ok: false },
+        onDeviceTest: (b) => (probeBody = b),
+      }),
+    )
+    openForm(page, 0)
+    input(formInput(page, '[data-rd-addr]'), ' 192.168.1.9:5900 ')
+    ;(card(page).querySelector('[data-rd-test]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      const result = card(page).querySelector('[data-rd-test-result]') as HTMLElement
+      expect(result.textContent).toBe('✗ failed')
+      expect(result.className).toBe('text-[11px] text-red')
+    })
+    expect(probeBody).toEqual({ addr: '192.168.1.9:5900', pass: 'pw1' })
+    expect((card(page).querySelector('[data-rd-test]') as HTMLElement).textContent).toBe(t('testBtn'))
+  })
+
+  it('a probe fetch rejection renders the network error in red', async () => {
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: DEVICES, deviceTestReject: true }),
+    )
+    openForm(page, 0)
+    ;(card(page).querySelector('[data-rd-test]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      const result = card(page).querySelector('[data-rd-test-result]') as HTMLElement
+      expect(result.textContent).toBe('✗ fetch failed')
+      expect(result.className).toBe('text-[11px] text-red')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// App log card — tabs, stale guards, copy paths, chevron/scroll.
+// ---------------------------------------------------------------------------
+
+describe('app log card', () => {
+  const LINES = '[17:01:01] gbot: ready\n[17:01:02] Connected'
+  const openAppLog = async (tail: () => string) => {
+    ;(window as unknown as Record<string, unknown>).GBotAppLogs = { tail, clear: vi.fn() }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    return page
+  }
+  const body = (page: { root: HTMLElement }) =>
+    page.root.querySelector('[data-applog-lines]') as HTMLElement
+  const tabs = (page: { root: HTMLElement }) =>
+    Array.from((page.root.querySelector('[data-applog-tabs]') as HTMLElement).children) as HTMLElement[]
+
+  it('renders tab buttons and copy affordance with exact classes and labels', async () => {
+    const page = await openAppLog(() => LINES)
+    const tabRow = page.root.querySelector('[data-applog-tabs]') as HTMLElement
+    expect(tabRow.className).toBe('flex items-center gap-2.5')
+    const copyBtn = page.root.querySelector('[data-applog-copy]') as HTMLElement
+    expect(copyBtn.className).toBe('text-t3 hover:text-t1 cursor-pointer select-none p-1 -m-1')
+    expect(copyBtn.getAttribute('aria-label')).toBe(t('appLogCopy'))
+    const icon = copyBtn.firstElementChild as HTMLElement
+    expect(icon.getAttribute('width')).toBe('14')
+    const appTab = tabs(page)[0]
+    // The default tab is active — the base class plus the active styling.
+    expect(appTab.className).toBe('text-[11px] leading-none cursor-pointer select-none py-1 text-t1 font-bold')
+    expect(appTab.textContent).toBe('app')
+  })
+
+  it('the app tab renders one whitespace-pre row per line', async () => {
+    const page = await openAppLog(() => LINES)
+    const rows = Array.from(body(page).children) as HTMLElement[]
+    expect(rows.map((r) => r.textContent)).toEqual(['[17:01:01] gbot: ready', '[17:01:02] Connected'])
+    for (const r of rows) expect(r.className).toBe('whitespace-pre')
+  })
+
+  it('an empty tail renders zero rows, not one blank row', async () => {
+    const page = await openAppLog(() => '')
+    expect(body(page).children.length).toBe(0)
+  })
+
+  it('desktop defaults to the gbot tab — active styling and daemon text', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, logs: 'daemon line 1' }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(Array.from(body(page).children).map((c) => c.textContent)).toEqual(['daemon line 1'])
+    })
+    const [wuiTab, gbotTab] = tabs(page)
+    expect(gbotTab.classList.contains('font-bold')).toBe(true)
+    expect(gbotTab.classList.contains('text-t1')).toBe(true)
+    expect(gbotTab.classList.contains('text-t3')).toBe(false)
+    expect(wuiTab.classList.contains('font-bold')).toBe(false)
+    expect(wuiTab.classList.contains('text-t3')).toBe(true)
+  })
+
+  it('clicking the already-active tab is a no-op — no refetch', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD, logs: 'line' })
+    const page = await openPage(mock)
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    await vi.waitFor(() => expect(body(page).children.length).toBe(1))
+    const fetches = mock.mock.calls.filter(([u]) => u === '/api/logs?tail=500').length
+    ;(tabs(page).find((b) => b.textContent === 'GBot') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u]) => u === '/api/logs?tail=500')).toHaveLength(fetches)
+  })
+
+  it('a pending gbot fetch renders an empty body first', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/logs?tail=500') {
+        await gate
+        return { ok: true, status: 200, text: async () => 'late daemon text' }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(body(page).children.length).toBe(0)
+    release()
+    await vi.waitFor(() => expect(body(page).children.length).toBe(1))
+  })
+
+  it('a stale gbot fetch never overwrites a newer tab view', async () => {
+    const gates: Array<() => void> = []
+    const results: string[] = []
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/logs?tail=500') {
+        const idx = results.length
+        results.push('')
+        await new Promise<void>((r) => gates.push(r))
+        return { ok: true, status: 200, text: async () => `daemon payload ${idx}` }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    await flushMicrotasks()
+    // gbot fetch pending; switch away to wui.
+    ;(tabs(page).find((b) => b.textContent === 'wui') as HTMLElement).click()
+    await flushMicrotasks()
+    // Now the stale gbot reply lands — the wui view must survive.
+    gates[0]()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(body(page).textContent).not.toContain('daemon payload 0')
+    // Switch back to gbot: a fresh fetch (still gated) must not be clobbered
+    // by the older one either.
+    ;(tabs(page).find((b) => b.textContent === 'GBot') as HTMLElement).click()
+    await flushMicrotasks()
+    gates[1]()
+    gates.shift()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(Array.from(body(page).children).map((c) => c.textContent)).toEqual(['daemon payload 1'])
+  })
+
+  it('copy ships the ACTIVE tab content via the clipboard API', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const page = await openAppLog(() => LINES)
+    ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('appLogCopied')))
+    expect(writeText).toHaveBeenCalledWith(LINES)
+  })
+
+  it('a clipboard rejection falls back to execCommand; a plain copy toasts either way', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('no'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const execSpy = vi.fn(() => true)
+    document.execCommand = execSpy as unknown as typeof document.execCommand
+    try {
+      const page = await openAppLog(() => LINES)
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(execSpy).toHaveBeenCalledWith('copy')
+        expect(toastText(page)).toBe(t('appLogCopied'))
+      })
+      expect(document.querySelector('textarea')).toBeNull()
+    } finally {
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('copy without the clipboard API uses the scratch textarea', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    const execSpy = vi.fn(() => false)
+    document.execCommand = execSpy as unknown as typeof document.execCommand
+    const selectSpy = vi.spyOn(HTMLTextAreaElement.prototype, 'select').mockReturnValue(undefined)
+    try {
+      const page = await openAppLog(() => LINES)
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => expect(toastText(page)).toBe(t('appLogCopyFailed')))
+      expect(execSpy).toHaveBeenCalledWith('copy')
+      expect(selectSpy).toHaveBeenCalled()
+      expect(document.querySelector('textarea')).toBeNull()
+    } finally {
+      selectSpy.mockRestore()
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('the chevron rotates and the panel scrolls into view on open', async () => {
+    const spy = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const row = page.root.querySelector('[data-applog-row]') as HTMLElement
+    const chev = row.lastElementChild as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    spy.mockClear()
+    row.click()
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Config reload card — phase dots, badges, notes, error paths, pulse.
+// ---------------------------------------------------------------------------
+
+describe('config reload card', () => {
+  const dotOf = (page: { root: HTMLElement }, i: number) =>
+    (page.root.querySelector(`[data-config-phase="${i}"]`) as HTMLElement).firstElementChild as HTMLElement
+  const BASE_DOT = 'w-[17px] h-[17px] rounded-full border grid place-items-center text-[10px] flex-none'
+
+  const abortReport = (): ReloadReport => ({
+    applied: false,
+    phase: 1,
+    err: 'plugins: invalid mcp.json',
+    files: [{ path: '/x/broken.json', status: 'failed', errLine: 'bad json' }],
+    counts: { reloaded: 0, unchanged: 0, failed: 1 },
+    promptChanged: false,
+    enginesRefreshed: 0,
+    settingsChanged: false,
+    lastReloadAt: '2026-11-03T00:00:00Z',
+  })
+
+  it('an applied report marks all five phases done with exact classes', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: makeReloadReport('mutate') }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerOk')(1, 1, 0),
+      )
+    })
+    for (let i = 0; i < 5; i++) {
+      expect(dotOf(page, i).className).toBe(BASE_DOT + ' border-green bg-green text-ink font-bold')
+      expect(dotOf(page, i).textContent).toBe('✓')
+      const row = page.root.querySelector(`[data-config-phase="${i}"]`) as HTMLElement
+      expect(row.classList.contains('hidden')).toBe(false)
+      expect(row.classList.contains('text-t1')).toBe(true)
+    }
+  })
+
+  it('an aborted report splits done/fail/hidden phases at the reported boundary', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: abortReport() }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerErr')(1),
+      )
+    })
+    expect(dotOf(page, 0).className).toBe(BASE_DOT + ' border-green bg-green text-ink font-bold')
+    expect(dotOf(page, 0).textContent).toBe('✓')
+    expect(dotOf(page, 1).className).toBe(BASE_DOT + ' border-red bg-red text-white font-bold')
+    expect(dotOf(page, 1).textContent).toBe('✕')
+    for (const i of [2, 3, 4]) {
+      const row = page.root.querySelector(`[data-config-phase="${i}"]`) as HTMLElement
+      expect(row.classList.contains('hidden')).toBe(true)
+    }
+  })
+
+  it('a not-applied report without a busy err is the plain error banner', async () => {
+    const report = { ...abortReport(), err: undefined, files: [] }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    const banner = page.root.querySelector('[data-config-banner]') as HTMLElement
+    await vi.waitFor(() => expect(banner.textContent).toBe(t('configBannerErr')(1)))
+    expect(banner.className).toBe('flex-1 min-w-0 text-xs leading-relaxed text-red')
+    // No files: the banner row is not even clickable.
+    const bannerRow = page.root.querySelector('[data-config-banner-row]') as HTMLElement
+    expect(bannerRow.classList.contains('cursor-pointer')).toBe(false)
+  })
+
+  it('banner classes are exact for the ok and busy branches', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: makeReloadReport('mutate') }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    const banner = page.root.querySelector('[data-config-banner]') as HTMLElement
+    await vi.waitFor(() => expect(banner.textContent).toBe(t('configBannerOk')(1, 1, 0)))
+    expect(banner.className).toBe('flex-1 min-w-0 text-xs leading-relaxed text-green')
+
+    const busy: ReloadReport = {
+      ...abortReport(),
+      err: 'reload already in progress',
+      files: [],
+    }
+    const page2 = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: busy }))
+    ;(page2.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    const banner2 = page2.root.querySelector('[data-config-banner]') as HTMLElement
+    await vi.waitFor(() => expect(banner2.textContent).toBe(t('configBannerBusy')))
+    expect(banner2.className).toBe('flex-1 min-w-0 text-xs leading-relaxed text-t2')
+  })
+
+  it('badges and rows render exact classes, paths, and note joins for all three statuses', async () => {
+    const report: ReloadReport = {
+      ...makeReloadReport('mutate'),
+      files: [
+        { path: '/a.json', status: 'reloaded', note: 'meta only', noteKey: 'effectiveNextRequest' },
+        { path: '/b.json', status: 'unchanged', note: 'same bytes' },
+        { path: '/c.json', status: 'failed', noteKey: 'newSessionsOnly', errLine: 'line 9: boom' },
+      ],
+      counts: { reloaded: 1, unchanged: 1, failed: 1 },
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(page.root.querySelectorAll('[data-config-file]').length).toBe(3)
+    })
+    const rows = Array.from(page.root.querySelectorAll('[data-config-file]')) as HTMLElement[]
+    expect(rows.map((r) => r.getAttribute('data-config-file-status'))).toEqual([
+      'reloaded',
+      'unchanged',
+      'failed',
+    ])
+    for (const r of rows) {
+      expect(r.className).toBe('flex items-start gap-2 py-2 border-b border-hairline last:border-b-0')
+      expect((r.children[1] as HTMLElement).className).toBe('flex-1 min-w-0')
+      const path = (r.children[1] as HTMLElement).firstElementChild as HTMLElement
+      expect(path.className).toBe('font-mono text-[11.5px] text-t1 break-all')
+    }
+    expect((rows[0].children[1].children[1] as HTMLElement).textContent).toBe(
+      `meta only · ${t('configNoteNextRequest')}`,
+    )
+    expect((rows[1].children[1].children[1] as HTMLElement).textContent).toBe('same bytes')
+    expect((rows[2].children[1].children[1] as HTMLElement).textContent).toBe(t('configNoteNewSessions'))
+    const errLine = rows[2].children[1].children[2] as HTMLElement
+    expect(errLine.className).toBe(
+      'bg-red/10 text-red font-mono text-[11px] rounded px-1.5 py-0.5 inline-block mt-1',
+    )
+    expect(errLine.textContent).toBe('line 9: boom')
+    const badges = rows.map((r) => r.querySelector('[data-config-badge]') as HTMLElement)
+    for (const b of badges) expect(b.getAttribute('data-config-badge')).toBe('')
+    expect(badges.map((b) => b.textContent)).toEqual([
+      t('configBadgeReloaded'),
+      t('configBadgeUnchanged'),
+      t('configBadgeFailed'),
+    ])
+    expect(badges[0].className).toBe('flex-none text-[10.5px] font-semibold rounded px-1.5 py-0.5 mt-0.5 bg-blue/10 text-blue')
+    expect(badges[1].className).toBe('flex-none text-[10.5px] font-semibold rounded px-1.5 py-0.5 mt-0.5 bg-ink3 text-t3')
+    expect(badges[2].className).toBe('flex-none text-[10.5px] font-semibold rounded px-1.5 py-0.5 mt-0.5 bg-red/10 text-red')
+  })
+
+  it('a failed reload keeps rows expanded; a second reload replaces them wholesale', async () => {
+    let calls = 0
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/reload' && init?.method === 'POST') {
+        calls++
+        return { ok: true, status: 200, json: async () => abortReport() }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const reportEl = page.root.querySelector('[data-config-report]') as HTMLElement
+    const rows = reportEl.lastElementChild as HTMLElement
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerErr')(1),
+      )
+    })
+    expect(rows.classList.contains('hidden')).toBe(false)
+    // Second reload: rows reset, not appended.
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => expect(calls).toBe(2))
+    await vi.waitFor(() => {
+      expect(page.root.querySelectorAll('[data-config-file]').length).toBe(1)
+    })
+  })
+
+  it('the button is single-flight: a second click while hanging sends no second POST', async () => {
+    let resolveFetch!: () => void
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/reload' && init?.method === 'POST') {
+        await new Promise<void>((r) => (resolveFetch = r))
+        return { ok: true, status: 200, json: async () => makeReloadReport('mutate') }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+    btn.click()
+    await flushMicrotasks()
+    btn.click()
+    await flushMicrotasks()
+    const posts = mock.mock.calls.filter(([u, i]) => u === '/api/settings/reload' && i?.method === 'POST')
+    expect(posts).toHaveLength(1)
+    resolveFetch()
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+  })
+
+  it('the phase pulse advances one dot at a time and resets before a new reload', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveFetch!: () => void
+      const mock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/api/settings/reload' && init?.method === 'POST') {
+          await new Promise<void>((r) => (resolveFetch = r))
+          return { ok: true, status: 200, json: async () => makeReloadReport('mutate') }
+        }
+        return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+      })
+      const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+      const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+      const activeDots = () =>
+        Array.from(page.root.querySelectorAll('[data-config-phase]'))
+          .map((r) => r.firstElementChild as HTMLElement)
+          .filter((d) => d.className.includes('border-blue'))
+      btn.click()
+      await flushMicrotasks()
+      expect(activeDots().length).toBe(1)
+      expect(dotOf(page, 0).className).toBe(BASE_DOT + ' border-blue')
+      expect((dotOf(page, 0).firstElementChild as HTMLElement).className).toBe(
+        'w-[7px] h-[7px] rounded-full bg-blue animate-pulse',
+      )
+      vi.advanceTimersByTime(700)
+      expect(dotOf(page, 0).className).toBe(BASE_DOT + ' border-hairline')
+      expect(dotOf(page, 1).className).toBe(BASE_DOT + ' border-blue')
+      vi.advanceTimersByTime(700 * 10)
+      expect(activeDots().length).toBe(1)
+      expect(dotOf(page, 4).className).toBe(BASE_DOT + ' border-blue')
+      resolveFetch()
+      await flushMicrotasks()
+      await vi.waitFor(() => expect(dotOf(page, 4).textContent).toBe('✓'))
+      // The interval is dead after completion — no dot returns to active.
+      vi.advanceTimersByTime(3000)
+      expect(activeDots().length).toBe(0)
+      // A second reload resets the done marks before the pulse restarts —
+      // its response stays gated so the reset is observable.
+      btn.click()
+      await flushMicrotasks()
+      expect(activeDots().length).toBe(1)
+      expect(dotOf(page, 0).className).toBe(BASE_DOT + ' border-blue')
+      for (const i of [1, 2, 3, 4]) {
+        expect(dotOf(page, i).textContent).not.toBe('✓')
+      }
+      resolveFetch()
+      await vi.waitFor(() => expect(dotOf(page, 4).textContent).toBe('✓'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a reload POST failure hides the phases and shows the error banner', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadError: 'daemon gone' }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    const banner = page.root.querySelector('[data-config-banner]') as HTMLElement
+    await vi.waitFor(() => expect(banner.textContent).toBe('reload failed: 500'))
+    expect(banner.className).toBe('flex-1 min-w-0 text-xs leading-relaxed text-red')
+    expect((page.root.querySelector('[data-config-phases]') as HTMLElement).classList.contains('hidden')).toBe(true)
+    expect((page.root.querySelector('[data-config-report]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    expect(page.root.querySelectorAll('[data-config-file]').length).toBe(0)
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    expect(btn.textContent).toBe(t('configReloadBtn'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// JSON sheet — highlight chain, stale guards, placeholder for whitespace.
+// ---------------------------------------------------------------------------
+
+describe('JSON sheet', () => {
+  const openSheet = async (raw: string) => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, raw }))
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('pre') as HTMLElement).textContent).not.toBe('…')
+    })
+    return page
+  }
+
+  it('highlights keys, string values, and numbers with exact HTML', async () => {
+    const page = await openSheet('{"a": "b", "n": 42, "u": "&<"}')
+    const pre = page.root.querySelector('pre') as HTMLElement
+    expect(pre.innerHTML).toBe(
+      '{<span class="text-[#7fd4ff]">"a"</span>: <span class="text-[#a8d8b9]">"b"</span>, ' +
+        '<span class="text-[#7fd4ff]">"n"</span>: <span class="text-[#e8b98a]">42</span>, ' +
+        '<span class="text-[#7fd4ff]">"u"</span>: <span class="text-[#a8d8b9]">"&amp;&lt;"</span>}',
+    )
+  })
+
+  it('a whitespace-only file shows the empty placeholder', async () => {
+    const page = await openSheet('   ')
+    const pre = page.root.querySelector('pre') as HTMLElement
+    expect(pre.textContent).toBe(t('jsonSheetEmpty'))
+  })
+
+  it('a fetch failure shows the error placeholder and survives a later good open', async () => {
+    let fail = true
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/raw') {
+        if (fail) return { ok: false, status: 500, json: async () => ({}) }
+        return { ok: true, status: 200, json: async () => ({ raw: '{"ok": 1}' }) }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('pre') as HTMLElement).textContent).toBe(t('jsonSheetError'))
+    })
+    fail = false
+    ;(page.root.querySelector('[data-sheet-close]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('pre') as HTMLElement).textContent).toContain('"ok"')
+    })
+  })
+
+  it('a slow first open cannot overwrite a fast second open', async () => {
+    const gates: Array<() => void> = []
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/raw') {
+        const idx = gates.length
+        await new Promise<void>((r) => gates.push(r))
+        return { ok: true, status: 200, json: async () => ({ raw: `{"payload": ${idx}}` }) }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await flushMicrotasks()
+    ;(page.root.querySelector('[data-sheet-close]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+    await flushMicrotasks()
+    // Second fetch resolves first; the stale first reply lands afterwards.
+    gates[1]()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect((page.root.querySelector('pre') as HTMLElement).textContent).toContain('"payload": 1')
+    gates[0]()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect((page.root.querySelector('pre') as HTMLElement).textContent).toContain('"payload": 1')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Home rendering — provider cards, default titles, screen swapping.
+// ---------------------------------------------------------------------------
+
+describe('home rendering', () => {
+  it('provider cards wear the exact structural classes and badge families', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const cards = Array.from(page.root.querySelectorAll('[data-provider-card]')) as HTMLElement[]
+    const c0 = cards[0]
+    expect(c0.className).toBe('mx-0 mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer')
+    expect(c0.getAttribute('data-provider-card')).toBe('')
+    expect((c0.children[0] as HTMLElement).className).toBe('flex items-center gap-2')
+    expect((c0.children[0].children[0] as HTMLElement).className).toBe('text-sm font-semibold flex-1')
+    expect((c0.children[0].children[0] as HTMLElement).textContent).toBe('xiaomi')
+    expect((c0.children[0].children[1] as HTMLElement).className).toBe('text-t3 text-[13px]')
+    expect((c0.children[0].children[1] as HTMLElement).textContent).toBe('›')
+    expect((c0.children[1] as HTMLElement).className).toBe('text-[11px] text-t3 font-mono mt-0.5 truncate')
+    expect((c0.children[1] as HTMLElement).textContent).toBe('https://api.xiaomivivo.com/anthropic')
+    expect((c0.children[2] as HTMLElement).className).toBe('flex items-center gap-2 mt-2')
+    const badge0 = c0.children[2].children[0] as HTMLElement
+    expect(badge0.className).toBe('text-[10px] font-semibold rounded-md px-1.5 py-0.5 text-t2 bg-t2/10')
+    expect(badge0.textContent).toBe('AUTO')
+    expect(badge0.getAttribute('data-type-badge')).toBe('')
+    const badge1 = (cards[1].children[2].children[0] as HTMLElement)
+    expect(badge1.className).toBe('text-[10px] font-semibold rounded-md px-1.5 py-0.5 text-[#7fd4ff] bg-blue/10')
+    expect(badge1.textContent).toBe('OPENAI')
+    const count0 = c0.children[2].children[1] as HTMLElement
+    expect(count0.className).toBe('text-[11px] text-t2 flex-1')
+    expect(count0.getAttribute('data-i18n')).toBe('modelsCount')
+    expect(count0.getAttribute('data-i18n-arg')).toBe('1')
+    expect(count0.textContent).toBe(t('modelsCount')(1))
+  })
+
+  it('configured stt/tts cards show their pair titles without the grey', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    const sttCard = page.root.querySelector('[data-stt-card]') as HTMLElement
+    const ttsCard = page.root.querySelector('[data-tts-card]') as HTMLElement
+    const llmCard = page.root.querySelector('[data-default-card]') as HTMLElement
+    await vi.waitFor(() => {
+      expect((llmCard.querySelector('.font-mono') as HTMLElement).textContent).toBe('zhipu / glm-5.3')
+    })
+    expect((sttCard.querySelector('.font-mono') as HTMLElement).textContent).toBe('audiocpp / stt-stream')
+    expect((ttsCard.querySelector('.font-mono') as HTMLElement).textContent).toBe('audiocpp / tts-voice')
+    expect(sttCard.classList.contains('opacity-55')).toBe(false)
+    expect(ttsCard.classList.contains('opacity-55')).toBe(false)
+  })
+
+  it('screens swap hidden flags with the direction of travel', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const home = page.root.querySelector('[data-screen="home"]') as HTMLElement
+    const edit = page.root.querySelector('[data-screen="edit"]') as HTMLElement
+    expect(home.classList.contains('hidden')).toBe(false)
+    expect(edit.classList.contains('hidden')).toBe(true)
+    ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
+    expect(home.classList.contains('hidden')).toBe(true)
+    expect(edit.classList.contains('hidden')).toBe(false)
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    expect(home.classList.contains('hidden')).toBe(false)
+    expect(edit.classList.contains('hidden')).toBe(true)
+  })
+
+  it('+ Add provider opens the edit screen with the ADD title', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    const title = page.root.querySelector('[data-title]') as HTMLElement
+    expect(title.textContent).toBe(t('addProviderTitle'))
+    expect(title.getAttribute('data-i18n')).toBe('addProviderTitle')
+    // Editing an existing provider shows the EDIT title instead.
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
+    expect(title.textContent).toBe(t('editProviderTitle'))
+    expect(title.getAttribute('data-i18n')).toBe('editProviderTitle')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Edit screen — proto tiles, loadForm prefill, collectFormProvider.
+// ---------------------------------------------------------------------------
+
+describe('edit screen', () => {
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+  const field = (page: { root: HTMLElement }, name: string) =>
+    page.root.querySelector(`[data-field="${name}"]`) as HTMLInputElement
+  const clickSave = (page: { root: HTMLElement }) =>
+    (page.root.querySelector('[data-save]') as HTMLElement).click()
+  const modelRows = (page: { root: HTMLElement }) =>
+    Array.from(page.root.querySelectorAll('[data-model-row]')) as HTMLElement[]
+  // classList toggles reorder tokens, so tint is asserted as CONTENT.
+  const expectTinted = (t: HTMLElement, sel: boolean) => {
+    expect(t.classList.contains('border-blue/50')).toBe(sel)
+    expect(t.classList.contains('bg-blue/10')).toBe(sel)
+    expect(t.classList.contains('border-hairline')).toBe(!sel)
+    expect(t.classList.contains('bg-ink2')).toBe(!sel)
+  }
+
+  it('selecting a protocol tile tints exactly that tile and updates the saved type', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 1)
+    const tiles = Array.from(page.root.querySelectorAll('[data-proto]')) as HTMLElement[]
+    ;(page.root.querySelector('[data-proto="anthropic"]') as HTMLElement).click()
+    for (const t of tiles) {
+      expectTinted(t, t.getAttribute('data-proto') === 'anthropic')
+    }
+    input(field(page, 'name'), 'zhipu')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].type).toBe('anthropic')
+  })
+
+  it('editing a typed provider pre-tints its tile; a typeless provider tints none', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    await openEdit(page, 1) // zhipu: openai
+    expectTinted(page.root.querySelector('[data-proto="openai"]') as HTMLElement, true)
+    expectTinted(page.root.querySelector('[data-proto="anthropic"]') as HTMLElement, false)
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    await openEdit(page, 0) // xiaomi: no type
+    for (const t of page.root.querySelectorAll('[data-proto]')) {
+      expectTinted(t as HTMLElement, false)
+    }
+  })
+
+  it('a typeless provider round-trips an empty type through the PUT', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 0) // xiaomi — no type on the wire
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].type).toBe('')
+  })
+
+  it('the add flow seeds openai with one empty key row and default model meta', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(field(page, 'name').value).toBe('')
+    expect(field(page, 'url').value).toBe('')
+    const keyRows = (page.root.querySelector('[data-add-key]') as HTMLElement).previousElementSibling!
+      .children
+    expect(keyRows.length).toBe(1)
+    expect((keyRows[0].children[0] as HTMLInputElement).value).toBe('')
+    input(field(page, 'name'), 'newp')
+    input(field(page, 'url'), 'https://newp')
+    ;(page.root.querySelector('[data-add-model]') as HTMLElement).click()
+    const nameInp = page.root.querySelector('[data-model-name]') as HTMLInputElement
+    input(nameInp, 'm1')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    const added = putBody![2]
+    expect(added.type).toBe('openai')
+    expect(added.keys).toEqual([])
+    expect(added.models['m1']).toEqual({
+      context: '200k',
+      max_tokens: '32k',
+      input: ['text'],
+      thinking: 'auto',
+    })
+  })
+
+  it('providers with empty or null keys still get exactly one empty key row', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        { ...PAYLOAD.providers[0], keys: [] },
+        { ...PAYLOAD.providers[1], keys: null as unknown as string[], name: 'nokeys' },
+      ],
+      default: PAYLOAD.default,
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    const keyRowCount = () =>
+      (page.root.querySelector('[data-add-key]') as HTMLElement).previousElementSibling!.children.length
+    await openEdit(page, 0)
+    expect(keyRowCount()).toBe(1)
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    await openEdit(page, 1)
+    expect(keyRowCount()).toBe(1)
+  })
+
+  it('reopening a form clears the probe line and the delete zone follows isNew', async () => {
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, testResult: { ok: true, latencyMs: 9 } }),
+    )
+    await openEdit(page, 1)
+    ;(page.root.querySelector('[data-test-conn]') as HTMLElement).click()
+    await vi.waitFor(() =>
+      expect((page.root.querySelector('[data-test-result]') as HTMLElement).textContent).toBe('✓ 9ms'),
+    )
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    await openEdit(page, 1)
+    const probe = page.root.querySelector('[data-test-result]') as HTMLElement
+    expect(probe.textContent).toBe('')
+    expect(probe.className).toBe('text-[11px] text-t2')
+    const del = page.root.querySelector('[data-delete-provider]') as HTMLElement
+    expect(del.textContent).toBe(t('deleteProviderRow'))
+    expect(del.className).toBe('text-[11px] text-red/85 text-center pt-2 cursor-pointer')
+    expect(del.getAttribute('data-delete-provider')).toBe('')
+    ;(page.root.querySelector('[data-back]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    expect(page.root.querySelector('[data-delete-provider]')).toBeNull()
+  })
+
+  it('collectFormProvider trims name/url, drops empty keys, and sorts modalities', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'xiaomi',
+          url: 'https://api.xiaomi.com',
+          keys: ['sk-1', '', 'sk-2'],
+          models: {
+            'mimo-v2.5': { context: '500k', input: ['video', 'audio', 'text'] },
+          },
+        },
+      ],
+      default: { provider: 'xiaomi', model: 'mimo-v2.5' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page, 0)
+    input(field(page, 'name'), '  xiaomi2  ')
+    input(field(page, 'url'), '  https://api2.xiaomi.com  ')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].name).toBe('xiaomi2')
+    expect(putBody![0].url).toBe('https://api2.xiaomi.com')
+    expect(putBody![0].keys).toEqual(['sk-1', 'sk-2'])
+    expect(putBody![0].models['mimo-v2.5'].input).toEqual(['text', 'audio', 'video'])
+  })
+
+  it('a whitespace-only model name is dropped, not saved', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const page = await openPage(mock)
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    input(field(page, 'name'), 'p')
+    input(field(page, 'url'), 'https://p')
+    ;(page.root.querySelector('[data-add-model]') as HTMLElement).click()
+    const nameInp = page.root.querySelector('[data-model-name]') as HTMLInputElement
+    input(nameInp, '   ')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe(t('oneModelRequired'))
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/providers' && i?.method === 'PUT')).toHaveLength(0)
+  })
+
+  it('extra params: empty keys are dropped, raw strings survive, all-empty deletes the field', async () => {
+    const withParams: SettingsPayload = {
+      providers: [{ ...PAYLOAD.providers[1], extra_params: { tool_stream: true, old: 'gone' } }],
+      default: { provider: 'zhipu', model: 'glm-5.3' },
+    }
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: withParams, onPut: (b) => (putBody = b) }), withParams)
+    await openEdit(page, 0)
+    const kvInputs = () =>
+      Array.from(page.root.querySelectorAll('[data-kv-del]')) as HTMLElement[]
+    expect(kvInputs().length).toBe(2)
+    // Rewrite: one valid pair with an unparseable value, one blank key row.
+    const k0 = page.root.querySelectorAll('[data-kv-del]')[0]!.parentElement!.children[0] as HTMLInputElement
+    const v0 = page.root.querySelectorAll('[data-kv-del]')[0]!.parentElement!.children[1] as HTMLInputElement
+    input(k0, 'flag')
+    input(v0, 'oops-not-json')
+    const k1 = page.root.querySelectorAll('[data-kv-del]')[1]!.parentElement!.children[0] as HTMLInputElement
+    const v1 = page.root.querySelectorAll('[data-kv-del]')[1]!.parentElement!.children[1] as HTMLInputElement
+    input(k1, '')
+    input(v1, 'x')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].extra_params).toEqual({ flag: 'oops-not-json' })
+
+    // A second save after deleting every kv row removes extra_params.
+    putBody = undefined
+    await openEdit(page, 0)
+    while (page.root.querySelector('[data-kv-del]')) {
+      ;(page.root.querySelector('[data-kv-del]') as HTMLElement).click()
+    }
+    expect(page.root.querySelectorAll('[data-kv-del]').length).toBe(0)
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].extra_params).toBeUndefined()
+  })
+
+  it('key rows: eye reveals and hides, delete keeps one row, add appends, input reaches the PUT', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [{ name: 'p', url: 'https://p', keys: ['k1', 'k2'], models: { m1: {} } }],
+      default: { provider: 'p', model: 'm1' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page, 0)
+    const keyRowEls = () =>
+      Array.from((page.root.querySelector('[data-add-key]') as HTMLElement).previousElementSibling!
+        .children) as HTMLElement[]
+    expect(keyRowEls().length).toBe(2)
+    expect(keyRowEls()[0].className).toBe('flex items-center gap-1.5 mb-1.5')
+    const inp0 = keyRowEls()[0].children[0] as HTMLInputElement
+    const eye = keyRowEls()[0].children[1] as HTMLElement
+    expect(eye.className).toBe('w-[30px] h-9 bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0')
+    expect(eye.getAttribute('title')).toBe(t('showHideTitle'))
+    expect(eye.getAttribute('type')).toBe('button')
+    expect(eye.innerHTML).toContain('M1 12s4-7 11-7')
+    eye.click()
+    expect(inp0.type).toBe('text')
+    expect(eye.innerHTML).toContain('M17.94 17.94')
+    expect(eye.innerHTML).toContain('x1="1"')
+    eye.click()
+    expect(inp0.type).toBe('password')
+    expect(eye.innerHTML).toContain('M1 12s4-7 11-7')
+    // Editing a key reaches the PUT body in position.
+    input(inp0, 'k1-edited')
+    // Deleting down to zero keeps one empty row.
+    const del1 = keyRowEls()[1].children[2] as HTMLElement
+    const del0 = keyRowEls()[0].children[2] as HTMLElement
+    expect(del1.textContent).toBe('✕')
+    expect(del1.className).toBe('w-9 h-9 -mr-1 flex items-center justify-center text-[13px] text-red/70 active:text-red cursor-pointer select-none shrink-0 transition-colors')
+    del1.click()
+    del0.click()
+    const after = keyRowEls()
+    expect(after.length).toBe(1)
+    expect((after[0].children[0] as HTMLInputElement).value).toBe('')
+    ;(page.root.querySelector('[data-add-key]') as HTMLElement).click()
+    expect(keyRowEls().length).toBe(2)
+    // Final PUT: the untouched empty rows are filtered out.
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].keys).toEqual([])
+  })
+
+  it('model rows wear exact classes; audio rows drop the chevron and params', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    await openEdit(page, 2) // audiocpp
+    const row = modelRows(page)[0]
+    expect((row.parentElement as HTMLElement).className).toBe('border-b border-hairline last:border-b-0')
+    expect(row.className).toBe('flex items-center gap-2 px-3 py-2 cursor-pointer')
+    expect(row.getAttribute('data-model-row')).toBe('')
+    // Audio: no disclosure chevron, no chips, no context counter.
+    expect(row.querySelector('.leading-none')).toBeNull()
+    expect((row.querySelector('[data-model-name]') as HTMLInputElement).value).toBe('stt-stream')
+    const del = row.lastElementChild as HTMLElement
+    expect(del.textContent).toBe('✕')
+    expect(del.className).toBe('w-9 h-9 -mr-2 flex items-center justify-center text-[13px] text-red/70 active:text-red cursor-pointer select-none transition-colors')
+    expect(del.getAttribute('data-model-del')).toBe('')
+    // Clicking an audio row never opens a detail.
+    row.click()
+    expect((row.nextElementSibling as HTMLElement).classList.contains('hidden')).toBe(true)
+  })
+
+  it('non-audio rows carry chevron, sorted chips, and the context counter', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://p',
+          keys: [],
+          models: {
+            m1: { context: '1M', input: ['image', 'text'] },
+            m2: {},
+          },
+        },
+      ],
+      default: { provider: 'p', model: 'm1' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    const rows = modelRows(page)
+    const chev = rows[0].firstElementChild as HTMLElement
+    expect(chev.className).toBe('text-t3 text-[15px] leading-none transition-transform')
+    expect(chev.textContent).toBe('›')
+    const mods = rows[0].children[2] as HTMLElement
+    expect(mods.className).toBe('flex items-center gap-1')
+    const chips = Array.from(mods.children) as HTMLElement[]
+    expect(chips.map((c) => c.textContent)).toEqual(['text', 'image'])
+    expect(chips[0].className).toBe('text-[9px] text-[#9D5CFF] bg-ink3 rounded px-1.5 py-0.5')
+    const ctx = rows[0].children[3] as HTMLElement
+    expect(ctx.className).toBe('text-[9px] text-t3 bg-ink3 rounded px-1.5 py-0.5')
+    expect(ctx.textContent).toBe('1M')
+    // A model without context renders an empty counter, not "undefined".
+    const ctx2 = rows[1].children[2] as HTMLElement
+    expect(ctx2.textContent).toBe('')
+    expect(rows[1].children[1].className).toContain('font-mono')
+  })
+
+  it('the model list hides with zero models and shows after an add', async () => {
+    const payload: SettingsPayload = {
+      providers: [{ name: 'p', url: 'https://p', keys: [], models: {} }],
+      default: { provider: '', model: '' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    const list = (page.root.querySelector('[data-add-model]') as HTMLElement).previousElementSibling as HTMLElement
+    expect(list.classList.contains('hidden')).toBe(true)
+    ;(page.root.querySelector('[data-add-model]') as HTMLElement).click()
+    expect(list.classList.contains('hidden')).toBe(false)
+    expect(modelRows(page).length).toBe(1)
+  })
+
+  it('renaming a model re-keys the map preserving position; empty rename drops it on save', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 1) // zhipu: glm-5.3
+    const nameInp = modelRows(page)[0].querySelector('[data-model-name]') as HTMLInputElement
+    input(nameInp, 'glm-6')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(Object.keys(putBody![1].models)).toEqual(['glm-6'])
+
+    putBody = undefined
+    await openEdit(page, 1)
+    const inp = modelRows(page)[0].querySelector('[data-model-name]') as HTMLInputElement
+    input(inp, '')
+    clickSave(page)
+    await flushMicrotasks()
+    expect(toastText(page)).toBe(t('oneModelRequired'))
+    expect(putBody).toBeUndefined()
+  })
+
+  it('clearing both model names leaves the second row input empty', async () => {
+    // Clearing row A re-keys it to '' — so form.models[''] EXISTS when row B
+    // is cleared, and the `next !== ''` conjunct is the only thing keeping
+    // the takeover guard from snapping B back to its old name.
+    const payload: SettingsPayload = {
+      providers: [{ name: 'p', url: 'https://p', keys: [], models: { one: {}, two: {} } }],
+      default: { provider: 'p', model: 'one' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    const rows = modelRows(page)
+    const oneInp = rows[0].querySelector('[data-model-name]') as HTMLInputElement
+    const twoInp = rows[1].querySelector('[data-model-name]') as HTMLInputElement
+    input(oneInp, '')
+    expect(oneInp.value).toBe('') // premise: the '' map key now exists
+    input(twoInp, '')
+    expect(twoInp.value).toBe('')
+  })
+
+  it('clicking the model name input never toggles the detail row', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    await openEdit(page, 1)
+    const row = modelRows(page)[0]
+    const detail = row.nextElementSibling as HTMLElement
+    expect(detail.classList.contains('hidden')).toBe(true)
+    ;(row.querySelector('[data-model-name]') as HTMLInputElement).click()
+    expect(detail.classList.contains('hidden')).toBe(true)
+    row.click()
+    expect(detail.classList.contains('hidden')).toBe(false)
+    const chev = row.firstElementChild as HTMLElement
+    expect(chev.classList.contains('rotate-90')).toBe(true)
+    row.click()
+    expect(detail.classList.contains('hidden')).toBe(true)
+    expect(chev.classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('STT and TTS badges mark exactly the configured defaults on model rows', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    await openEdit(page, 2) // audiocpp
+    const sttBadge = page.root.querySelector('[data-stt-badge]') as HTMLElement
+    const ttsBadge = page.root.querySelector('[data-tts-badge]') as HTMLElement
+    expect(sttBadge.textContent).toBe('STT')
+    expect(sttBadge.className).toBe('text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold')
+    expect(sttBadge.getAttribute('data-stt-badge')).toBe('')
+    expect(ttsBadge.textContent).toBe('TTS')
+    expect(ttsBadge.getAttribute('data-tts-badge')).toBe('')
+    expect(page.root.querySelectorAll('[data-stt-badge]').length).toBe(1)
+    expect(page.root.querySelectorAll('[data-tts-badge]').length).toBe(1)
+  })
+
+  it('detail rows render label/input pairs for non-audio; edits reach the PUT', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 1)
+    const row = modelRows(page)[0]
+    row.click()
+    const detail = row.nextElementSibling as HTMLElement
+    const labels = Array.from(detail.querySelectorAll('.mt-2\\.5 > div:first-child')).map(
+      (d) => (d as HTMLElement).textContent,
+    )
+    expect(labels.slice(0, 2)).toEqual([t('contextLabel'), t('maxTokensLabel')])
+    const ctxInp = (detail.querySelector('.mt-2\\.5') as HTMLElement).children[1] as HTMLInputElement
+    input(ctxInp, '2M')
+    const mtRow = (detail.querySelectorAll('.mt-2\\.5')[1] as HTMLElement)
+    input(mtRow.children[1] as HTMLInputElement, '64k')
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].models['glm-5.3']).toMatchObject({ context: '2M', max_tokens: '64k' })
+  })
+
+  it('the input segment carries localized labels and the configured selection', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    await openEdit(page, 0) // xiaomi mimo: input text+image
+    const row = modelRows(page)[0]
+    row.click()
+    const detail = row.nextElementSibling as HTMLElement
+    const seg = detail.querySelector('.flex.gap-1') as HTMLElement
+    expect(seg.className).toBe('flex gap-1 flex-1')
+    const btns = Array.from(seg.children) as HTMLElement[]
+    expect(btns.map((b) => b.textContent)).toEqual([
+      t('textModality'),
+      t('imageModality'),
+      t('audioModality'),
+      t('videoModality'),
+    ])
+    expect(btns[0].className).toContain('text-blue')
+    expect(btns[1].className).toContain('text-blue')
+    expect(btns[2].className).not.toContain('text-blue')
+    expect(btns[3].className).not.toContain('text-blue')
+    expect(btns[0].getAttribute('type')).toBe('button')
+  })
+
+  it('audio providers show the no-params note instead of the session fields', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    await openEdit(page, 2)
+    const detail = modelRows(page)[0].nextElementSibling as HTMLElement
+    expect(detail.classList.contains('hidden')).toBe(true)
+    // The note is the FIRST child of the detail; no context/max rows exist.
+    const note = detail.firstElementChild as HTMLElement
+    expect(note.textContent).toBe(t('sttModelNoParams'))
+    expect(note.className).toBe('mt-2.5 text-[11px] text-t3')
+    expect(detail.querySelectorAll('input').length).toBe(0)
+    expect(detail.querySelectorAll('.flex.gap-1').length).toBe(0)
+  })
+
+  it('the thinking segment defaults to auto, restyles on select, and saves the choice', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 1)
+    const row = modelRows(page)[0]
+    row.click()
+    const detail = row.nextElementSibling as HTMLElement
+    const tseg = detail.querySelectorAll('.flex.gap-1')[1] as HTMLElement
+    expect(tseg.className).toBe('flex gap-1 flex-1')
+    const btns = Array.from(tseg.children) as HTMLElement[]
+    expect(btns.map((b) => b.textContent)).toEqual(['none', 'auto', 'low', 'medium', 'high', 'max'])
+    expect(btns.map((b) => b.className.includes('text-blue'))).toEqual([false, true, false, false, false, false])
+    ;(btns[2] as HTMLElement).click()
+    for (const [i, b] of btns.entries()) {
+      expect(b.className.includes('text-blue')).toBe(i === 2)
+    }
+    clickSave(page)
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].models['glm-5.3'].thinking).toBe('low')
+  })
+
+  it('a saved thinking preset stays the selected segment on reopen', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'p', url: 'https://p', keys: [], models: { m1: { thinking: 'high' } } },
+      ],
+      default: { provider: 'p', model: 'm1' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    const row = modelRows(page)[0]
+    row.click()
+    const tseg = (row.nextElementSibling as HTMLElement).querySelectorAll('.flex.gap-1')[1] as HTMLElement
+    const btns = Array.from(tseg.children) as HTMLElement[]
+    expect(btns.map((b) => b.className.includes('text-blue'))).toEqual([false, false, false, false, true, false])
+  })
+
+  it('kv rows render prefilled inputs and deletes remove exactly one row', async () => {
+    const withParams: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://p',
+          keys: [],
+          models: { m1: {} },
+          extra_params: { a: 1, b: 'two' },
+        },
+      ],
+      default: { provider: 'p', model: 'm1' },
+    }
+    const page = await openPage(makeFetchHandler({ payload: withParams }), withParams)
+    await openEdit(page, 0)
+    const rows = () => Array.from(page.root.querySelectorAll('[data-kv-del]')) as HTMLElement[]
+    expect(rows().length).toBe(2)
+    const r0 = rows()[0].parentElement as HTMLElement
+    expect(r0.className).toBe('flex gap-2 items-center border-b border-hairline last:border-b-0 pl-3 pr-1.5 py-1')
+    const kInp = r0.children[0] as HTMLInputElement
+    const vInp = r0.children[1] as HTMLInputElement
+    expect(kInp.value).toBe('a')
+    expect(vInp.value).toBe('1')
+    const del = rows()[0]
+    expect(del.textContent).toBe('✕')
+    expect(del.className).toBe('w-9 h-9 flex items-center justify-center text-[13px] text-red/70 active:text-red cursor-pointer select-none transition-colors')
+    expect(del.getAttribute('data-kv-del')).toBe('')
+    del.click()
+    expect(rows().length).toBe(1)
+    expect((rows()[0].parentElement as HTMLElement).children[0] as HTMLInputElement).toHaveProperty('value', 'b')
+    ;(page.root.querySelector('[data-add-param]') as HTMLElement).click()
+    expect(rows().length).toBe(2)
+    // The kv body hides once the last row is gone.
+    ;(rows()[0] as HTMLElement).click()
+    ;(rows()[0] as HTMLElement).click()
+    expect(rows().length).toBe(0)
+    const kvBody = (page.root.querySelector('[data-add-param]') as HTMLElement).previousElementSibling as HTMLElement
+    expect(kvBody.classList.contains('hidden')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fetch models — free fetch ownership, zero-result guard, toasts.
+// ---------------------------------------------------------------------------
+
+describe('fetch models', () => {
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+  const fetchBtn = (page: { root: HTMLElement }) =>
+    page.root.querySelector('[data-fetch-models]') as HTMLElement
+  const modelNames = (page: { root: HTMLElement }) =>
+    Array.from(page.root.querySelectorAll('[data-model-name]')).map(
+      (i) => (i as HTMLInputElement).value,
+    )
+
+  it('a free fetch owns its previous set: keeps returned, drops gone, saves free_fetched ids', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'or',
+          url: 'https://openrouter.ai/api/v1',
+          keys: ['k'],
+          free_fetched: ['old-a', 'keep-b'],
+          models: {
+            'old-a': { context: '111k' },
+            'keep-b': {},
+            hand: {},
+          },
+        },
+      ],
+      default: { provider: 'or', model: 'hand' },
+    }
+    const page = await openPage(
+      makeFetchHandler({
+        payload,
+        models: { mode: 'fetched', models: [{ id: 'keep-b' }, { id: 'new-c' }] },
+        onPut: (b) => (putBody = b),
+      }),
+      payload,
+    )
+    await openEdit(page, 0)
+    expect(fetchBtn(page).textContent).toBe(t('fetchFreeTop10'))
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('fetchedModels')(2, 1)))
+    expect(modelNames(page).sort()).toEqual(['hand', 'keep-b', 'new-c'])
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].free_fetched).toEqual(['keep-b', 'new-c'])
+    expect(modelsBodies.at(-1)).toMatchObject({ url: 'https://openrouter.ai/api/v1', free: true })
+  })
+
+  it('a zero-result free fetch never wipes the managed set', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'or',
+          url: 'https://openrouter.ai/api/v1',
+          keys: [],
+          free_fetched: ['x'],
+          models: { x: {} },
+        },
+      ],
+      default: { provider: 'or', model: 'x' },
+    }
+    const page = await openPage(
+      makeFetchHandler({ payload, models: { mode: 'fetched', models: [] } }),
+      payload,
+    )
+    await openEdit(page, 0)
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(fetchBtn(page).textContent).toBe(t('fetchFreeTop10')))
+    expect(modelNames(page)).toEqual(['x'])
+    expect(toastText(page)).toBe('')
+  })
+
+  it('non-free fetches merge new ids, keep hand metadata, and refresh managed ids', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://api.zhipu.example/v4',
+          keys: ['k'],
+          free_fetched: ['managed-1'],
+          models: {
+            'managed-1': { context: 'from-free' },
+            'hand-1': { context: 'hand-meta' },
+          },
+        },
+      ],
+      default: { provider: 'p', model: 'hand-1' },
+    }
+    const page = await openPage(
+      makeFetchHandler({
+        payload,
+        models: {
+          mode: 'fetched',
+          models: [
+            { id: 'managed-1' },
+            { id: 'hand-1' },
+            { id: 'fresh-2', context: '9k', input: ['image'] },
+            { id: '' },
+          ],
+        },
+      }),
+      payload,
+    )
+    await openEdit(page, 0)
+    ;(fetchBtn(page) as HTMLElement).click()
+    // 4 entries, one blank dropped: toast counts the wire list and adds 1.
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('fetchedModels')(4, 1)))
+    expect(modelNames(page).sort()).toEqual(['fresh-2', 'hand-1', 'managed-1'])
+    // Managed id refreshed in place; hand metadata kept; defaults applied.
+    const rows = page.root.querySelectorAll('[data-model-row]')
+    void rows
+    const fresh = Array.from(page.root.querySelectorAll('[data-model-name]')).find(
+      (i) => (i as HTMLInputElement).value === 'fresh-2',
+    ) as HTMLInputElement
+    ;(fresh.closest('[data-model-row]') as HTMLElement).click()
+    const detail = (fresh.closest('[data-model-row]') as HTMLElement).nextElementSibling as HTMLElement
+    const ctxInp = (detail.querySelector('.mt-2\\.5') as HTMLElement).children[1] as HTMLInputElement
+    expect(ctxInp.value).toBe('9k')
+    expect(modelsBodies.at(-1)).toEqual({ url: 'https://api.zhipu.example/v4', key: 'k', type: '' })
+  })
+
+  it('fetched LLM defaults fill 1M/32k/text/auto when the entry has no metadata', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        models: { mode: 'fetched', models: [{ id: 'plain' }] },
+        onPut: (b) => (putBody = b),
+      }),
+    )
+    await openEdit(page, 1)
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(modelNames(page)).toContain('plain'))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].models['plain']).toEqual({
+      context: '1M',
+      max_tokens: '32k',
+      input: ['text'],
+      thinking: 'auto',
+    })
+  })
+
+  it('an audio fetch stores empty model meta', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: AUDIO_PAYLOAD,
+        models: { mode: 'fetched', models: [{ id: 'new-voice' }] },
+        onPut: (b) => (putBody = b),
+      }),
+      AUDIO_PAYLOAD,
+    )
+    await openEdit(page, 2)
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(modelNames(page)).toContain('new-voice'))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![2].models['new-voice']).toEqual({})
+  })
+
+  it('a repeat fetch with nothing new toasts allModelsConfigured and restores the label', async () => {
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        models: { mode: 'fetched', models: [{ id: 'glm-5.3' }] },
+      }),
+    )
+    await openEdit(page, 1)
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('allModelsConfigured')))
+    expect(fetchBtn(page).textContent).toBe(t('fetchFromApi'))
+    expect(fetchBtn(page).getAttribute('data-i18n')).toBe('fetchFromApi')
+    expect(modelNames(page)).toEqual(['glm-5.3'])
+  })
+
+  it('manual and error modes toast their own copy', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, models: { mode: 'manual' } }))
+    await openEdit(page, 1)
+    ;(fetchBtn(page) as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('anthropicNoModelList')))
+
+    const page2 = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, models: { mode: 'error', error: 'HTTP 502' } }),
+    )
+    await openEdit(page2, 1)
+    ;(fetchBtn(page2) as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page2)).toBe('HTTP 502'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Provider test button — pending copy, result classes, failure shapes.
+// ---------------------------------------------------------------------------
+
+describe('provider test button', () => {
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+
+  it('pings the first model name with an ellipsis button while in flight', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/test') {
+        await gate
+        return { ok: true, status: 200, json: async () => ({ ok: true, latencyMs: 33 }) }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    await openEdit(page, 1) // zhipu: glm-5.3
+    const result = page.root.querySelector('[data-test-result]') as HTMLElement
+    const btn = page.root.querySelector('[data-test-conn]') as HTMLElement
+    btn.click()
+    expect(result.textContent).toBe(t('pinging')('glm-5.3'))
+    expect(btn.textContent).toBe('…')
+    release()
+    await vi.waitFor(() => {
+      expect(result.textContent).toBe('✓ 33ms')
+      expect(result.className).toBe('text-[11px] text-green')
+      expect(btn.textContent).toBe(t('testBtn'))
+    })
+  })
+
+  it('a form with zero models pings the bare word provider', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/test') {
+        await gate
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    ;(page.root.querySelector('[data-add-provider]') as HTMLElement).click()
+    const result = page.root.querySelector('[data-test-result]') as HTMLElement
+    ;(page.root.querySelector('[data-test-conn]') as HTMLElement).click()
+    expect(result.textContent).toBe(t('pinging')('provider'))
+    release()
+    await vi.waitFor(() => expect(result.textContent).toBe('✓ 0ms'))
+  })
+
+  it('a probe failure without latency or error text renders the fallbacks in red', async () => {
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, testResult: { ok: false } }),
+    )
+    await openEdit(page, 1)
+    ;(page.root.querySelector('[data-test-conn]') as HTMLElement).click()
+    const result = page.root.querySelector('[data-test-result]') as HTMLElement
+    await vi.waitFor(() => {
+      expect(result.textContent).toBe('✗ failed')
+      expect(result.className).toBe('text-[11px] text-red')
+    })
+  })
+
+  it('a probe network rejection renders the thrown message in red', async () => {
+    const fallback = makeFetchHandler({ payload: PAYLOAD })
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/test') throw new TypeError('connection refused')
+      return (fallback as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    await openEdit(page, 1)
+    ;(page.root.querySelector('[data-test-conn]') as HTMLElement).click()
+    const result = page.root.querySelector('[data-test-result]') as HTMLElement
+    await vi.waitFor(() => {
+      expect(result.textContent).toBe('✗ connection refused')
+      expect(result.className).toBe('text-[11px] text-red')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Save / delete / open / close.
+// ---------------------------------------------------------------------------
+
+describe('save, delete, open, close', () => {
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+  const field = (page: { root: HTMLElement }, name: string) =>
+    page.root.querySelector(`[data-field="${name}"]`) as HTMLInputElement
+
+  it('a server rejection on save toasts and keeps the edit screen open', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, putError: 'name taken' }))
+    await openEdit(page, 1)
+    input(field(page, 'name'), 'zhipu2')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('name taken')))
+    expect((page.root.querySelector('[data-screen="edit"]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    // The form state survives for a retry.
+    expect(field(page, 'name').value).toBe('zhipu2')
+  })
+
+  it('a successful save re-renders home, swaps screens, and clears stale audio tasks', async () => {
+    const models = { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }] }
+    const live: SettingsPayload = structuredClone(AUDIO_PAYLOAD)
+    const mock = makeFetchHandler({
+      payload: live,
+      models,
+      onPut: (b) => {
+        live.providers = b
+      },
+    })
+    const page = await openPage(mock, AUDIO_PAYLOAD)
+    // Open the STT card once: the task map caches for audiocpp.
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+    })
+    await openEdit(page, 2) // audiocpp
+    input(field(page, 'name'), 'audiocpp2')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('savedBackedUp')))
+    // Home re-rendered with the new name and the edit screen is gone.
+    expect(
+      (page.root.querySelector('[data-screen="home"]') as HTMLElement).classList.contains('hidden'),
+    ).toBe(false)
+    await vi.waitFor(() => {
+      const cards = Array.from(page.root.querySelectorAll('[data-provider-card]'))
+      // A re-render REPLACES the list — no duplicates of the old name.
+      expect(cards.length).toBe(3)
+      expect(cards.some((c) => c.textContent?.includes('audiocpp2'))).toBe(true)
+      expect(cards.some((c) => c.textContent?.includes('audiocpp') && !c.textContent?.includes('audiocpp2'))).toBe(false)
+    })
+    // Saving cleared the task caches: the next STT open refetches.
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(2)
+    })
+  })
+
+  it('cancel returns home without saving', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const page = await openPage(mock)
+    await openEdit(page, 1)
+    input(field(page, 'name'), 'renamed-no-save')
+    ;(page.root.querySelector('[data-cancel]') as HTMLElement).click()
+    expect(
+      (page.root.querySelector('[data-screen="home"]') as HTMLElement).classList.contains('hidden'),
+    ).toBe(false)
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/providers' && i?.method === 'PUT')).toHaveLength(0)
+  })
+
+  it('whitespace-only name or url is rejected client-side with zero PUTs', async () => {
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const page = await openPage(mock)
+    await openEdit(page, 1)
+    input(field(page, 'name'), '   ')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    expect(toastText(page)).toBe(t('nameUrlRequired'))
+    input(field(page, 'name'), 'zhipu')
+    input(field(page, 'url'), '   ')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    expect(toastText(page)).toBe(t('nameUrlRequired'))
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/providers' && i?.method === 'PUT')).toHaveLength(0)
+  })
+
+  it('delete confirm distinguishes the default provider, comparing the trimmed name', async () => {
+    const confirms: string[] = []
+    vi.stubGlobal('confirm', (msg: string) => {
+      confirms.push(msg)
+      return true
+    })
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }),
+    )
+    // Non-default: plain confirm.
+    await openEdit(page, 0)
+    ;(page.root.querySelector('[data-delete-provider]') as HTMLElement).click()
+    expect(confirms).toEqual([t('deleteProviderConfirm')])
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody).toHaveLength(1)
+
+    // Default owner with a padded name field: trim still matches.
+    confirms.length = 0
+    putBody = undefined
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'zhipu', url: 'https://z', keys: [], models: { m: {} } },
+        { name: 'other', url: 'https://o', keys: [], models: { m: {} } },
+      ],
+      default: { provider: 'zhipu', model: 'm' },
+    }
+    const page2 = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page2, 0)
+    input(field(page2, 'name'), '  zhipu  ')
+    ;(page2.root.querySelector('[data-delete-provider]') as HTMLElement).click()
+    expect(confirms).toEqual([t('deleteDefaultConfirm')])
+  })
+
+  it('a rejected confirm deletes nothing', async () => {
+    vi.stubGlobal('confirm', () => false)
+    const mock = makeFetchHandler({ payload: PAYLOAD })
+    const page = await openPage(mock)
+    await openEdit(page, 0)
+    ;(page.root.querySelector('[data-delete-provider]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/providers' && i?.method === 'PUT')).toHaveLength(0)
+    expect((page.root.querySelector('[data-screen="edit"]') as HTMLElement).classList.contains('hidden')).toBe(false)
+  })
+
+  it('open polls system state on a 5s cadence; close stops the poll and the sheet', async () => {
+    vi.useFakeTimers()
+    try {
+      const admin = { busy: false, items: [] as unknown[], upgradable: true, build: 'v1' }
+      const mock = makeFetchHandler({ payload: PAYLOAD, admin })
+      const page = createSettingsPage()
+      document.body.appendChild(page.root)
+      vi.stubGlobal('fetch', mock)
+      page.open()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('v1')
+      })
+      const getsBefore = mock.mock.calls.filter(([u, i]) => u === '/api/admin/restart' && !i?.method).length
+      admin.build = 'v2'
+      vi.advanceTimersByTime(5000)
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('v2')
+      })
+      // Open the JSON sheet, then close the page: the sheet hides too.
+      ;(page.root.querySelector('[data-json-action]') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect((page.root.querySelector('[data-json-sheet]') as HTMLElement).style.display).toBe('')
+      })
+      page.close()
+      expect(page.root.style.display).toBe('none')
+      expect(page.isOpen()).toBe(false)
+      expect((page.root.querySelector('[data-json-sheet]') as HTMLElement).style.display).toBe('none')
+      const getsAfterClose = mock.mock.calls.filter(([u, i]) => u === '/api/admin/restart' && !i?.method).length
+      admin.build = 'v3'
+      vi.advanceTimersByTime(15000)
+      expect(mock.mock.calls.filter(([u, i]) => u === '/api/admin/restart' && !i?.method).length).toBe(getsAfterClose)
+      expect(getsAfterClose).toBeGreaterThan(getsBefore)
+      expect((page.root.querySelector('[data-system-build]') as HTMLElement).textContent).toBe('v2')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a settings fetch failure opens an empty page with the load-failed toast', async () => {
+    const page = createSettingsPage()
+    document.body.appendChild(page.root)
+    vi.stubGlobal('fetch', makeFetchHandler({ providersGetError: true }))
+    page.open()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('loadFailed')('settings fetch failed: 503')))
+    expect(page.root.querySelectorAll('[data-provider-card]').length).toBe(0)
+    expect(page.isOpen()).toBe(true)
+    await vi.waitFor(() => {
+      expect((page.root.querySelector('[data-screen="home"]') as HTMLElement).classList.contains('hidden')).toBe(false)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Round two — pinned escapes from the first census re-run.
+// ---------------------------------------------------------------------------
+
+describe('mutate round two', () => {
+  const field = (page: { root: HTMLElement }, name: string) =>
+    page.root.querySelector(`[data-field="${name}"]`) as HTMLInputElement
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+  const SEL = 'flex-1 py-1.5 text-[10px] rounded-lg cursor-pointer border text-blue border-blue/40 bg-blue/10'
+  const UNSEL = 'flex-1 py-1.5 text-[10px] rounded-lg cursor-pointer border bg-ink3 text-t2 border-transparent'
+
+  it('an unknown modality keeps its position but sorts after the known ones', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://p',
+          keys: [],
+          models: { m1: { input: ['weird', 'text', 'image'] } },
+        },
+      ],
+      default: { provider: 'p', model: 'm1' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page, 0)
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].models.m1.input).toEqual(['text', 'image', 'weird'])
+  })
+
+  it('a second toast restarts the hide timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const mock = makeFetchHandler({ payload: PAYLOAD, putError: 'one' })
+      const page = await openPage(mock)
+      const toastEl = page.root.querySelector('[data-toast]') as HTMLElement
+      await openEdit(page, 1)
+      ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+      await flushMicrotasks()
+      expect(toastText(page)).toBe(t('saveFailed')('one'))
+      vi.advanceTimersByTime(2000)
+      // Toast B at t=2000: its own 2.2s window must outlive A's would-be end.
+      ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+      await flushMicrotasks()
+      expect(toastText(page)).toBe(t('saveFailed')('one'))
+      expect(toastEl.classList.contains('toast-show')).toBe(true)
+      vi.advanceTimersByTime(300)
+      expect(toastEl.classList.contains('toast-show')).toBe(true)
+      expect(toastEl.classList.contains('opacity-0')).toBe(false)
+      vi.advanceTimersByTime(1900)
+      expect(toastEl.classList.contains('toast-show')).toBe(false)
+      expect(toastEl.classList.contains('opacity-0')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the audio task probe dedupes in flight and across resolved opens', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const models = { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }] }
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/models') {
+        await gate
+        return { ok: true, status: 200, json: async () => models }
+      }
+      const base = makeFetchHandler({ payload: AUDIO_PAYLOAD })
+      return (base as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>, AUDIO_PAYLOAD)
+    const card = page.root.querySelector('[data-stt-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() =>
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1),
+    )
+    // Reopen while still in flight: the page-scoped promise is reused.
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+    release()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    // After resolution the cache stands: another open still does not refetch.
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+  })
+
+  it('a null-keys audio provider still gets its task probe; a keyless one sends an empty key', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        { ...AUDIO_PAYLOAD.providers[2], name: 'nullkeys', keys: null as unknown as string[] },
+        { ...AUDIO_PAYLOAD.providers[2], name: 'emptykeys', keys: [] },
+      ],
+      default: { provider: '', model: '' },
+    }
+    modelsBodies.length = 0
+    const page = await openPage(makeFetchHandler({ payload, models: { mode: 'manual' } }), payload)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(modelsBodies.length).toBe(2))
+    expect(modelsBodies[0]).toMatchObject({ key: '', type: 'audio' })
+    expect(modelsBodies[1]).toMatchObject({ key: '', type: 'audio' })
+  })
+
+  it('default-model rows wear the row class and selection moves after a pick', async () => {
+    let putBody: { provider: string; model: string } | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPutDefault: (b) => (putBody = b) }))
+    const card = page.root.querySelector('[data-default-card]') as HTMLElement
+    card.firstElementChild!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const xiaomi = page.root.querySelector('[data-default-model="xiaomi/mimo-v2.5"]') as HTMLElement
+    expect(xiaomi.className).toBe('flex items-center gap-2.5 px-3.5 py-2 cursor-pointer')
+    xiaomi.click()
+    await vi.waitFor(() => expect(putBody).toEqual({ provider: 'xiaomi', model: 'mimo-v2.5' }))
+    // The panel re-rendered: selection styling moved to the picked row.
+    await vi.waitFor(() => {
+      const zhipuAfter = page.root.querySelector('[data-default-model="zhipu/glm-5.3"]') as HTMLElement
+      const xiaomiAfter = page.root.querySelector('[data-default-model="xiaomi/mimo-v2.5"]') as HTMLElement
+      expect((zhipuAfter.firstElementChild as HTMLElement).className).toContain('border-t3')
+      expect((zhipuAfter.firstElementChild as HTMLElement).firstElementChild).toBeNull()
+      expect((xiaomiAfter.firstElementChild as HTMLElement).className).toContain('border-blue')
+      expect((xiaomiAfter.children[1] as HTMLElement).className).toBe('text-xs font-mono text-blue')
+    })
+  })
+
+  it('a non-Error rejection on stt or tts selects toasts the bare error word', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD, sttPutReject: 'kaboom' }), AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    ;(page.root.querySelector('[data-stt-model="audiocpp/stt-stream"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('saveFailed')('error')))
+
+    const page2 = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD, ttsPutReject: 'kaboom' }), AUDIO_PAYLOAD)
+    ;(page2.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    ;(page2.root.querySelector('[data-tts-model="audiocpp/tts-voice"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page2)).toBe(t('saveFailed')('error')))
+    // The VOICE row's own catch site (not the model row's) fires on a
+    // rejection during a voice change.
+    const page3 = await openPage(
+      makeFetchHandler({
+        payload: { ...AUDIO_PAYLOAD, tts: { provider: 'audiocpp', model: 'tts-voice' } },
+        ttsPutReject: 'kaboom',
+      }),
+      { ...AUDIO_PAYLOAD, tts: { provider: 'audiocpp', model: 'tts-voice' } },
+    )
+    ;(page3.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(page3.root.querySelector('[data-tts-voice="Serena"]')).toBeTruthy())
+    ;(page3.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page3)).toBe(t('saveFailed')('error')))
+  })
+
+  it('a configured tts card offers pointer voice rows with exact dot classes; default selected without a voice', async () => {
+    let putBody: { provider: string; model: string; voice?: string } | undefined
+    const payload: SettingsPayload = {
+      ...AUDIO_PAYLOAD,
+      tts: { provider: 'audiocpp', model: 'tts-voice' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPutTts: (b) => (putBody = b) }), payload)
+    ;(page.root.querySelector('[data-tts-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(page.root.querySelector('[data-tts-voice="Serena"]')).toBeTruthy())
+    const serena = page.root.querySelector('[data-tts-voice="Serena"]') as HTMLElement
+    expect(serena.className).toBe('flex items-center gap-2.5 px-3.5 py-2 cursor-pointer')
+    const def = page.root.querySelector('[data-tts-voice=""]') as HTMLElement
+    // No voice configured: the default preset row is the selected one.
+    expect((def.firstElementChild as HTMLElement).className).toBe(
+      'w-[14px] h-[14px] rounded-full border flex items-center justify-center border-blue',
+    )
+    expect((def.firstElementChild as HTMLElement).firstElementChild!.className).toBe(
+      'w-[7px] h-[7px] rounded-full bg-blue',
+    )
+    expect((serena.firstElementChild as HTMLElement).className).toBe(
+      'w-[14px] h-[14px] rounded-full border flex items-center justify-center border-t3',
+    )
+    expect((serena.firstElementChild as HTMLElement).firstElementChild).toBeNull()
+    // Clicking the already-selected default while unset is a no-op.
+    def.click()
+    await flushMicrotasks()
+    expect(putBody).toBeUndefined()
+  })
+
+  it('both copy paths leave a styled scratch textarea behind only transiently', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    const execSpy = vi.fn(() => true)
+    document.execCommand = execSpy as unknown as typeof document.execCommand
+    const selectSpy = vi.spyOn(HTMLTextAreaElement.prototype, 'select').mockReturnValue(undefined)
+    const appendSpy = vi.spyOn(document.body, 'appendChild')
+    try {
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          admin: { busy: false, items: [], upgradable: true, build: '5.5.5 · feed' },
+        }),
+      )
+      const build = page.root.querySelector('[data-system-build]') as HTMLElement
+      await vi.waitFor(() => expect(build.textContent).toBe('5.5.5 · feed'))
+      build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await vi.waitFor(() => expect(toastText(page)).toBe(t('appLogCopied')))
+      const scratch = appendSpy.mock.calls.map((c) => c[0]).find((n) => n.nodeName === 'TEXTAREA') as HTMLTextAreaElement
+      expect(scratch.value).toBe('5.5.5 · feed')
+      expect(scratch.style.position).toBe('fixed')
+      expect(scratch.style.opacity).toBe('0')
+
+      // Same shape for the app-log copy button.
+      appendSpy.mockClear()
+      ;(window as unknown as Record<string, unknown>).GBotAppLogs = {
+        tail: () => 'log line',
+        clear: vi.fn(),
+      }
+      ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+      ;(page.root.querySelector('[data-applog-copy]') as HTMLElement).click()
+      await vi.waitFor(() => expect(execSpy).toHaveBeenCalledTimes(2))
+      const scratch2 = appendSpy.mock.calls.map((c) => c[0]).find((n) => n.nodeName === 'TEXTAREA') as HTMLTextAreaElement
+      expect(scratch2.value).toBe('log line')
+      expect(scratch2.style.position).toBe('fixed')
+      expect(scratch2.style.opacity).toBe('0')
+      expect(document.querySelector('textarea')).toBeNull()
+    } finally {
+      selectSpy.mockRestore()
+      appendSpy.mockRestore()
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('a busy turn while armed disarms through the open()-path refresh', async () => {
+    const admin = { busy: false, items: [] as unknown[], upgradable: true, build: '1.2.3 · abc1234' }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, admin }))
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+    btn.click()
+    expect(btn.textContent).toBe(t('restartConfirmArm'))
+    admin.busy = true
+    page.open() // re-entry refreshes system state synchronously
+      await vi.waitFor(() => {
+        expect(btn.disabled).toBe(true)
+        expect(btn.textContent).toBe(t('restartBtn'))
+        // Disarm must keep the dim the same refresh just applied — a
+        // disabled button is always visibly disabled.
+        expect(btn.className).toBe(RESTART_REST + ' opacity-40')
+        expect(btn.getAttribute('data-i18n')).toBe('restartBtn')
+      })
+  })
+
+  it('a synthetic click on a disabled restart button is ignored', async () => {
+    const mock = makeFetchHandler({
+      payload: PAYLOAD,
+      admin: { busy: true, items: [{}], upgradable: true, build: '1.2.3 · abc1234' },
+    })
+    const page = await openPage(mock)
+    const btn = page.root.querySelector('[data-restart-btn]') as HTMLButtonElement
+    await vi.waitFor(() => expect(btn.disabled).toBe(true))
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    expect(btn.textContent).toBe(t('restartBtn'))
+    expect(mock.mock.calls.some(([u, i]) => u === '/api/admin/restart' && i?.method === 'POST')).toBe(false)
+  })
+
+  it('remote entry cards expose the data attribute; port 0 is rejected', async () => {
+    const set = vi.fn(() => true)
+    vi.stubGlobal('GBotNative', {
+      getRemoteTargets: () => JSON.stringify([{ name: 'd', host: 'h', port: 1 }]),
+      setRemoteTargets: set,
+    })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const entry = page.root.querySelector('[data-remote-entry]') as HTMLElement
+    expect(entry.getAttribute('data-remote-entry')).toBe('')
+    ;(page.root.querySelector('[data-remote-add]') as HTMLElement).click()
+    const cardEl = page.root.querySelector('[data-remote-card]') as HTMLElement
+    input(cardEl.querySelector('[data-remote-name]') as HTMLInputElement, 'p0')
+    input(cardEl.querySelector('[data-remote-host]') as HTMLInputElement, 'p0.box')
+    input(cardEl.querySelector('[data-remote-port]') as HTMLInputElement, '0')
+    ;(cardEl.querySelector('[data-remote-save]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(toastText(page)).toBe(t('remotePortInvalid'))
+    expect(set).not.toHaveBeenCalled()
+  })
+
+  it('closing the remote form keeps the page scroll', async () => {
+    vi.stubGlobal('GBotNative', {
+      getRemoteTargets: () => '[]',
+      setRemoteTargets: vi.fn(),
+    })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const cardEl = page.root.querySelector('[data-remote-card]') as HTMLElement
+    ;(cardEl.querySelector('[data-remote-entry]') as HTMLElement | null)?.click()
+    ;(cardEl.querySelector('[data-remote-add]') as HTMLElement).click()
+    expect(page.root.scrollTop).toBe(0)
+    page.root.scrollTop = 42
+    ;(cardEl.querySelector('[data-remote-back]') as HTMLElement).click()
+    expect(page.root.scrollTop).toBe(42)
+  })
+
+  it('device entry cards expose the attribute and inner row classes', async () => {
+    const DEVICES: RemoteDevice[] = [{ name: 'mac', addr: '1.2.3.4:5900', pass: '' }]
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, devices: DEVICES }))
+    const e0 = page.root.querySelector('[data-rd-entry]') as HTMLElement
+    expect(e0.getAttribute('data-rd-entry')).toBe('')
+    expect((e0.children[0] as HTMLElement).className).toBe('flex items-center gap-2')
+    expect((e0.children[0].children[1] as HTMLElement).className).toBe('text-t3 text-[13px]')
+  })
+
+  it('a non-Error probe rejection renders the network-error word', async () => {
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: [{ name: 'd', addr: 'a', pass: '' }], deviceTestRejectWith: 'boom' }),
+    )
+    ;(page.root.querySelector('[data-rd-card]') as HTMLElement).querySelectorAll('[data-rd-entry]')[0]!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    ;((page.root.querySelector('[data-rd-card]') as HTMLElement).querySelector('[data-rd-test]') as HTMLElement).click()
+    const result = (page.root.querySelector('[data-rd-card]') as HTMLElement).querySelector('[data-rd-test-result]') as HTMLElement
+    await vi.waitFor(() => {
+      expect(result.textContent).toBe('✗ network error')
+      expect(result.className).toBe('text-[11px] text-red')
+    })
+
+    const page2 = await openPage(makeFetchHandler({ payload: PAYLOAD, testRejectWith: 'boom' }))
+    await openEdit(page2, 1)
+    ;(page2.root.querySelector('[data-test-conn]') as HTMLElement).click()
+    const result2 = page2.root.querySelector('[data-test-result]') as HTMLElement
+    await vi.waitFor(() => {
+      expect(result2.textContent).toBe('✗ network error')
+      expect(result2.className).toBe('text-[11px] text-red')
+    })
+  })
+
+  it('the wui tab shows the console buffer one row per entry', async () => {
+    const { pushDebugLog } = await import('./log')
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    ;(page.root.querySelector('[data-applog-row]') as HTMLElement).click()
+    const tabsRow = page.root.querySelector('[data-applog-tabs]') as HTMLElement
+    const wuiTab = Array.from(tabsRow.children).find(
+      (b) => (b as HTMLElement).getAttribute('data-applog-tab') === 'wui',
+    ) as HTMLElement
+    expect(wuiTab.textContent).toBe('wui')
+    pushDebugLog('first line')
+    pushDebugLog('second line')
+    wuiTab.click()
+    await vi.waitFor(() => {
+      const texts = Array.from(body0(page).children).map((c) => c.textContent ?? '')
+      expect(texts.length).toBe(2)
+      expect(texts[0].endsWith('first line')).toBe(true)
+      expect(texts[1].endsWith('second line')).toBe(true)
+    })
+    // Structural classes and the anchors.
+    const actions = tabsRow.parentElement as HTMLElement
+    expect(actions.className).toBe('flex items-center justify-between px-3.5 pt-2 pb-1.5')
+    expect(tabsRow.getAttribute('data-applog-tabs')).toBe('')
+    expect((page.root.querySelector('[data-applog-copy]') as HTMLElement).getAttribute('data-applog-copy')).toBe('')
+    expect(body0(page).className).toBe(
+      'max-h-[280px] overflow-y-auto px-3.5 py-2 font-mono text-[10.5px] leading-relaxed text-t2',
+    )
+    expect(body0(page).getAttribute('data-applog-lines')).toBe('')
+  })
+
+  it('a reopened log panel is owned by its newer gbot fetch', async () => {
+    const gates: Array<() => void> = []
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/logs?tail=500') {
+        const idx = gates.length
+        await new Promise<void>((r) => gates.push(r))
+        return { ok: true, status: 200, text: async () => `daemon payload ${idx}` }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const row = page.root.querySelector('[data-applog-row]') as HTMLElement
+    row.click() // panel 1: fetch0 gated
+    await flushMicrotasks()
+    row.click() // collapse
+    row.click() // panel 2: fetch1 gated, newer seq
+    await flushMicrotasks()
+    gates[1]()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(Array.from(body0(page).children).map((c) => c.textContent)).toEqual(['daemon payload 1'])
+    gates[0]()
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(Array.from(body0(page).children).map((c) => c.textContent)).toEqual(['daemon payload 1'])
+  })
+
+  it('idle phase rows stay dim while the pulse is elsewhere', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveFetch!: () => void
+      const mock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/api/settings/reload' && init?.method === 'POST') {
+          await new Promise<void>((r) => (resolveFetch = r))
+          return { ok: true, status: 200, json: async () => makeReloadReport('mutate') }
+        }
+        return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+      })
+      const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+      ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+      await flushMicrotasks()
+      vi.advanceTimersByTime(1400)
+      const row0 = page.root.querySelector('[data-config-phase="0"]') as HTMLElement
+      const row2 = page.root.querySelector('[data-config-phase="2"]') as HTMLElement
+      const row3 = page.root.querySelector('[data-config-phase="3"]') as HTMLElement
+      expect(row0.classList.contains('text-t1')).toBe(false)
+      expect(row2.classList.contains('text-t1')).toBe(true)
+      expect(row3.classList.contains('text-t1')).toBe(false)
+      resolveFetch()
+      await vi.waitFor(() =>
+        expect((page.root.querySelector('[data-config-phase="4"]') as HTMLElement).firstElementChild!.textContent).toBe('✓'),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('config file rows replace wholesale, carry the attribute, and an error after a report clears them', async () => {
+    let calls = 0
+    let fail = false
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/reload' && init?.method === 'POST') {
+        calls++
+        if (fail) return { ok: false, status: 500, text: async () => 'nope' }
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            calls === 1
+              ? makeReloadReport('mutate')
+              : { ...makeReloadReport('mutate'), files: [{ path: '/only.json', status: 'reloaded' }] },
+        }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLElement
+    btn.click()
+    await vi.waitFor(() => expect(page.root.querySelectorAll('[data-config-file]').length).toBe(2))
+    expect((page.root.querySelector('[data-config-file]') as HTMLElement).getAttribute('data-config-file')).toBe('')
+    btn.click()
+    await vi.waitFor(() => expect(calls).toBe(2))
+    await vi.waitFor(() => {
+      const rows = page.root.querySelectorAll('[data-config-file]')
+      expect(rows.length).toBe(1)
+      expect((rows[0] as HTMLElement).textContent).toContain('/only.json')
+    })
+    // A failed reload afterwards clears the rows and shows the raw error.
+    fail = true
+    btn.click()
+    const banner = page.root.querySelector('[data-config-banner]') as HTMLElement
+    await vi.waitFor(() => expect(banner.textContent).toBe('reload failed: 500'))
+    expect(page.root.querySelectorAll('[data-config-file]').length).toBe(0)
+  })
+
+  it('a no-note file renders only the path; notes carry their exact class', async () => {
+    const report: ReloadReport = {
+      ...makeReloadReport('mutate'),
+      files: [
+        { path: '/plain.json', status: 'unchanged' },
+        { path: '/noted.json', status: 'reloaded', note: 'note text' },
+      ],
+      counts: { reloaded: 1, unchanged: 1, failed: 0 },
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() => expect(page.root.querySelectorAll('[data-config-file]').length).toBe(2))
+    const rows = Array.from(page.root.querySelectorAll('[data-config-file]')) as HTMLElement[]
+    const plainBody = rows[0].children[1] as HTMLElement
+    expect(plainBody.children.length).toBe(1)
+    const note = (rows[1].children[1] as HTMLElement).children[1] as HTMLElement
+    expect(note.className).toBe('text-[11.5px] text-t2 mt-0.5')
+    expect(note.textContent).toBe('note text')
+  })
+
+  it('an aborted report with zero failures still expands rows; files make the banner clickable', async () => {
+    const report: ReloadReport = {
+      applied: false,
+      phase: 0,
+      err: undefined,
+      files: [{ path: '/stuck.json', status: 'unchanged' }],
+      counts: { reloaded: 0, unchanged: 1, failed: 0 },
+      promptChanged: false,
+      enginesRefreshed: 0,
+      settingsChanged: false,
+      lastReloadAt: '2026-11-03T00:00:00Z',
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() =>
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerErr')(0),
+      ),
+    )
+    const rows = (page.root.querySelector('[data-config-report]') as HTMLElement).lastElementChild as HTMLElement
+    expect(rows.classList.contains('hidden')).toBe(false)
+    const bannerRow = page.root.querySelector('[data-config-banner-row]') as HTMLElement
+    expect(bannerRow.classList.contains('cursor-pointer')).toBe(true)
+  })
+
+  it('a synthetic double click on the disabled reload button stays single-flight', async () => {
+    let resolveFetch!: () => void
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/reload' && init?.method === 'POST') {
+        await new Promise<void>((r) => (resolveFetch = r))
+        return { ok: true, status: 200, json: async () => makeReloadReport('mutate') }
+      }
+      return (makeFetchHandler({ payload: PAYLOAD }) as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>)
+    const btn = page.root.querySelector('[data-config-reload]') as HTMLButtonElement
+    btn.click()
+    await flushMicrotasks()
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushMicrotasks()
+    expect(mock.mock.calls.filter(([u, i]) => u === '/api/settings/reload' && i?.method === 'POST')).toHaveLength(1)
+    resolveFetch()
+    await vi.waitFor(() => expect(btn.disabled).toBe(false))
+  })
+
+  it('switching to a non-default hljs theme restyles every chip and label', async () => {
+    localStorage.setItem('gbot-theme', 'light')
+    try {
+      const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+      const rows = page.root.querySelectorAll('[data-general-row]')
+      ;(rows[3] as HTMLElement).click()
+      const panel = page.root.querySelector('[data-hljs-panel]') as HTMLElement
+      const github = panel.querySelector('[data-hljs-opt="github"]') as HTMLElement
+      const atomOne = panel.querySelector('[data-hljs-opt="atom-one"]') as HTMLElement
+      github.click()
+      const value = (rows[3] as HTMLElement).children[1] as HTMLElement
+      expect(value.textContent).toBe('GitHub')
+      expect(localStorage.getItem('gbot-hljs-theme')).toBe('github')
+      const SELCHIP = 'py-1.5 text-[11px] rounded-lg cursor-pointer border truncate text-blue border-blue/40 bg-blue/10'
+      const UNSCHIP = 'py-1.5 text-[11px] rounded-lg cursor-pointer border truncate bg-ink3 text-t2 border-transparent'
+      for (const chip of Array.from(panel.querySelectorAll('[data-hljs-opt]')) as HTMLElement[]) {
+        expect(chip.className).toBe(chip === github ? SELCHIP : UNSCHIP)
+      }
+      expect(atomOne.className).toBe(UNSCHIP)
+    } finally {
+      localStorage.removeItem('gbot-theme')
+      localStorage.removeItem('gbot-hljs-theme')
+    }
+  })
+
+  it('key edits reach the PUT body; the eye button exposes a real type attribute', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, onPut: (b) => (putBody = b) }))
+    await openEdit(page, 1)
+    const keyRow = (page.root.querySelector('[data-add-key]') as HTMLElement).previousElementSibling!
+      .children[0] as HTMLElement
+    const inp = keyRow.children[0] as HTMLInputElement
+    const eye = keyRow.children[1] as HTMLElement
+    const del = keyRow.children[2] as HTMLElement
+    expect(del.getAttribute('type')).toBe('button')
+    eye.click()
+    expect(inp.getAttribute('type')).toBe('text')
+    eye.click()
+    expect(inp.getAttribute('type')).toBe('password')
+    input(inp, 'zk-rotated')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].keys).toEqual(['zk-rotated'])
+  })
+
+  it('renaming one of two models preserves its sibling', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://p',
+          keys: [],
+          models: { one: {}, two: {} },
+        },
+      ],
+      default: { provider: 'p', model: 'one' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page, 0)
+    const rows = page.root.querySelectorAll('[data-model-row]')
+    const oneInp = (rows[0] as HTMLElement).querySelector('[data-model-name]') as HTMLInputElement
+    input(oneInp, 'one-renamed')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(Object.keys(putBody![0].models).sort()).toEqual(['one-renamed', 'two'])
+  })
+
+  it('audio model rows carry no mods container and no context counter', async () => {
+    const page = await openPage(makeFetchHandler({ payload: AUDIO_PAYLOAD }), AUDIO_PAYLOAD)
+    await openEdit(page, 2)
+    const row = page.root.querySelector('[data-model-row]') as HTMLElement
+    // mrow children: name input, (stt badge on default), delete — no chev/mods/ctx.
+    const classes = Array.from(row.children).map((c) => (c as HTMLElement).className)
+    expect(classes.some((c) => c.includes('flex items-center gap-1'))).toBe(false)
+    expect(classes.some((c) => c.includes('bg-ink3 rounded px-1.5'))).toBe(false)
+  })
+
+  it('the context counter of a metadata-less model is empty', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'p',
+          url: 'https://p',
+          keys: [],
+          models: { rich: { context: '9k', input: ['text'] }, bare: {} },
+        },
+      ],
+      default: { provider: 'p', model: 'rich' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    const rows = page.root.querySelectorAll('[data-model-row]')
+    const bare = rows[1] as HTMLElement
+    // Non-audio row: chev, name, mods, ctx — the ctx chip is the LAST span before delete.
+    const ctx = bare.children[bare.children.length - 2] as HTMLElement
+    expect(ctx.className).toBe('text-[9px] text-t3 bg-ink3 rounded px-1.5 py-0.5')
+    expect(ctx.textContent).toBe('')
+  })
+
+  it('STT and TTS tags never cross providers with the same model id', async () => {
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'llmhost', url: 'https://l', keys: [], models: { 'voice-m': {} } },
+        { name: 'audiocpp', url: 'http://127.0.0.1:8082/v1', type: 'audio', keys: [], models: { 'voice-m': {} } },
+      ],
+      default: { provider: 'llmhost', model: 'voice-m' },
+      stt: { provider: 'audiocpp', model: 'voice-m' },
+      tts: { provider: 'audiocpp', model: 'voice-m' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0) // llmhost — same model id, wrong provider
+    expect(page.root.querySelector('[data-stt-badge]')).toBeNull()
+    expect(page.root.querySelector('[data-tts-badge]')).toBeNull()
+    await openEdit(page, 1) // audiocpp — the real default owner
+    const ttsBadge = page.root.querySelector('[data-tts-badge]') as HTMLElement
+    expect(ttsBadge.className).toBe('text-[9px] text-[#7fd4ff] bg-blue/10 rounded-full px-1.5 py-0.5 font-semibold')
+    expect(page.root.querySelectorAll('[data-stt-badge]').length).toBe(1)
+    expect(page.root.querySelectorAll('[data-tts-badge]').length).toBe(1)
+  })
+
+  it('detail row labels wear their fixed-width class', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    await openEdit(page, 1)
+    const row = page.root.querySelector('[data-model-row]') as HTMLElement
+    row.click()
+    const detail = row.nextElementSibling as HTMLElement
+    const label = (detail.querySelector('.mt-2\\.5') as HTMLElement).children[0] as HTMLElement
+    expect(label.className).toBe('text-[11px] text-t2 w-[76px] shrink-0')
+    expect(label.textContent).toBe(t('contextLabel'))
+  })
+
+  it('toggling a modality on a model without input metadata writes just that modality', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [{ name: 'p', url: 'https://p', keys: [], models: { bare: {} } }],
+      default: { provider: 'p', model: 'bare' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    await openEdit(page, 0)
+    const row = page.root.querySelector('[data-model-row]') as HTMLElement
+    row.click()
+    const detail = row.nextElementSibling as HTMLElement
+    const seg = detail.querySelector('.flex.gap-1') as HTMLElement
+    const imageBtn = Array.from(seg.children).find(
+      (b) => b.textContent === t('imageModality'),
+    ) as HTMLElement
+    expect(imageBtn.className).toBe(UNSEL)
+    imageBtn.click()
+    expect(imageBtn.className).toBe(SEL)
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].models.bare.input).toEqual(['image'])
+  })
+
+  it('thinking segment buttons are real buttons', async () => {
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    await openEdit(page, 1)
+    const row = page.root.querySelector('[data-model-row]') as HTMLElement
+    row.click()
+    const tseg = (row.nextElementSibling as HTMLElement).querySelectorAll('.flex.gap-1')[1] as HTMLElement
+    for (const b of Array.from(tseg.children) as HTMLElement[]) {
+      expect(b.getAttribute('type')).toBe('button')
+    }
+  })
+
+  it('an added model on an audio provider takes empty meta', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(
+      makeFetchHandler({ payload: AUDIO_PAYLOAD, onPut: (b) => (putBody = b) }),
+      AUDIO_PAYLOAD,
+    )
+    await openEdit(page, 2)
+    ;(page.root.querySelector('[data-add-model]') as HTMLElement).click()
+    const nameInps = page.root.querySelectorAll('[data-model-name]')
+    const nameInp = nameInps[nameInps.length - 1] as HTMLInputElement
+    input(nameInp, 'voice-2')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![2].models['voice-2']).toEqual({})
+    expect(putBody![2].models['stt-stream']).toEqual({})
+  })
+
+  it('the kv body shows with rows; a fresh param row starts empty', async () => {
+    const withParams: SettingsPayload = {
+      providers: [
+        { name: 'p', url: 'https://p', keys: [], models: { m: {} }, extra_params: { a: 1 } },
+      ],
+      default: { provider: 'p', model: 'm' },
+    }
+    const page = await openPage(makeFetchHandler({ payload: withParams }), withParams)
+    await openEdit(page, 0)
+    const kvBody = (page.root.querySelector('[data-add-param]') as HTMLElement).previousElementSibling as HTMLElement
+    expect(kvBody.classList.contains('hidden')).toBe(false)
+    ;(page.root.querySelector('[data-add-param]') as HTMLElement).click()
+    const rows = page.root.querySelectorAll('[data-kv-del]')
+    const fresh = rows[rows.length - 1]!.parentElement!.children
+    expect((fresh[0] as HTMLInputElement).value).toBe('')
+    expect((fresh[1] as HTMLInputElement).value).toBe('')
+  })
+
+  it('model fetches trim the url, default the key, and never write free_fetched on plain fetches', async () => {
+    modelsBodies.length = 0
+    let putBody: SettingsProvider[] | undefined
+    const page = await openPage(
+      makeFetchHandler({
+        payload: PAYLOAD,
+        models: { mode: 'fetched', models: [{ id: 'plain' }] },
+        onPut: (b) => (putBody = b),
+      }),
+    )
+    await openEdit(page, 1)
+    input(field(page, 'url'), '  https://zhipu.example/v4  ')
+    ;(page.root.querySelector('[data-fetch-models]') as HTMLElement).click()
+    await vi.waitFor(() => expect(modelsBodies.length).toBe(1))
+    expect(modelsBodies[0]).toEqual({ url: 'https://zhipu.example/v4', key: 'zk-1', type: 'openai' })
+    // Wait for the fetch to fully land (toast) before collecting the form.
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('fetchedModels')(1, 1)))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![1].free_fetched).toBeUndefined()
+  })
+
+  it('a blank id in a free fetch never reaches the managed set', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        {
+          name: 'or',
+          url: 'https://openrouter.ai/api/v1',
+          keys: [],
+          free_fetched: ['keep-b'],
+          models: { 'keep-b': {}, hand: {} },
+        },
+      ],
+      default: { provider: 'or', model: 'hand' },
+    }
+    const page = await openPage(
+      makeFetchHandler({
+        payload,
+        models: { mode: 'fetched', models: [{ id: 'keep-b' }, { id: '' }] },
+        onPut: (b) => (putBody = b),
+      }),
+      payload,
+    )
+    await openEdit(page, 0)
+    ;(page.root.querySelector('[data-fetch-models]') as HTMLElement).click()
+    // added=0 (keep-b already configured): the fetch has landed once this
+    // toast shows — only then may the form be collected.
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('allModelsConfigured')))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].free_fetched).toEqual(['keep-b'])
+    expect(Object.keys(putBody![0].models).sort()).toEqual(['hand', 'keep-b'])
+  })
+
+  it('saving without a rename still drops the cached audio tasks', async () => {
+    const models = { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }] }
+    const mock = makeFetchHandler({ payload: AUDIO_PAYLOAD, models })
+    const page = await openPage(mock, AUDIO_PAYLOAD)
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+    })
+    await openEdit(page, 2)
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('savedBackedUp')))
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(2)
+    })
+  })
+
+  it('deleting with an unset default and a blanked name stays the plain confirm', async () => {
+    const confirms: string[] = []
+    vi.stubGlobal('confirm', (msg: string) => {
+      confirms.push(msg)
+      return false
+    })
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'a', url: 'https://a', keys: [], models: { m: {} } },
+        { name: 'b', url: 'https://b', keys: [], models: { m: {} } },
+      ],
+      default: { provider: '', model: '' },
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    await openEdit(page, 0)
+    input(field(page, 'name'), '   ')
+    ;(page.root.querySelector('[data-delete-provider]') as HTMLElement).click()
+    expect(confirms).toEqual([t('deleteProviderConfirm')])
+  })
+
+  it('a settings load failure leaves the default card title blank-separated', async () => {
+    const page = createSettingsPage()
+    document.body.appendChild(page.root)
+    vi.stubGlobal('fetch', makeFetchHandler({ providersGetError: true }))
+    page.open()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('loadFailed')('settings fetch failed: 503')))
+    const llmTitle = (page.root.querySelector('[data-default-card]') as HTMLElement).querySelector(
+      '.font-mono',
+    ) as HTMLElement
+    await vi.waitFor(() => expect(llmTitle.textContent).toBe(' / '))
+  })
+})
+
+describe('mutate round three', () => {
+  const openEdit = async (page: { root: HTMLElement }, idx = 0) => {
+    ;(page.root.querySelectorAll('[data-provider-card]')[idx] as HTMLElement).click()
+    await flushMicrotasks()
+  }
+
+  it('a keyless provider fetch-models probe sends an empty key', async () => {
+    modelsBodies.length = 0
+    const payload: SettingsPayload = {
+      providers: [{ name: 'p', url: 'https://p', keys: [], models: { m: {} } }],
+      default: { provider: 'p', model: 'm' },
+    }
+    const page = await openPage(
+      makeFetchHandler({ payload, models: { mode: 'fetched', models: [{ id: 'x' }] } }),
+      payload,
+    )
+    await openEdit(page, 0)
+    ;(page.root.querySelector('[data-fetch-models]') as HTMLElement).click()
+    await vi.waitFor(() => expect(modelsBodies.length).toBe(1))
+    expect(modelsBodies[0]).toEqual({ url: 'https://p', key: '', type: '' })
+  })
+
+  it('a save drops the cached task map too: changed tasks show after saving', async () => {
+    let asrOnly = true
+    const models = () =>
+      asrOnly
+        ? { mode: 'fetched', models: [{ id: 'stt-stream', task: 'asr' }] }
+        : { mode: 'fetched', models: [{ id: 'stt-stream', task: 'tts' }, { id: 'tts-voice', task: 'tts' }] }
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/settings/models') {
+        return { ok: true, status: 200, json: async () => models() }
+      }
+      const base = makeFetchHandler({ payload: AUDIO_PAYLOAD })
+      return (base as unknown as (u: string, i?: RequestInit) => Promise<unknown>)(url, init)
+    })
+    const page = await openPage(mock as unknown as ReturnType<typeof makeFetchHandler>, AUDIO_PAYLOAD)
+    const sttPanel = () => page.root.querySelector('[data-stt-panel]') as HTMLElement
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(1)
+      expect(sttPanel().querySelectorAll('[data-stt-model]').length).toBe(2)
+    })
+    // Collapse before editing so the post-save open is a fresh expansion.
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    // The daemon now retags every model as tts-only.
+    asrOnly = false
+    await openEdit(page, 2)
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('savedBackedUp')))
+    ;(page.root.querySelector('[data-stt-card]') as HTMLElement).firstElementChild!.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(mock.mock.calls.filter(([u]) => u === '/api/settings/models')).toHaveLength(2)
+      // Fresh knowledge: every model is tts-tagged — all gated off the STT card.
+      expect(sttPanel().children.length).toBe(0)
+    })
+  })
+})
+
+describe('mutate round four', () => {
+  it('remote port 1 is a valid port', async () => {
+    const set = vi.fn(() => true)
+    vi.stubGlobal('GBotNative', {
+      getRemoteTargets: () => '[]',
+      setRemoteTargets: set,
+    })
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD }))
+    const cardEl = page.root.querySelector('[data-remote-card]') as HTMLElement
+    ;(cardEl.querySelector('[data-remote-add]') as HTMLElement).click()
+    input(cardEl.querySelector('[data-remote-name]') as HTMLInputElement, 'edge')
+    input(cardEl.querySelector('[data-remote-host]') as HTMLInputElement, 'edge.box')
+    input(cardEl.querySelector('[data-remote-port]') as HTMLInputElement, '1')
+    ;(cardEl.querySelector('[data-remote-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(toastText(page)).toBe(t('remoteSaved')))
+    expect(JSON.parse(set.mock.calls[0][0])).toEqual([{ name: 'edge', host: 'edge.box', port: 1 }])
+  })
+
+  it('an applied report with a failed file starts with its rows expanded', async () => {
+    const report: ReloadReport = {
+      ...makeReloadReport('mutate'),
+      counts: { reloaded: 1, unchanged: 0, failed: 1 },
+    }
+    const page = await openPage(makeFetchHandler({ payload: PAYLOAD, reloadReport: report }))
+    ;(page.root.querySelector('[data-config-reload]') as HTMLElement).click()
+    await vi.waitFor(() =>
+      expect((page.root.querySelector('[data-config-banner]') as HTMLElement).textContent).toBe(
+        t('configBannerOk')(1, 0, 1),
+      ),
+    )
+    const rows = (page.root.querySelector('[data-config-report]') as HTMLElement).lastElementChild as HTMLElement
+    expect(rows.classList.contains('hidden')).toBe(false)
+  })
+})
+
+describe('mutate round five', () => {
+  it('a second build press without a release copies exactly once', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+      const execSpy = vi.fn(() => true)
+      document.execCommand = execSpy as unknown as typeof document.execCommand
+      const page = await openPage(
+        makeFetchHandler({
+          payload: PAYLOAD,
+          admin: { busy: false, items: [], upgradable: true, build: '3.3.3 · abcd' },
+        }),
+      )
+      const build = page.root.querySelector('[data-system-build]') as HTMLElement
+      await vi.waitFor(() => expect(build.textContent).toBe('3.3.3 · abcd'))
+      build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      build.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      vi.advanceTimersByTime(600)
+      expect(execSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      delete (document as unknown as Record<string, unknown>).execCommand
+    }
+  })
+
+  it('closing the device form does not scroll it into view', async () => {
+    const spy = Element.prototype.scrollIntoView as ReturnType<typeof vi.fn>
+    const page = await openPage(
+      makeFetchHandler({ payload: PAYLOAD, devices: [{ name: 'd', addr: 'a:1', pass: '' }] }),
+    )
+    const cardEl = page.root.querySelector('[data-rd-card]') as HTMLElement
+    ;(cardEl.querySelector('[data-rd-entry]') as HTMLElement).click()
+    expect(spy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    spy.mockClear()
+    ;(cardEl.querySelector('[data-rd-back]') as HTMLElement).click()
+    await flushMicrotasks()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('deleting one of several keys keeps the survivors editable', async () => {
+    let putBody: SettingsProvider[] | undefined
+    const payload: SettingsPayload = {
+      providers: [
+        { name: 'p', url: 'https://p', keys: ['k1', 'k2'], models: { m: {} } },
+      ],
+      default: { provider: 'p', model: 'm' },
+    }
+    const page = await openPage(makeFetchHandler({ payload, onPut: (b) => (putBody = b) }), payload)
+    ;(page.root.querySelectorAll('[data-provider-card]')[0] as HTMLElement).click()
+    await flushMicrotasks()
+    const keyRows = () =>
+      Array.from((page.root.querySelector('[data-add-key]') as HTMLElement).previousElementSibling!
+        .children) as HTMLElement[]
+    // Delete the SECOND key: the first row keeps its value.
+    ;(keyRows()[1].children[2] as HTMLElement).click()
+    expect(keyRows().length).toBe(1)
+    expect((keyRows()[0].children[0] as HTMLInputElement).value).toBe('k1')
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(putBody![0].keys).toEqual(['k1'])
+  })
+})
+
