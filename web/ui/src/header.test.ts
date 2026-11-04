@@ -786,6 +786,28 @@ describe('Header Compact button', () => {
     expect(toneAt(90)).not.toContain('text-amber-500')
   })
 
+  it('compact button class ends with the composed base+tone, no idle suffix', () => {
+    const toneAt = (pct: number) => {
+      document.body.innerHTML = ''
+      const h = createHeader({
+        onModelSelect: () => {},
+        onEngineSwitch: () => {},
+        onEngineNew: () => {},
+        onContextCompact: () => {},
+      })
+      document.body.appendChild(h.root)
+      h.setContext(500, 200000)
+      h.setContextBreakdown(sampleBreakdown(pct))
+      ;(h.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement).click()
+      return (getPanel()!.querySelector('[data-testid="compact-btn"]') as HTMLButtonElement).className
+    }
+    // textButtonRecipe prefixes its own classes; the header's contribution is
+    // a contiguous base+tone suffix with nothing appended in the idle state.
+    expect(toneAt(79.9).endsWith('text-[13px] shrink-0 rounded-md border px-2 py-px text-blue border-blue/60 hover:bg-blue/10')).toBe(true)
+    expect(toneAt(80).endsWith('text-[13px] shrink-0 rounded-md border px-2 py-px text-amber-500 border-amber-500/60 hover:bg-amber-500/10')).toBe(true)
+    expect(toneAt(90).endsWith('text-[13px] shrink-0 rounded-md border px-2 py-px text-red-500 border-red-500/60 hover:bg-red-500/10')).toBe(true)
+  })
+
   it('grey and disabled when streaming', () => {
     header = createHeader({
       onModelSelect: () => {},
@@ -917,6 +939,568 @@ describe('Header picker streaming state', () => {
         expect(item.className).not.toContain('pointer-events-none')
       }
     }
+  })
+})
+
+describe('Header model picker list', () => {
+  let header: ReturnType<typeof createHeader>
+  let selected: { provider: string; model: string } | null
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    selected = null
+    header = createHeader({
+      onModelSelect: (provider, model) => { selected = { provider, model } },
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function modelTrigger(): HTMLButtonElement {
+    const triggers = header.root.querySelectorAll('button.text-\\[15px\\]:not(.hidden)')
+    return triggers[triggers.length - 1] as HTMLButtonElement
+  }
+
+  function openPanel(): HTMLElement {
+    modelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (p.querySelector('textarea') && !p.classList.contains('hidden')) return p as HTMLElement
+    }
+    throw new Error('model picker panel not open')
+  }
+
+  function list(panel: HTMLElement): HTMLElement {
+    return panel.children[1] as HTMLElement
+  }
+
+  function rowTexts(panel: HTMLElement): string[] {
+    return Array.from(list(panel).children).map((c) => c.textContent ?? '')
+  }
+
+  function type(panel: HTMLElement, query: string): void {
+    const box = panel.querySelector('textarea') as HTMLTextAreaElement
+    box.value = query
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  function twoOpenAIModels(): void {
+    header.setModels([
+      { provider: 'openai', model: 'gpt-5' },
+      { provider: 'openai', model: 'o3' },
+    ], 'openai', 'gpt-5')
+  }
+
+  it('lists every model with one group header per provider, in order', () => {
+    header.setModels([
+      { provider: 'openai', model: 'gpt-5' },
+      { provider: 'openai', model: 'o3' },
+      { provider: 'anthropic', model: 'claude' },
+    ], 'openai', 'gpt-5')
+    const panel = openPanel()
+    const children = list(panel).children
+    expect(children.length).toBe(5)
+    expect(children[0].textContent).toBe('openai')
+    expect(children[0].className).toBe('px-3 pt-2 pb-1 mono text-[13px] text-t3 uppercase tracking-wider')
+    expect(children[3].textContent).toBe('anthropic')
+  })
+
+  it('narrows the list to models matching the query', () => {
+    twoOpenAIModels()
+    const panel = openPanel()
+    type(panel, 'gpt')
+    expect(rowTexts(panel)).toEqual(['openai', 'gpt-5'])
+  })
+
+  it('matches the query case-insensitively', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    const panel = openPanel()
+    type(panel, 'GPT')
+    expect(rowTexts(panel)).toEqual(['openai', 'gpt-5'])
+  })
+
+  it('joins provider and model with a slash for matching', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    const panel = openPanel()
+    // 'ai/g' spans the provider/model boundary; without the literal slash in
+    // the haystack this subsequence cannot match.
+    type(panel, 'ai/g')
+    expect(rowTexts(panel)).toEqual(['openai', 'gpt-5'])
+    type(panel, 'gpt-5/x')
+    expect(rowTexts(panel)).toEqual(['No models found'])
+  })
+
+  it('trims whitespace from the query before matching', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    const panel = openPanel()
+    type(panel, '  gpt-5  ')
+    expect(rowTexts(panel)).toEqual(['openai', 'gpt-5'])
+  })
+
+  it('shows the no-models row when the list is empty', () => {
+    const panel = openPanel()
+    const row = list(panel).children[0] as HTMLElement
+    expect(row.className).toBe('px-3 py-4 text-center text-[13px] text-t3')
+    expect(row.textContent).toBe('No models found')
+  })
+
+  it('marks the current model active and the others inactive', () => {
+    twoOpenAIModels()
+    const panel = openPanel()
+    const active = list(panel).children[1] as HTMLElement
+    const other = list(panel).children[2] as HTMLElement
+    expect(active.className).toBe('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50')
+    expect(active.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-blue')
+    expect(active.children[1].className).toBe('text-[13px] text-blue')
+    expect(active.children[1].textContent).toBe('gpt-5')
+    expect(other.className).toBe('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50')
+    expect(other.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-t3/30')
+    expect(other.children[1].className).toBe('text-[13px] text-t2')
+  })
+
+  it('the same model name under another provider is NOT active', () => {
+    // provider+model is the identity: azure/gpt-5 must not light up openai/gpt-5
+    header.setModels([
+      { provider: 'openai', model: 'gpt-5' },
+      { provider: 'azure', model: 'gpt-5' },
+    ], 'azure', 'gpt-5')
+    const panel = openPanel()
+    // two providers → two group headers: [hdr openai, item, hdr azure, item]
+    const openai = list(panel).children[1] as HTMLElement
+    const azure = list(panel).children[3] as HTMLElement
+    expect(openai.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-t3/30')
+    expect(openai.children[1].className).toBe('text-[13px] text-t2')
+    expect(azure.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-blue')
+    expect(azure.children[1].className).toBe('text-[13px] text-blue')
+  })
+
+  it('dims non-active model labels while streaming', () => {
+    twoOpenAIModels()
+    const panel = openPanel()
+    header.setStreaming(true)
+    const other = list(panel).children[2] as HTMLElement
+    expect(other.className).toBe('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors pointer-events-none')
+    expect(other.children[1].className).toBe('text-[13px] text-t3')
+  })
+
+  it('shows a freshly fetched quota on the open list without reopening', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    const panel = openPanel()
+    header.setQuota('openai', '42/50')
+    const item = list(panel).children[1] as HTMLElement
+    expect(item.children.length).toBe(3)
+    const q = item.children[2] as HTMLElement
+    expect(q.className).toBe('text-[10px] text-t3 ml-auto')
+    expect(q.textContent).toBe('42/50')
+  })
+
+  it('selecting a model updates the trigger label and closes the panel', () => {
+    twoOpenAIModels()
+    const panel = openPanel()
+    ;(list(panel).children[2] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(selected).toEqual({ provider: 'openai', model: 'o3' })
+    expect(modelTrigger().textContent).toBe('o3')
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('rebuilds the list from scratch between opens (no stale rows)', () => {
+    header.setModels([{ provider: 'openai', model: 'gpt-5' }], 'openai', 'gpt-5')
+    let panel = openPanel()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel.classList.contains('hidden')).toBe(true)
+    header.setModels([{ provider: 'anthropic', model: 'claude' }], 'anthropic', 'claude')
+    panel = openPanel()
+    const container = list(panel)
+    expect(container.firstChild).toBe(container.firstElementChild)
+    expect(container.children.length).toBe(2)
+    expect(container.children[0].textContent).toBe('anthropic')
+    expect(container.textContent).not.toContain('gpt-5')
+  })
+})
+
+describe('Header engine picker list', () => {
+  let header: ReturnType<typeof createHeader>
+  let switched: string | null
+  let newed: boolean
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    switched = null
+    newed = false
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: (id) => { switched = id },
+      onEngineNew: () => { newed = true },
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function engineTrigger(): HTMLButtonElement {
+    return header.root.querySelector('button.text-\\[15px\\]:not(.hidden)') as HTMLButtonElement
+  }
+
+  function openPanel(): HTMLElement {
+    engineTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panels = document.body.querySelectorAll('[data-testid="engine-picker-panel"]')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLElement
+    }
+    throw new Error('engine picker panel not open')
+  }
+
+  function list(panel: HTMLElement): HTMLElement {
+    return panel.children[0] as HTMLElement
+  }
+
+  function setTwo(): void {
+    header.setEngines(
+      [{ id: 'e1', name: 'Main', model: 'm1' }, { id: 'e2', name: 'Second', model: 'm2' }],
+      'e1',
+    )
+  }
+
+  it('renders each engine row with its dot, name, and model', () => {
+    setTwo()
+    const panel = openPanel()
+    const rows = list(panel).children
+    expect(rows.length).toBe(3) // two engines + the new-engine footer
+    const active = rows[0] as HTMLElement
+    expect(active.className).toBe('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50')
+    expect(active.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-blue')
+    expect(active.children[1].className).toBe('text-[13px] text-blue')
+    expect(active.children[1].textContent).toBe('Main')
+    expect(active.children[2].className).toBe('text-[13px] text-t3 ml-2')
+    expect(active.children[2].textContent).toBe('m1')
+    const other = rows[1] as HTMLElement
+    expect(other.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-t3/30')
+    expect(other.children[1].className).toBe('text-[13px] text-t2')
+  })
+
+  it('the trigger label names the ACTIVE engine, not the first listed', () => {
+    header.setEngines(
+      [{ id: 'e1', name: 'Main', model: 'm1' }, { id: 'e2', name: 'Second', model: 'm2' }],
+      'e2',
+    )
+    expect(engineTrigger().textContent).toBe('Second')
+  })
+
+  it('clicking the active engine just closes the panel without switching', () => {
+    setTwo()
+    const panel = openPanel()
+    ;(list(panel).children[0] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(switched).toBeNull()
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('clicking another engine switches to it and closes the panel', () => {
+    setTwo()
+    const panel = openPanel()
+    ;(list(panel).children[1] as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(switched).toBe('e2')
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('the footer starts a new engine and closes the panel', () => {
+    setTwo()
+    const panel = openPanel()
+    const footer = list(panel).children[2] as HTMLButtonElement
+    expect(footer.getAttribute('aria-label')).toBe('New engine')
+    expect(footer.className).toContain('w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1 hover:bg-ink3/50')
+    footer.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(newed).toBe(true)
+    expect(panel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('rebuilds the list between opens (no stale rows)', () => {
+    setTwo()
+    let panel = openPanel()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel.classList.contains('hidden')).toBe(true)
+    header.setEngines([{ id: 'e9', name: 'Ninth', model: 'm9' }], 'e9')
+    panel = openPanel()
+    const container = list(panel)
+    expect(container.firstChild).toBe(container.firstElementChild)
+    expect(container.children.length).toBe(2) // one engine + footer
+    expect(container.textContent).not.toContain('Main')
+  })
+})
+
+describe('Header context breakdown structure', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function openWith(bd: ContextBreakdownData | null): HTMLElement {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(bd)
+    const trigger = header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden') && !p.querySelector('textarea')) return p as HTMLElement
+    }
+    throw new Error('context panel not open')
+  }
+
+  // Detail rows sit directly under their section heading; the name span is
+  // the only child carrying the truncate recipe.
+  function findDetailRow(panel: HTMLElement, name: string): HTMLElement | null {
+    for (const child of Array.from(panel.children)) {
+      const first = (child as HTMLElement).children[0] as HTMLElement | undefined
+      if (first && first.className === 'text-[13px] text-t2 truncate' && first.textContent === name) {
+        return child as HTMLElement
+      }
+    }
+    return null
+  }
+
+  it('pins the sticky header block: title row, total line, meter wrap', () => {
+    const panel = openWith(sampleBreakdown())
+    expect(panel.firstChild).toBe(panel.firstElementChild)
+    const head = panel.children[0] as HTMLElement
+    expect(head.className).toBe('sticky top-0 z-10 card-bg')
+    expect(head.children.length).toBe(3)
+    const titleRow = head.children[0] as HTMLElement
+    expect(titleRow.className).toBe('flex items-center justify-between gap-3 px-4 pt-3')
+    expect(titleRow.children[0].className).toBe('text-[14px] font-semibold text-t1')
+    expect(titleRow.children[0].textContent).toBe('Context Usage')
+    const total = head.children[1] as HTMLElement
+    expect(total.className).toBe('mono text-[12px] text-t3 px-4 pt-0.5')
+    expect(total.textContent).toBe('48.8k / 195.3k (25.0%)')
+    const barWrap = head.children[2] as HTMLElement
+    expect(barWrap.className).toBe('px-4 pt-1.5 pb-2.5')
+    expect(barWrap.children[0].className).toBe('flex h-2 rounded-full overflow-hidden bg-ink3/50')
+  })
+
+  it('pins the category list rows: wrap, row, dot, name, tokens, percentage', () => {
+    const panel = openWith(sampleBreakdown())
+    const listWrap = panel.children[1] as HTMLElement
+    expect(listWrap.className).toBe('pb-1')
+    expect(listWrap.children.length).toBe(3)
+    const row = listWrap.children[0] as HTMLElement
+    expect(row.className).toBe('flex items-center gap-2 px-4 py-1')
+    expect(row.children.length).toBe(4)
+    expect(row.children[0].className).toBe('h-2 w-2 rounded-full shrink-0')
+    expect((row.children[0] as HTMLElement).style.backgroundColor).toBe('var(--color-blue)')
+    expect(row.children[1].className).toBe('text-[13px] text-t2 flex-1 truncate')
+    expect(row.children[1].textContent).toBe('System prompt')
+    expect(row.children[2].className).toBe('mono text-[12px] text-t3')
+    expect(row.children[2].textContent).toBe('4.9k')
+    expect(row.children[3].className).toBe('text-[11px] text-t3 w-10 text-right')
+    expect(row.children[3].textContent).toBe('2.5%')
+  })
+
+  it('zero-token categories get no bar segment but keep their list row', () => {
+    const panel = openWith(sampleBreakdown({
+      categories: [
+        { name: 'Messages', tokens: 30000, percentage: 15.0, color: '255', isFree: false, isReserved: false },
+        { name: 'Odd color', tokens: 0, percentage: 0.0, color: '999', isFree: false, isReserved: false },
+      ],
+    }))
+    const bar = (panel.children[0] as HTMLElement).children[2].children[0] as HTMLElement
+    expect(bar.querySelectorAll('[data-testid="context-segment"]').length).toBe(1)
+    const listWrap = panel.children[1] as HTMLElement
+    expect(listWrap.children.length).toBe(2)
+    // Unknown ANSI codes fall back to the muted text color, not nothing.
+    const odd = listWrap.children[1] as HTMLElement
+    expect((odd.children[0] as HTMLElement).style.backgroundColor).toBe('var(--color-t3)')
+  })
+
+  it('sections and detail rows: heading classes and name/value spans', () => {
+    const panel = openWith(sampleBreakdown({
+      systemPromptSections: [{ name: 'Core', tokens: 500 }],
+    }))
+    expect(panel.children.length).toBe(4) // head, category list, section, detail row
+    const sec = panel.children[2] as HTMLElement
+    expect(sec.className).toBe('pt-2 pb-1 px-4')
+    expect(sec.children.length).toBe(1)
+    expect(sec.children[0].className).toBe('mono text-[11px] text-t3 uppercase tracking-wider')
+    expect(sec.children[0].textContent).toBe('System prompt')
+    const row = panel.children[3] as HTMLElement
+    expect(row.className).toBe('flex items-center justify-between px-4 py-1')
+    expect(row.children.length).toBe(2)
+    expect(row.children[0].className).toBe('text-[13px] text-t2 truncate')
+    expect(row.children[0].textContent).toBe('Core')
+    expect(row.children[1].className).toBe('mono text-[12px] text-t3 ml-2 shrink-0')
+    expect(row.children[1].textContent).toBe('500')
+  })
+
+  it('empty detail sections render no heading at all', () => {
+    const panel = openWith(sampleBreakdown())
+    const text = panel.textContent ?? ''
+    expect(text).not.toContain('Memory files')
+    expect(text).not.toContain('System tools')
+    expect(text).not.toContain('MCP tools deferred')
+  })
+
+  it('system tools rows list name and tokens', () => {
+    const panel = openWith(sampleBreakdown({ systemTools: [{ name: 'grep', tokens: 200 }] }))
+    const row = findDetailRow(panel, 'grep')
+    expect(row).not.toBeNull()
+    expect(row!.children[1].textContent).toBe('200')
+  })
+
+  it('loaded MCP tool rows read "name (server)"', () => {
+    const panel = openWith(sampleBreakdown({
+      mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
+    }))
+    const row = findDetailRow(panel, 'search (ddg)')
+    expect(row).not.toBeNull()
+    expect(row!.children[1].textContent).toBe('300')
+  })
+
+  it('deferred MCP tool rows are name-only rows without tokens', () => {
+    const panel = openWith(sampleBreakdown({
+      mcpToolsDeferred: [{ name: 'fetch', serverName: 'ddg', tokens: 0, isLoaded: false }],
+    }))
+    const sec = panel.children[2] as HTMLElement
+    expect(sec.children[0].textContent).toBe('MCP tools deferred')
+    const row = panel.children[3] as HTMLElement
+    expect(row.className).toBe('flex items-center justify-between px-4 py-1')
+    expect(row.children.length).toBe(1)
+    const span = row.children[0] as HTMLElement
+    expect(span.className).toBe('text-[13px] text-t2 truncate')
+    expect(span.textContent).toBe('fetch (ddg)')
+  })
+
+  it('agent rows read "type (source)"', () => {
+    const panel = openWith(sampleBreakdown({
+      agents: [{ agentType: 'general', source: 'builtin', tokens: 400 }],
+    }))
+    const row = findDetailRow(panel, 'general (builtin)')
+    expect(row).not.toBeNull()
+    expect(row!.children[1].textContent).toBe('400')
+  })
+
+  it('skill rows read "name (source)"', () => {
+    const panel = openWith(sampleBreakdown({
+      skills: [{ name: 'pdf', source: 'builtin', tokens: 500 }],
+    }))
+    const row = findDetailRow(panel, 'pdf (builtin)')
+    expect(row).not.toBeNull()
+    expect(row!.children[1].textContent).toBe('500')
+  })
+
+  it('top-tool rows sum call and result tokens', () => {
+    const panel = openWith(sampleBreakdown({
+      messageBreakdown: {
+        toolCallTokens: 5000,
+        toolResultTokens: 10000,
+        attachmentTokens: 0,
+        assistantTextTokens: 2000,
+        userTextTokens: 1000,
+        toolCallsByType: [{ name: 'Bash', callTokens: 3000, resultTokens: 6000 }],
+        attachmentsByType: [],
+      },
+    }))
+    const row = findDetailRow(panel, 'Bash')
+    expect(row).not.toBeNull()
+    expect(row!.children[1].textContent).toBe('8.8k')
+  })
+
+  it('an empty tool-by-type list renders no Top tools section', () => {
+    const panel = openWith(sampleBreakdown({
+      messageBreakdown: {
+        toolCallTokens: 5000,
+        toolResultTokens: 10000,
+        attachmentTokens: 0,
+        assistantTextTokens: 2000,
+        userTextTokens: 1000,
+        toolCallsByType: [],
+        attachmentsByType: [],
+      },
+    }))
+    const text = panel.textContent ?? ''
+    expect(text).not.toContain('Top tools')
+    expect(text).toContain('Message breakdown')
+  })
+})
+
+describe('Header context popover lifecycle', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function trigger(): HTMLButtonElement {
+    return header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+  }
+
+  function clickTrigger(): void {
+    header.setContext(500, 200000)
+    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  function panel(): HTMLElement {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden') && !p.querySelector('textarea')) return p as HTMLElement
+    }
+    throw new Error('context panel not open')
+  }
+
+  it('the loading placeholder is a single centered line of copy', () => {
+    clickTrigger()
+    const p = panel()
+    expect(p.textContent).toBe('Loading...')
+    expect(p.children[0].className).toBe('px-4 py-6 text-center text-[13px] text-t3')
+  })
+
+  it('data arriving while the loading panel is open swaps in the breakdown', () => {
+    clickTrigger()
+    expect(panel().textContent).toBe('Loading...')
+    header.setContextBreakdown(sampleBreakdown())
+    expect(panel().textContent).toContain('Context Usage')
+  })
+
+  it('null arriving while the loading panel is open swaps in the empty hint', () => {
+    clickTrigger()
+    header.setContextBreakdown(null)
+    const p = panel()
+    expect(p.firstChild).toBe(p.firstElementChild)
+    expect(p.textContent).toBe('Send a message first to see context usage.')
+    expect(p.children[0].className).toBe('px-4 py-6 text-center text-[13px] text-t3')
+  })
+
+  it('opening after null data shows the empty hint directly (not loading)', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(null)
+    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const p = panel()
+    expect(p.textContent).toBe('Send a message first to see context usage.')
+    expect(p.children[0].className).toBe('px-4 py-6 text-center text-[13px] text-t3')
+  })
+
+  it('reopening after a data change rebuilds the panel from scratch', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown())
+    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const opened = panel()
+    expect(opened.textContent).toContain('System prompt')
+    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true })) // toggle closed
+    expect(opened.classList.contains('hidden')).toBe(true)
+    header.setContextBreakdown(null)
+    trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const p = panel()
+    expect(p).toBe(opened)
+    expect(p.firstChild).toBe(p.firstElementChild)
+    expect(p.textContent).toBe('Send a message first to see context usage.')
   })
 })
 
@@ -1137,6 +1721,71 @@ describe('Header target switch (multi-endpoint WUI)', () => {
     expect(row('target-entry', 'nas').textContent).toContain('nas')
   })
 
+  it('popup panel and rows carry their layout classes; the local row carries no target name', () => {
+    stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    clickWordmark(header)
+    const p = popup()!
+    expect(p.className).toContain('min-w-[220px]')
+    const local = row('target-local')
+    expect(local.className).toBe('w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors hover:bg-ink3/50')
+    expect(local.getAttribute('data-target-name')).toBeNull()
+    expect(local.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-t3/30')
+    expect(local.children[1].className).toBe('text-[13px] truncate text-t2')
+    const active = row('target-entry', '桌面')
+    expect(active.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-blue')
+    expect(active.children[1].className).toBe('text-[13px] truncate text-blue')
+    const nas = row('target-entry', 'nas')
+    expect(nas.children[0].className).toBe('h-2 w-2 rounded-full shrink-0 bg-t3/30')
+    expect(nas.children[1].className).toBe('text-[13px] truncate text-t2')
+    expect(nas.children[2].className).toBe('ml-2 text-[10px] text-t3 font-mono shrink-0 whitespace-nowrap')
+    expect(nas.children[2].textContent).toBe('nas.box.local:9000')
+  })
+
+  it('the popup rebuilds from scratch on every open (no stray text)', () => {
+    stubNative()
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    clickWordmark(header)
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    clickWordmark(header)
+    const p = popup()!
+    expect(p.firstChild).toBe(p.firstElementChild)
+    expect(p.querySelectorAll('[data-testid="target-local"]').length).toBe(1)
+  })
+
+  it('a non-array getRemoteTargets payload degrades to the local row only', () => {
+    // The Kotlin bridge promise is JSON; anything that is not an array of
+    // endpoints must collapse to local-only rather than crash the render.
+    const native = {
+      getRemoteTargets: vi.fn(() => '{"not":"an array"}'),
+      switchTo: vi.fn(),
+    }
+    vi.stubGlobal('GBotNative', native)
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'remote', current: '桌面', remotes: REMOTES })
+    clickWordmark(header)
+    const p = popup()!
+    expect(p.querySelectorAll('[data-testid="target-entry"]').length).toBe(0)
+    expect(p.querySelectorAll('[data-testid="target-local"]').length).toBe(1)
+  })
+
   it('setStatus still swaps the connected-state class after a target apply', () => {
     stubNative()
     const header = createHeader({
@@ -1151,5 +1800,6 @@ describe('Header target switch (multi-endpoint WUI)', () => {
     expect(markText(header).className).toContain('pulse')
     header.setStatus(false)
     expect(markText(header).className).not.toContain('pulse')
+    expect(markText(header).className).toContain('text-t3')
   })
 })
