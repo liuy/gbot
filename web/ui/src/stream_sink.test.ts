@@ -731,3 +731,673 @@ describe('feed sink — live write follow pin', () => {
     expect(feedEl.scrollTop).toBe(feedEl.scrollHeight)
   })
 })
+
+describe('feed sink — initial state and ticker ownership', () => {
+  it('a fresh sink is not pending and syncs without any prior hydrate', () => {
+    useHydrationTimers()
+    const src = [textBlock('a '), textBlock('b')]
+    const { sink, feedEl } = makeSink(src)
+
+    // hydrating means "a hydration is in flight" — before the first hydrate
+    // there is none, so live syncs must not be silently swallowed.
+    expect(sink.pending()).toBe(false)
+    sink.syncTail(null)
+    expect(feedEl.children.length).toBe(2)
+    expect(textOf(feedEl)).toContain('a')
+    expect(textOf(feedEl)).toContain('b')
+  })
+
+  it('two running tools share one ticker interval', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash'), toolBlock('t2', 'Read')]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+    // Every registration restart-checks: a second running tool must not leak
+    // a second live interval.
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('a state flip without patchTool freezes the duration label on its last tick', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash', { startedAt: Date.now() })]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const row = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    vi.advanceTimersByTime(400)
+    expect(textOf(row)).toContain(' 0.4s')
+
+    // The store flips state in place; the flush that would purge the registry
+    // has not run yet. The tick must skip the finished block, not keep
+    // ticking its label past the freeze.
+    ;(src[0] as ToolBlockT).state = 'done'
+    vi.advanceTimersByTime(1000)
+    expect(textOf(row)).toContain(' 0.4s')
+    expect(textOf(row)).not.toContain(' 1s')
+  })
+
+  it('an active flip without syncTail freezes the thinking label on its last tick', () => {
+    useHydrationTimers()
+    const src = [thinkingBlock('why', true, 0, Date.now())]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const wrap = feedEl.querySelector('[data-thinking]') as HTMLElement
+    vi.advanceTimersByTime(1200)
+    expect(textOf(wrap)).toContain('Thinking (1s)')
+
+    ;(src[0] as { active: boolean }).active = false
+    vi.advanceTimersByTime(1200)
+    expect(textOf(wrap)).toContain('Thinking (1s)')
+    expect(textOf(wrap)).not.toContain('Thinking (2s)')
+  })
+})
+
+describe('feed sink — registry purge completeness', () => {
+  it('parent tool_end recursively purges the nested running child (ticker stops)', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('parent', 'Agent', { children: [toolBlock('child', 'Bash')] }),
+    ]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+
+    const parent = src[0] as ToolBlockT
+    parent.state = 'done'
+    parent.timingNs = 1_000_000_000
+    parent.children = []
+    sink.patchTool('parent')
+
+    // A leaked child registration keeps the interval alive forever.
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a second child under the same parent joins the existing purge set', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('parent', 'Agent', { children: [toolBlock('c1', 'Bash')] }),
+    ]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+    ;(src[0] as ToolBlockT).children.push(toolBlock('c2', 'Bash'))
+    sink.syncTail('parent')
+
+    const parent = src[0] as ToolBlockT
+    parent.state = 'done'
+    parent.timingNs = 1_000_000_000
+    parent.children = []
+    sink.patchTool('parent')
+
+    // If the later registration REPLACED the child set instead of joining
+    // it, c1 leaks past the parent's purge.
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('three-level nesting purges the grandchild', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('gp', 'Agent', {
+        children: [
+          toolBlock('mid', 'Agent', { children: [toolBlock('leaf', 'Bash')] }),
+        ],
+      }),
+    ]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+
+    const gp = src[0] as ToolBlockT
+    gp.state = 'done'
+    gp.timingNs = 1_000_000_000
+    gp.children = []
+    sink.patchTool('gp')
+
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('purge clears a parent-scoped active thinking entry', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('parent', 'Agent', {
+        children: [thinkingBlock('inner', true, 0, Date.now())],
+      }),
+    ]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+
+    const parent = src[0] as ToolBlockT
+    parent.state = 'done'
+    parent.timingNs = 1_000_000_000
+    parent.children = []
+    sink.patchTool('parent')
+
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('re-hydrate clears a stale running-tool registry (ticker stops once quiet)', () => {
+    useHydrationTimers()
+    const ghost = toolBlock('ghost', 'Bash')
+    const { sink, setSrc } = makeSink([ghost])
+    sink.hydrate()
+    // The new snapshot drops the old tool wholesale; its registry entry must
+    // not survive the hydrate reset and keep the ticker alive after the new
+    // tool also finishes.
+    const live = toolBlock('live', 'Bash')
+    setSrc([live])
+    sink.hydrate()
+
+    live.state = 'done'
+    live.timingNs = 1_000_000_000
+    sink.patchTool('live')
+
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('re-hydrate clears a stale parent-scoped thinking registry', () => {
+    useHydrationTimers()
+    const first = toolBlock('p1', 'Agent', {
+      children: [thinkingBlock('ghost-think', true, 0, Date.now())],
+    })
+    const { sink, setSrc } = makeSink([first])
+    sink.hydrate()
+    // p2 carries no thinking; the stale p1-scoped entry is the only thing
+    // that could keep the ticker alive after p2 finishes.
+    const second = toolBlock('p2', 'Agent', { children: [textBlock('q')] })
+    setSrc([second])
+    sink.hydrate()
+
+    second.state = 'done'
+    second.timingNs = 1_000_000_000
+    second.children = []
+    sink.patchTool('p2')
+
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('reset drops the rendered registry: dropLeading after reset is a no-op', () => {
+    useHydrationTimers()
+    const src = [textBlock('a'), textBlock('b'), textBlock('c')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(3)
+
+    sink.reset()
+    // reset clears tracking but leaves DOM; with no registry the sequence
+    // guard has nothing to match, so the old head refs must not still drive
+    // DOM removal.
+    sink.dropLeading([src[0]])
+    expect(feedEl.children.length).toBe(3)
+  })
+})
+
+describe('feed sink — seam search self-heal', () => {
+  it('older blocks appearing below the tracked window force a re-render', () => {
+    useHydrationTimers()
+    const x = textBlock('x-old')
+    const y = textBlock('y-old')
+    const { sink, feedEl, setSrc } = makeSink([x, y])
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(2)
+
+    // History growing BELOW the tracked window (gap before the seam): the
+    // alignment window itself still matches, so only the gap check catches
+    // it — skipping the re-render leaves the older blocks unrendered.
+    setSrc([textBlock('a-new'), textBlock('b-new'), x, y])
+    sink.syncTail(null)
+
+    expect(feedEl.children.length).toBe(4)
+    expect(textOf(feedEl)).toContain('a-new')
+    expect(textOf(feedEl)).toContain('b-new')
+  })
+
+  it('a replaced head block inside the tracked window forces a re-render', () => {
+    useHydrationTimers()
+    const x = textBlock('x-old')
+    const y = textBlock('y-old')
+    const { sink, feedEl, setSrc } = makeSink([x, y])
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(2)
+
+    // Tracked tail (y) still present, tracked head (x) replaced: the walk
+    // finds the seam, no gap exists — only per-entry alignment detects it.
+    setSrc([textBlock('a-new'), y])
+    sink.syncTail(null)
+
+    expect(feedEl.children.length).toBe(2)
+    expect(textOf(feedEl)).toContain('a-new')
+    expect(textOf(feedEl)).not.toContain('x-old')
+  })
+
+  it('an emptied registry (all refs dropped) re-seeds on the next sync', () => {
+    useHydrationTimers()
+    const src = [textBlock('a'), textBlock('b')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const dropped = [src[0], src[1]]
+    src.splice(0, 2)
+    sink.dropLeading(dropped)
+    expect(feedEl.children.length).toBe(0)
+
+    // A registry that exists but is empty must take the re-seed path like a
+    // missing one; treating it as a live seam indexes before the array.
+    src.push(textBlock('c-only'))
+    sink.syncTail(null)
+    expect(feedEl.children.length).toBe(1)
+    expect(textOf(feedEl)).toContain('c-only')
+  })
+})
+
+describe('feed sink — seam patch edges', () => {
+  it('empty seam text stays a no-render block while a suffix appends', () => {
+    useHydrationTimers()
+    const src = [textBlock('alpha'), textBlock('')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(1)
+
+    src.push(toolBlock('t-9', 'Bash'))
+    sink.syncTail(null)
+    // The empty seam rendered nothing before and still renders nothing now —
+    // no placeholder div may materialize ahead of the tool card.
+    expect(feedEl.children.length).toBe(2)
+    expect(feedEl.children[1].hasAttribute('data-tool-root')).toBe(true)
+  })
+
+  it('a delta adding a fenced block re-wires copy buttons after the morph', () => {
+    useHydrationTimers()
+    const src = [textBlock('```\nabc\n```')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    expect(feedEl.querySelectorAll('.copy-btn')).toHaveLength(1)
+
+    ;(src[0] as { text: string }).text += '\n```\ndef\n```'
+    sink.syncTail(null)
+    // innerHTML morph preserves the OLD wrapper's injected button, but the
+    // NEW wrapper only gets its button from the post-morph wire pass.
+    expect(feedEl.querySelectorAll('.copy-btn')).toHaveLength(2)
+  })
+
+  it('a materialized seam div gets its copy button wired', () => {
+    useHydrationTimers()
+    const src = [textBlock('alpha '), textBlock('')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+
+    ;(src[1] as { text: string }).text = '```\ncode\n```'
+    sink.syncTail(null)
+    expect(feedEl.querySelectorAll('.copy-btn')).toHaveLength(1)
+  })
+
+  it('empty thinking finalize stamps no think-length marker', () => {
+    useHydrationTimers()
+    const src = [thinkingBlock('', true, 0, Date.now())]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const p = feedEl.querySelector('[data-thinking] p') as HTMLElement
+
+    const t = src[0] as { active: boolean; durationNs: number }
+    t.active = false
+    t.durationNs = 3_000_000_000
+    sink.syncTail(null)
+
+    expect(textOf(feedEl)).toContain('Thought for 3s')
+    // An empty finalize must stay write-free: a zero-length stamp on the
+    // paragraph is a hidden write the next same-length sync would skip on.
+    expect(p.dataset.thinkLen).toBeUndefined()
+  })
+
+  it('finishing the seam thinking deletes its own entry (ticker stops)', () => {
+    useHydrationTimers()
+    const src = [thinkingBlock('plan', true, 0, Date.now())]
+    const { sink } = makeSink(src)
+    sink.hydrate()
+
+    const t = src[0] as { active: boolean; durationNs: number }
+    t.active = false
+    t.durationNs = 2_000_000_000
+    sink.syncTail(null)
+
+    // A finished seam whose registry entry lingers keeps the interval alive.
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a suffix active thinking keeps ticking after the seam finished', () => {
+    useHydrationTimers()
+    const src = [thinkingBlock('one ', true, 0, Date.now())]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+
+    const t1 = src[0] as { active: boolean; durationNs: number }
+    t1.active = false
+    t1.durationNs = 1_000_000_000
+    src.push(thinkingBlock('two', true, 0, Date.now()))
+    sink.syncTail(null)
+
+    // The suffix registration replaced the key mid-sync; finishing the seam
+    // must not drop the NEW live entry — its label keeps ticking.
+    vi.advanceTimersByTime(1200)
+    const wraps = feedEl.querySelectorAll('[data-thinking]')
+    expect(wraps.length).toBe(2)
+    expect(textOf(wraps[1] as HTMLElement)).toContain('Thinking (1s)')
+  })
+})
+
+describe('feed sink — registry el bookkeeping', () => {
+  it('a rerendered empty-text block keeps a null el (later morph, not hijack)', () => {
+    useHydrationTimers()
+    const src = [textBlock('alpha '), textBlock('')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    sink.reset() // forces the next sync through the full re-seed path
+
+    sink.syncTail(null) // re-seed: alpha div, empty text renders nothing
+    ;(src[1] as { text: string }).text = 'late'
+    src.push(toolBlock('t-1', 'Bash'))
+    sink.syncTail(null) // suffix appends; seam materializes before the card
+
+    const divs = Array.from(feedEl.querySelectorAll(':scope > .md-body'))
+    expect(divs).toHaveLength(2)
+    expect(textOf(divs[0])).toContain('alpha')
+    expect(textOf(divs[1])).toContain('late')
+  })
+
+  it('a suffix block that renders nothing keeps a null el', () => {
+    useHydrationTimers()
+    const src = [textBlock('alpha ')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    src.push(textBlock(''))
+    sink.syncTail(null)
+    ;(src[1] as { text: string }).text = 'late'
+    sink.syncTail(null)
+
+    const divs = Array.from(feedEl.querySelectorAll(':scope > .md-body'))
+    expect(divs).toHaveLength(2)
+    expect(textOf(divs[0])).toContain('alpha')
+    expect(textOf(divs[1])).toContain('late')
+  })
+
+  it('the seam materializes before the FIRST appended suffix element', () => {
+    useHydrationTimers()
+    const src = [textBlock('')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(0)
+
+    ;(src[0] as { text: string }).text = 'late'
+    src.push(toolBlock('t-a', 'Bash'))
+    src.push(textBlock('')) // trailing suffix renders nothing
+    sink.syncTail(null)
+
+    // The materializing seam is older than every suffix element; a null el
+    // at the END of the suffix would drop it below the tool card.
+    const first = feedEl.children[0] as HTMLElement
+    expect(textOf(first)).toContain('late')
+    expect(feedEl.children.length).toBe(2)
+    expect(feedEl.children[1].hasAttribute('data-tool-root')).toBe(true)
+  })
+
+  it('firstAppended is not overwritten by later suffix elements', () => {
+    useHydrationTimers()
+    const src = [textBlock('')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+
+    ;(src[0] as { text: string }).text = 'late'
+    src.push(toolBlock('t-1', 'Bash'))
+    src.push(toolBlock('t-2', 'Bash'))
+    sink.syncTail(null)
+
+    const first = feedEl.children[0] as HTMLElement
+    expect(textOf(first)).toContain('late')
+    expect(feedEl.children[1].hasAttribute('data-tool-root')).toBe(true)
+    expect(feedEl.children[2].hasAttribute('data-tool-root')).toBe(true)
+  })
+})
+
+describe('feed sink — nested sync and running patch', () => {
+  it('a running parent re-opens a user-collapsed children box on nested sync', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('parent', 'Agent', { children: [textBlock('c1')] }),
+    ]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    const header = root.querySelector('[data-tool-header]') as HTMLElement
+    header.click() // expand (running bodies start folded)
+    header.click() // collapse again — the user's fold
+    const box = feedEl.querySelector('[data-tool-children]') as HTMLElement
+    expect(box.classList.contains('hidden')).toBe(true)
+
+    ;(src[0] as ToolBlockT).children.push(textBlock('c2'))
+    sink.syncTail('parent')
+
+    // While the parent streams, its children box is open — the sync-driven
+    // expand overrides the user's fold.
+    expect(box.classList.contains('hidden')).toBe(false)
+    expect(textOf(box)).toContain('c2')
+  })
+
+  it('a finished parent never re-opens a user-collapsed children box', () => {
+    useHydrationTimers()
+    const src = [
+      toolBlock('parent', 'Agent', { children: [textBlock('c1')] }),
+    ]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    const header = root.querySelector('[data-tool-header]') as HTMLElement
+    header.click() // expand
+    header.click() // the user's fold
+    const box = feedEl.querySelector('[data-tool-children]') as HTMLElement
+    expect(box.classList.contains('hidden')).toBe(true)
+
+    // State flipped in place (end landed, patchTool not flushed yet): the
+    // expand decision reads the live state, not the stale registration.
+    ;(src[0] as ToolBlockT).state = 'done'
+    ;(src[0] as ToolBlockT).children.push(textBlock('c2'))
+    sink.syncTail('parent')
+
+    expect(box.classList.contains('hidden')).toBe(true)
+    expect(textOf(box)).toContain('c2')
+  })
+
+  it('patchTool while hydration is pending defers the write', () => {
+    useHydrationTimers()
+    const src: Block[] = Array.from({ length: 39 }, (_, i) =>
+      textBlock(`blk-${i} ` + 'x'.repeat(40)),
+    )
+    src.push(toolBlock('t9', 'Bash'))
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    expect(sink.pending()).toBe(true)
+    const row = feedEl.querySelector('[data-tool-root]') as HTMLElement
+
+    // t9 sits in the tail window, so its handles exist while pending — the
+    // defer must come from the hydrating guard, not a missing registration.
+    ;(src[39] as ToolBlockT).summary = 'mid-sum'
+    sink.patchTool('t9')
+    expect(textOf(row)).not.toContain('mid-sum')
+  })
+
+  it('a running patch with empty output keeps the rendered body', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    const body = root.children[1] as HTMLElement
+
+    const b = src[0] as ToolBlockT
+    b.displayOutput = 'halfway'
+    sink.patchTool('t1')
+    expect(textOf(body)).toContain('halfway')
+
+    // An empty replace-window must not wipe the body the previous frame
+    // rendered.
+    b.displayOutput = ''
+    sink.patchTool('t1')
+    expect(textOf(body)).toContain('halfway')
+  })
+
+  it('a running patch never marks a non-collapsible tool collapsible', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+
+    ;(src[0] as ToolBlockT).summary = 'echo hi'
+    sink.patchTool('t1')
+
+    expect(root.dataset.collapsible).toBeUndefined()
+  })
+
+  it('a running patch with no children keeps the children box folded', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    const box = root.querySelector('[data-tool-children]') as HTMLElement
+
+    ;(src[0] as ToolBlockT).summary = 'x'
+    sink.patchTool('t1')
+
+    // No children to show: expanding the (always-mounted) box would surface
+    // an empty bordered container.
+    expect(box.classList.contains('hidden')).toBe(true)
+  })
+
+  it('an error tool finalizes red with FAIL', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+
+    const b = src[0] as ToolBlockT
+    b.state = 'error'
+    b.timingNs = 2_000_000_000
+    sink.patchTool('t1')
+
+    expect(root.querySelector('.text-red')).not.toBeNull()
+    expect(root.querySelector('.text-green')).toBeNull()
+    expect(textOf(root)).toContain('FAIL')
+  })
+
+  it('patchTool end path pins while following', () => {
+    useHydrationTimers()
+    const src = [toolBlock('t1', 'Bash')]
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    const root = feedEl.querySelector('[data-tool-root]') as HTMLElement
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    Object.defineProperty(feedEl, 'scrollHeight', {
+      configurable: true,
+      get: () => 1000 + (feedEl.textContent?.length ?? 0),
+    })
+    Object.defineProperty(feedEl, 'clientHeight', { configurable: true, get: () => 500 })
+
+    const b = src[0] as ToolBlockT
+    b.state = 'done'
+    b.displayOutput = 'final output body'
+    b.timingNs = 3_000_000_000
+    sink.patchTool('t1')
+
+    // The terminal output grows the feed past the viewport; the finish-time
+    // pin is the last chance to keep following the stream.
+    expect(feedEl.scrollTop).toBe(feedEl.scrollHeight)
+  })
+})
+
+describe('feed sink — dropLeading and backfill scroll', () => {
+  it('dropLeading is a no-op while hydration is pending, even for a matching head ref', () => {
+    useHydrationTimers()
+    const src = Array.from({ length: 40 }, (_, i) => textBlock(`blk-${i} ` + 'x'.repeat(40)))
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    vi.advanceTimersByTime(16) // one backfill chunk: registry head is now src[24]
+    expect(sink.pending()).toBe(true)
+    expect(feedEl.children.length).toBe(16)
+
+    // The guard exists for exactly this ref: a post-chunk head that DOES
+    // identity-match. Deferral must still win over the shift.
+    sink.dropLeading([src[24]])
+    expect(feedEl.children.length).toBe(16)
+  })
+
+  it('dropLeading pins while following', () => {
+    useHydrationTimers()
+    const src = [textBlock('a'), textBlock('b'), textBlock('c')]
+    const { sink, feedEl } = makeSink(src, true)
+    stubScroll(feedEl)
+    sink.hydrate()
+
+    const dropped = [src[0]]
+    src.splice(0, 1)
+    sink.dropLeading(dropped)
+    expect(feedEl.children.length).toBe(2)
+    // Removing head content moves the bottom up; following re-pins to it.
+    expect(feedEl.scrollTop).toBe(1100)
+  })
+
+  it('backfill restore with follow off compensates, not bottom-pins', () => {
+    useHydrationTimers()
+    const src = Array.from({ length: 40 }, (_, i) => textBlock(`blk-${i} ` + 'x'.repeat(40)))
+    const { sink, feedEl } = makeSink(src, false)
+    stubScroll(feedEl)
+    sink.hydrate()
+
+    vi.advanceTimersByTime(16)
+    // Reading up while history backfills: content lands ABOVE the viewport
+    // and only the height delta is compensated (stub: tail 8 = 1400px, one
+    // chunk of 8 grows it to 1800 → top moves by exactly 400).
+    expect(feedEl.scrollTop).toBe(400)
+    expect(feedEl.scrollTop).not.toBe(feedEl.scrollHeight)
+  })
+})
+
+describe('feed sink — hydrate reset and snapshot isolation', () => {
+  it('hydrate resets registries: dropLeading after re-hydrate works on the new registry', () => {
+    useHydrationTimers()
+    const { sink, feedEl, setSrc } = makeSink([textBlock('a-old'), textBlock('b-old')])
+    sink.hydrate()
+
+    const cRef = textBlock('c-new')
+    const dRef = textBlock('d-new')
+    setSrc([cRef, dRef])
+    sink.hydrate()
+    expect(feedEl.children.length).toBe(2)
+
+    sink.dropLeading([cRef])
+    expect(feedEl.children.length).toBe(1)
+    expect(textOf(feedEl)).toContain('d-new')
+    expect(textOf(feedEl)).not.toContain('a-old')
+  })
+
+  it('hydrate snapshots the array: an in-place head drop mid-flight renders the captured list', () => {
+    useHydrationTimers()
+    const src = Array.from({ length: 40 }, (_, i) => textBlock(`blk-${i} ` + 'x'.repeat(40)))
+    const { sink, feedEl } = makeSink(src)
+    sink.hydrate()
+    vi.advanceTimersByTime(16 * 2) // two chunks in, next=16
+
+    // The store's cap can also splice the SAME array in place; backfill
+    // indexes into the captured snapshot, so indexes must not shift.
+    src.splice(0, 5)
+    vi.advanceTimersByTime(16 * 20)
+    expect(sink.pending()).toBe(false)
+    expect(feedEl.children.length).toBe(40)
+    const text = textOf(feedEl)
+    for (let i = 0; i < 40; i++) {
+      expect(text.split(`blk-${i} `).length - 1).toBe(1)
+    }
+  })
+})
