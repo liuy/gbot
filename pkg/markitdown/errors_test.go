@@ -135,3 +135,11 @@ func TestIsUnsupportedFormatNil(t *testing.T) {
 		t.Errorf("IsUnsupportedFormat(nil) = true, want false")
 	}
 }
+
+func TestConversionErrorUnwrapSingleAttempt(t *testing.T) {
+	cause := errors.New("boom")
+	err := &ConversionError{Attempts: []FailedConversionAttempt{{Converter: "x", Err: cause}}}
+	if !errors.Is(err.Unwrap(), cause) {
+		t.Errorf("Unwrap() = %v, want the single attempt's error", err.Unwrap())
+	}
+}

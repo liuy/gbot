@@ -36,6 +36,17 @@ func (c *XlsConverter) Accepts(info StreamInfo) bool {
 	return strings.HasPrefix(mime, "application/vnd.ms-excel")
 }
 
+// safeRow wraps WorkSheet.Row because the extrame/xls rows map is private and
+// Row nil-derefs on a missing entry instead of returning nil, so an absent
+// row can only be detected by recovering the library's own panic. The
+// recovered call returns the zero value (nil row).
+func safeRow(sheet *xls.WorkSheet, i int) *xls.Row {
+	defer func() {
+		_ = recover()
+	}()
+	return sheet.Row(i)
+}
+
 func (c *XlsConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*DocumentConverterResult, error) {
 	// extrame/xls requires a file path, so we need to write to a temp file
 	tmpFile, err := os.CreateTemp("", "markitdown-*.xls")
@@ -73,7 +84,7 @@ func (c *XlsConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Document
 		var rows [][]string
 		maxRow := int(sheet.MaxRow)
 		for rowIdx := 0; rowIdx <= maxRow; rowIdx++ {
-			row := sheet.Row(rowIdx)
+			row := safeRow(sheet, rowIdx)
 			if row == nil {
 				continue
 			}

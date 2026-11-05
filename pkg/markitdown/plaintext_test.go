@@ -132,6 +132,7 @@ func TestHasHighBytes(t *testing.T) {
 	}{
 		{"ascii_only", []byte("hello world"), false},
 		{"empty", []byte{}, false},
+		{"del_0x7F_is_not_high", []byte("a\x7fb"), false},
 		{"high_bytes", []byte{0x80, 0x41}, true},
 		{"utf8_multibyte", []byte{0xC3, 0xA9}, true}, // é
 		{"mixed", []byte("hello\x80world"), true},

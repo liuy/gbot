@@ -279,7 +279,7 @@ func processElement(elm *OMMLElement) string {
 // doAcc handles accent elements.
 func doAcc(elm *OMMLElement) string {
 	cDict := make(map[string]string)
-	var accPr *prResult
+	accPr := &prResult{}
 	for i := range elm.Children {
 		child := &elm.Children[i]
 		tag := child.localName()
@@ -297,7 +297,7 @@ func doAcc(elm *OMMLElement) string {
 // doBar handles bar elements.
 func doBar(elm *OMMLElement) string {
 	cDict := make(map[string]string)
-	var barPr *prResult
+	barPr := &prResult{}
 	for i := range elm.Children {
 		child := &elm.Children[i]
 		tag := child.localName()
@@ -315,7 +315,7 @@ func doBar(elm *OMMLElement) string {
 // doD handles delimiter elements.
 func doD(elm *OMMLElement) string {
 	cDict := make(map[string]string)
-	var dPr *prResult
+	dPr := &prResult{}
 	for i := range elm.Children {
 		child := &elm.Children[i]
 		tag := child.localName()
@@ -361,7 +361,7 @@ func doSup(elm *OMMLElement) string {
 // doF handles fraction elements.
 func doF(elm *OMMLElement) string {
 	cDict := make(map[string]string)
-	var fPr *prResult
+	fPr := &prResult{}
 	for i := range elm.Children {
 		child := &elm.Children[i]
 		tag := child.localName()
@@ -410,7 +410,7 @@ func doFName(elm *OMMLElement) string {
 // doGroupChr handles group-character elements.
 func doGroupChr(elm *OMMLElement) string {
 	cDict := make(map[string]string)
-	var groupPr *prResult
+	groupPr := &prResult{}
 	for i := range elm.Children {
 		child := &elm.Children[i]
 		tag := child.localName()
