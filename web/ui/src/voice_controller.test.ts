@@ -4,10 +4,31 @@ import {
   createVoiceController,
   type VoiceState,
   type VoiceMicLike,
+  type VoiceMicOpts,
 } from './voice_controller'
 import { createEventBlockStore } from './components/event_blocks'
 import type { TTSQueue, TTSQueueOpts } from './voice_tts'
 import type { Playback } from './voice_playback'
+
+// The default mic leg: recorded so the SttSession construction path (no
+// deps.createMic) is observable without a live WebSocket.
+const sttInstances = vi.hoisted(() => [] as Array<{ opts: VoiceMicOpts }>)
+vi.mock('./stt', () => ({
+  SttSession: class {
+    opts: VoiceMicOpts
+    constructor(o: VoiceMicOpts) {
+      this.opts = o
+      sttInstances.push(this as { opts: VoiceMicOpts })
+    }
+    start() {
+      return Promise.resolve()
+    }
+    stop() {
+      return Promise.resolve()
+    }
+    teardown() {}
+  },
+}))
 
 // ── fakes ────────────────────────────────────────────────────────────────
 
@@ -226,6 +247,13 @@ describe('reduceVoiceState', () => {
     expect(reduceVoiceState('speak', { kind: 'drained' })).toBe('idle')
     expect(reduceVoiceState('wait', { kind: 'drained' })).toBe('wait')
   })
+
+  it('bare text deltas reach speak without text_start; unknown events keep the state', () => {
+    expect(reduceVoiceState('wait', engine('text_delta'))).toBe('speak')
+    expect(reduceVoiceState('wait', engine('text_end'))).toBe('speak')
+    expect(reduceVoiceState('speak', engine('mystery_event'))).toBe('speak')
+    expect(reduceVoiceState('listen', engine('mystery_event'))).toBe('listen')
+  })
 })
 
 // ── controller ───────────────────────────────────────────────────────────
@@ -294,6 +322,20 @@ describe('VoiceController', () => {
     controller.hold(false)
     mic().emitFinal('二。')
     expect(utterances).toEqual(['一。', '二。'])
+  })
+
+  // The dead session's release must die at the recording gate: teardown is
+  // the ONLY reset (open() does not re-init it), so without it a stray
+  // release stops the fresh, never-started mic.
+  it('a stray release after teardown+reopen never stops the fresh mic', () => {
+    const { controller, mic } = setup()
+    controller.open({ autoListen: false })
+    controller.hold(true) // recording is live when teardown hits
+    controller.teardown()
+    controller.open({ autoListen: false })
+    controller.hold(false) // stray release belonging to the dead session
+    expect(mic().startCalls).toBe(0) // fresh mic: nothing ever started…
+    expect(mic().stopCalls).toBe(0) // …so a release must not stop it
   })
 
   // ⑤: one wave renderer, two signal sources — listen reads the mic
@@ -783,5 +825,336 @@ describe('VoiceController', () => {
     queue!.settle() // the failed item settles; nothing ever played
     expect(onTTSError).toHaveBeenCalledWith('tts: engine down')
     expect(controller.state()).toBe('idle')
+  })
+
+  it('onState fires only on actual state changes', () => {
+    const { controller, conn, states } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start')) // idle → idle: no callback
+    expect(states).toEqual([])
+    conn.emit(ev('text_start')) // → speak
+    controller.hold(true) // speak rejects the hold
+    expect(states).toEqual(['speak'])
+    controller.teardown()
+    expect(states).toEqual(['speak', 'idle'])
+  })
+
+  it('query_start keeps wait and stores nothing (no fall-through into thinking)', () => {
+    const { controller, conn, blockStore, states } = setup()
+    controller.open({ autoListen: false })
+    controller.hold(true)
+    controller.hold(false)
+    conn.emit(ev('query_start'))
+    expect(controller.state()).toBe('wait')
+    expect(blockStore.blocks()).toEqual([])
+    expect(states).toEqual(['listen', 'wait'])
+    controller.teardown()
+  })
+
+  it('query_start resets a stale run buffer from the previous turn', () => {
+    const { controller, conn, ttsQueue } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('text_delta', '上一轮残留')) // no boundary: stays buffered
+    conn.emit(ev('query_start'))
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta', '新的一轮。'))
+    conn.emit(ev('text_end'))
+    expect(ttsQueue().texts).toEqual(['新的一轮。'])
+    controller.teardown()
+  })
+
+  it('a queue settle before query_end does not idle the round', () => {
+    const { controller, conn, ttsQueue } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta', SENTENCE))
+    conn.emit(ev('text_end'))
+    ttsQueue().settle() // the fetch finished before the engine finished the turn
+    expect(controller.state()).toBe('speak')
+    conn.emit(ev('query_end'))
+    expect(controller.state()).toBe('idle')
+    controller.teardown()
+  })
+
+  it('thinking_delta keeps the think state; a textless delta is not applied', () => {
+    const { controller, conn, blockStore } = setup()
+    const applySpy = vi.spyOn(blockStore, 'apply')
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit(ev('thinking_start'))
+    applySpy.mockClear()
+    conn.emit({ type: 'event', event: { type: 'thinking_delta', thinking: { text: '先想' } } })
+    expect(controller.state()).toBe('think')
+    expect(blockStore.blocks()[0]).toMatchObject({ kind: 'thinking', text: '先想', active: true })
+    const applied = applySpy.mock.calls.length
+    conn.emit({ type: 'event', event: { type: 'thinking_delta' } }) // no thinking field
+    expect(applySpy.mock.calls.length).toBe(applied)
+    applySpy.mockRestore()
+    controller.teardown()
+  })
+
+  it('a text_delta without a text field buffers nothing', () => {
+    const { controller, conn, ttsQueue } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta'))
+    conn.emit(ev('text_end'))
+    expect(ttsQueue().texts).toEqual([])
+    controller.teardown()
+  })
+
+  it('text boundary events never feed the block store', () => {
+    const { controller, conn, blockStore } = setup()
+    const applySpy = vi.spyOn(blockStore, 'apply')
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta', SENTENCE))
+    conn.emit(ev('text_end'))
+    const textEvents = applySpy.mock.calls
+      .flat()
+      .filter((e) => String((e as { type?: string })?.type).startsWith('text_'))
+    expect(textEvents).toEqual([])
+    applySpy.mockRestore()
+    controller.teardown()
+  })
+
+  it('tool_output_delta keeps the tool state (no fall-through into tool_end)', () => {
+    const { controller, conn } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit({ type: 'event', event: { type: 'tool_start', tool_use: { name: 'bash' } } })
+    expect(controller.state()).toBe('tool')
+    conn.emit({
+      type: 'event',
+      event: { type: 'tool_output_delta', tool_result: { tool_use_id: 't1', display_output: '…' } },
+    })
+    expect(controller.state()).toBe('tool')
+    controller.teardown()
+  })
+
+  it('a text round with no audio idles at query_end via the drain gate', () => {
+    const { controller, conn, ttsQueue } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('query_start'))
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta', ' \n\n '))
+    conn.emit(ev('text_end')) // empty projection: nothing enqueued
+    conn.emit(ev('query_end'))
+    expect(ttsQueue().texts).toEqual([])
+    expect(controller.state()).toBe('idle')
+    controller.teardown()
+  })
+
+  it('sub-agent events (event.agent) never reach the voice pipeline', () => {
+    const { controller, conn, ttsQueue, states } = setup()
+    controller.open({ autoListen: false })
+    conn.emit({ type: 'event', event: { type: 'text_delta', text: '子代理输出', agent: { id: 'sub' } } })
+    conn.emit({ type: 'event', event: { type: 'text_end', agent: { id: 'sub' } } })
+    expect(controller.state()).toBe('idle')
+    expect(ttsQueue().texts).toEqual([])
+    expect(states).toEqual([])
+    controller.teardown()
+  })
+
+  it('connect_status: only a disconnect or a foreign session tears the face down', () => {
+    const onTeardown = vi.fn()
+    const c = makeConn()
+    let queue: FakeTTSQueue | null = null
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createTTSQueue: (opts) => (queue = new FakeTTSQueue(opts)),
+      createMic: (opts) => new FakeMic(opts.onDone),
+      createPlayback: () => fakePlayback().pb,
+      getPromptTexts: () => [],
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      currentSessionID: () => 'sess-a',
+      onTeardown,
+    })
+    controller.open({ autoListen: false })
+    c.emit({ type: 'connect_status', connected: true, sessionID: 'sess-a' }) // same session
+    expect(onTeardown).not.toHaveBeenCalled()
+    c.emit({ type: 'connect_status', connected: true }) // no session named
+    expect(onTeardown).not.toHaveBeenCalled()
+    c.emit({ type: 'connect_status', connected: false }) // connection died
+    expect(onTeardown).toHaveBeenCalledTimes(1)
+    expect(queue!.aborts).toBe(1)
+    expect(c.listenerCount()).toBe(0)
+  })
+
+  it('a session id arriving while the page opened sessionless does not tear it down', () => {
+    const onTeardown = vi.fn()
+    const c = makeConn()
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createTTSQueue: (opts) => new FakeTTSQueue(opts),
+      createMic: (opts) => new FakeMic(opts.onDone),
+      createPlayback: () => fakePlayback().pb,
+      getPromptTexts: () => [],
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      currentSessionID: () => undefined, // session not yet resolved at open
+      onTeardown,
+    })
+    controller.open({ autoListen: false })
+    c.emit({ type: 'connect_status', connected: true, sessionID: 's1' })
+    expect(onTeardown).not.toHaveBeenCalled()
+    controller.teardown()
+  })
+
+  it('a late mic final after teardown routes nowhere', () => {
+    const { controller, mic, utterances } = setup()
+    controller.open({ autoListen: false })
+    controller.hold(true)
+    controller.hold(false)
+    controller.teardown()
+    mic().emitFinal('迟到的识别。')
+    expect(utterances).toEqual([])
+  })
+
+  it('the custom mic receives the onPartial wiring and the prompt-text fallback', () => {
+    const c = makeConn()
+    let captured: VoiceMicOpts | null = null
+    const onPartial = vi.fn()
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createMic: (opts) => {
+        captured = opts
+        return new FakeMic(opts.onDone)
+      },
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      onPartial,
+    })
+    controller.open({ autoListen: false })
+    captured!.onPartial!('部分')
+    expect(onPartial).toHaveBeenCalledWith('部分')
+    expect(captured!.getPromptTexts()).toEqual([])
+    controller.teardown()
+  })
+
+  it('without createMic the SttSession mic gets the prompt-text fallback', () => {
+    sttInstances.length = 0
+    const c = makeConn()
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+    })
+    controller.open({ autoListen: false })
+    expect(sttInstances).toHaveLength(1)
+    expect(sttInstances[0].opts.getPromptTexts()).toEqual([])
+    controller.teardown()
+  })
+
+  it('open is idempotent: one prime, one subscription', () => {
+    const { controller, conn, pb, mic } = setup()
+    controller.open({ autoListen: false })
+    controller.open({ autoListen: false })
+    expect(pb.ensured).toBe(1)
+    expect(conn.listenerCount()).toBe(1)
+    expect(mic().startCalls).toBe(0)
+    controller.teardown()
+  })
+
+  it('a round whose query predates the open (late mount) still settles idle', () => {
+    const { controller, conn, ttsQueue } = setup()
+    controller.open({ autoListen: false })
+    conn.emit(ev('text_start'))
+    conn.emit(ev('text_delta', SENTENCE))
+    conn.emit(ev('text_end'))
+    expect(ttsQueue().texts).toEqual([SENTENCE])
+    ttsQueue().settle()
+    expect(controller.state()).toBe('idle')
+    controller.teardown()
+  })
+
+  it('a deferred prime failure settles an already-draining round without a drain', async () => {
+    const c = makeConn()
+    let queue: FakeTTSQueue | null = null
+    const onTTSError = vi.fn()
+    let rejectPrime!: (e: Error) => void
+    const pb = { ...fakePlayback().pb, ensureAudio: () => new Promise<void>((_, rej) => (rejectPrime = rej)) }
+    const controller = createVoiceController({
+      conn: c.conn as never,
+      createTTSQueue: (opts) => (queue = new FakeTTSQueue(opts)),
+      createMic: (opts) => new FakeMic(opts.onDone),
+      createPlayback: () => pb,
+      getPromptTexts: () => [],
+      blockStore: createEventBlockStore(),
+      sendUtterance: () => {},
+      onTTSError,
+    })
+    controller.open({ autoListen: false }) // prime pending
+    c.emit(ev('query_start'))
+    c.emit(ev('text_start'))
+    c.emit(ev('text_delta', SENTENCE))
+    c.emit(ev('text_end'))
+    queue!.emitPCM(new Uint8Array([1]))
+    queue!.settle()
+    c.emit(ev('query_end'))
+    expect(controller.state()).toBe('speak') // drained can never fire: the prime owns the audio
+    rejectPrime(new Error('worklet blocked'))
+    await vi.runAllTimersAsync()
+    expect(onTTSError).toHaveBeenCalledWith('tts: audio unavailable')
+    expect(controller.state()).toBe('idle')
+    controller.teardown()
+  })
+
+  it('open({autoListen:true}) starts the first round', async () => {
+    const { controller, mic } = setup()
+    controller.open({ autoListen: true })
+    expect(controller.state()).toBe('listen')
+    expect(mic().startCalls).toBe(1)
+    await vi.runAllTimersAsync()
+    controller.teardown()
+  })
+
+  it('hold after teardown is refused', async () => {
+    const { controller, mic } = setup()
+    controller.open({ autoListen: false })
+    controller.teardown()
+    controller.hold(true)
+    await vi.runAllTimersAsync()
+    expect(controller.state()).toBe('idle')
+    expect(mic().startCalls).toBe(0)
+  })
+
+  it('release without a hold is a no-op; a second release stops the mic once', async () => {
+    const { controller, mic } = setup()
+    controller.open({ autoListen: false })
+    controller.hold(false) // never held
+    expect(mic().stopCalls).toBe(0)
+    expect(controller.state()).toBe('idle')
+    controller.hold(true)
+    controller.hold(false)
+    controller.hold(false) // already released
+    await vi.runAllTimersAsync()
+    expect(mic().stopCalls).toBe(1)
+    controller.teardown()
+  })
+
+  it('a second teardown is a no-op (one idle notification)', () => {
+    const { controller, states } = setup()
+    controller.open({ autoListen: false })
+    controller.teardown()
+    controller.teardown()
+    expect(states).toEqual(['idle'])
+  })
+
+  it('teardown releases the settling-release flag — the next session can hold again', async () => {
+    const { controller, mic } = setup()
+    controller.open({ autoListen: false })
+    controller.hold(true)
+    controller.hold(false)
+    await vi.runAllTimersAsync() // release settles
+    controller.teardown()
+    controller.open({ autoListen: false })
+    controller.hold(true)
+    expect(mic().startCalls).toBe(1)
+    controller.teardown()
   })
 })

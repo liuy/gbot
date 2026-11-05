@@ -160,12 +160,25 @@ class WorkletHost {
     const registerProcessor = (_name: string, cls: new () => WorkletProc) => {
       Ctor = cls
     }
+    // Under Stryker instrumentation, JitterBufferCore's class body (embedded
+    // into the worklet src via toString()) calls the module-scoped helpers
+    // stryMutAct_*/stryCov_* which do not exist inside new Function's scope.
+    // Inject them as parameters — no active mutant and no-op coverage — so
+    // the embedded copy always runs original code; JitterBufferCore mutants
+    // are judged by the direct JitterBufferCore suites below.
+    const strykerHelpers = [...new Set(src.match(/\bstry(?:MutAct|Cov)_\w+/g) ?? [])]
     new Function(
       'AudioWorkletProcessor',
       'sampleRate',
       'registerProcessor',
+      ...strykerHelpers,
       `"use strict";\n${src}`,
-    )(BaseProcessor, sampleRate, registerProcessor)
+    )(
+      BaseProcessor,
+      sampleRate,
+      registerProcessor,
+      ...strykerHelpers.map((h) => (h.includes('MutAct') ? () => false : () => {})),
+    )
     if (!Ctor) throw new Error('worklet source registered no processor')
     this.proc = new Ctor()
   }
@@ -486,6 +499,66 @@ describe('JitterBufferCore', () => {
     expect(got).toEqual([]) // the final ramp is the EOS tail, not an underrun
     expect(core.tick(new Float32Array(128))).toBe(false)
   })
+
+  it('a write landing mid-ramp-out re-arms the floor when the underrun finishes', () => {
+    const core = new JitterBufferCore(24000, () => {})
+    core.write(new Float32Array(12000).fill(0.3)) // the floor exactly
+    run(core, 12048) // mid ramp-out: real frames consumed, ramp 48/96 deep
+    // write() cannot arm while the ramp owns the core — only _finishRampOut
+    // may arm the queued data for the next burst.
+    core.write(new Float32Array(12000).fill(0.3))
+    const out = run(core, 600)
+    // ramp ends at frame 12095; re-armed floor is already met → resume at 12096
+    expect(out[400]).toBeCloseTo(0.3, 6)
+    expect(out[599]).toBeCloseTo(0.3, 6)
+  })
+
+  it('trim drops whole head buffers once the head alone cannot cover the excess', () => {
+    const emitted: Array<[string, number?]> = []
+    const core = new JitterBufferCore(1000, (ev, dropped) => emitted.push([ev, dropped]))
+    core.write(new Float32Array(100).fill(0.1))
+    core.write(new Float32Array(901000).fill(0.2))
+    expect(core._queuedSamples()).toBe(900000)
+    expect(emitted).toEqual([['trim', 1100]])
+  })
+
+  it('trim clamps a partial drop to the head buffer’s unread samples', () => {
+    const emitted: Array<[string, number?]> = []
+    const core = new JitterBufferCore(1000, (ev, dropped) => emitted.push([ev, dropped]))
+    core.write(new Float32Array(5000).fill(0.1))
+    core.write(new Float32Array(896000).fill(0.2))
+    expect(core._queuedSamples()).toBe(900000)
+    expect(emitted).toEqual([['trim', 1000]])
+  })
+
+  it('trim resumes inside a partially consumed head on later writes', () => {
+    const emitted: Array<[string, number?]> = []
+    const core = new JitterBufferCore(1000, (ev, dropped) => emitted.push([ev, dropped]))
+    core.write(new Float32Array(60).fill(0.1))
+    core.write(new Float32Array(30).fill(0.2))
+    core.write(new Float32Array(899950).fill(0.3))
+    expect(core._queuedSamples()).toBe(900000)
+    expect(emitted).toEqual([['trim', 40]])
+    core.write(new Float32Array(260).fill(0.4))
+    expect(core._queuedSamples()).toBe(900000)
+    expect(emitted).toEqual([['trim', 40], ['trim', 260]])
+  })
+
+  it('a trimmed queue plays out its exact remaining samples — no phantom reads', () => {
+    const core = new JitterBufferCore(1000, () => {})
+    core.write(new Float32Array(60).fill(0.1))
+    core.write(new Float32Array(30).fill(0.2))
+    core.write(new Float32Array(899950).fill(0.3)) // trims 40: A keeps 20, then B, then C
+    core.end()
+    const out = run(core, 900400)
+    for (let i = 0; i < out.length; i++) {
+      if (!Number.isFinite(out[i])) throw new Error(`non-finite sample at ${i}`)
+    }
+    // Fade-in done by frame 96; the tail still carries C's amplitude.
+    expect(out[100]).toBeCloseTo(0.3, 6)
+    expect(out[5000]).toBeCloseTo(0.3, 6)
+    expect(out[899900]).toBeCloseTo(0.3, 6)
+  })
 })
 
 describe('createPlayback', () => {
@@ -658,6 +731,27 @@ describe('createPlayback', () => {
     expect(posted[0].buffer!.length).toBe((48000 - 100) / 2)
   })
 
+  // Uneven blocks make the trim loop drop MORE than one whole head in a
+  // single push (worklet never loads + TTS chunk sizes vary naturally). Each
+  // whole-drop must shift the head: keeping it as an empty subarray makes
+  // drop=min(0,excess)=0 forever and the loop never terminates.
+  it('pending cap with uneven blocks drops several whole heads in one trim', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    for (let i = 0; i < 30; i++) p.write(new Uint8Array(48000).fill(i + 1)) // 30 × 1s = cap
+    p.write(new Uint8Array(96000).fill(0x7f)) // one 2s block: excess spans two heads
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { buffer?: Int16Array }[]
+    const totalBytes = posted.reduce((a, m) => a + m.buffer!.length * 2, 0)
+    expect(totalBytes).toBe(1440000) // exactly the cap retained
+    expect(posted).toHaveLength(29) // chunks 1+2 gone whole; 28 kept + the 2s block
+    expect(posted[0].buffer![0]).toBe(0x0303) // chunk 3 now leads
+    expect((posted.at(-1) as { buffer: Int16Array }).buffer[0]).toBe(0x7f7f) // 2s block survives whole
+    expect((posted.at(-1) as { buffer: Int16Array }).buffer.length).toBe(48000)
+  })
+
   it('interrupt() posts the interrupt event', async () => {
     const { deps, ctx } = makeDeps()
     const p = createPlayback(deps)
@@ -773,5 +867,106 @@ describe('createPlayback', () => {
     p.write(new Uint8Array([0x01, 0x02])) // next stream's data
     const posted = ctx.workletNode!.port.posted as { event?: string }[]
     expect(posted.filter((m) => m.event === 'end')).toHaveLength(0)
+  })
+
+  it('empty and odd-carry writes post nothing until a whole sample exists', async () => {
+    const { deps, ctx } = makeDeps()
+    const p = createPlayback(deps)
+    await p.ensureAudio()
+    p.write(new Uint8Array(0))
+    p.write(new Uint8Array([0x01]))
+    expect(ctx.workletNode!.port.posted).toHaveLength(0)
+    p.write(new Uint8Array([0x02]))
+    const posted = ctx.workletNode!.port.posted as {
+      event?: string
+      buffer?: Int16Array
+      trackId?: string
+    }[]
+    expect(posted).toHaveLength(1)
+    expect(posted[0].event).toBe('write')
+    expect(posted[0].trackId).toBe('tts')
+    expect(posted[0].buffer).toEqual(new Int16Array([0x0201]))
+  })
+
+  it('an empty pre-attach write arms no deferred EOS', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array(0))
+    p.end()
+    release()
+    await ready
+    const posted = ctx.workletNode!.port.posted as { event?: string }[]
+    expect(posted.map((m) => m.event)).toEqual([])
+  })
+
+  it('a malformed worklet message (no data) is ignored, not a stop', async () => {
+    const { deps, ctx } = makeDeps()
+    const p = createPlayback(deps)
+    await p.ensureAudio()
+    const node = ctx.workletNode!
+    const drained = vi.fn()
+    p.onDrained(drained)
+    expect(() => node.port.onmessage!({ data: undefined })).not.toThrow()
+    expect(node.disconnected).toBe(false)
+    expect(drained).not.toHaveBeenCalled()
+  })
+
+  it('worklet trim/underrun diagnostics log to console.debug and do not retire the node', async () => {
+    const { deps, ctx } = makeDeps()
+    const p = createPlayback(deps)
+    await p.ensureAudio()
+    const node = ctx.workletNode!
+    const drained = vi.fn()
+    p.onDrained(drained)
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    node.port.onmessage!({ data: { event: 'underrun', dropped: 5 } })
+    expect(dbg).toHaveBeenLastCalledWith('[tts-playback]', 'underrun', 'dropped=5')
+    node.port.onmessage!({ data: { event: 'trim' } })
+    expect(dbg).toHaveBeenLastCalledWith('[tts-playback]', 'trim', '')
+    dbg.mockRestore()
+    expect(node.disconnected).toBe(false)
+    expect(drained).not.toHaveBeenCalled()
+  })
+
+  it('a rebuilt node is not handed a stale end from the retired stream', async () => {
+    const { deps, ctx, release } = gatedDeps()
+    const p = createPlayback(deps)
+    const ready = p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02])) // pending: no node yet
+    p.end() // deferred EOS armed
+    release()
+    await ready // first attach: write, then end — the deferred flag resets
+    ctx.workletNode!.port.onmessage!({ data: { event: 'stop' } }) // stream retired
+    p.write(new Uint8Array([0x03, 0x04])) // next stream builds a fresh node
+    const posted = ctx.workletNode!.port.posted as { event?: string }[]
+    expect(posted.map((m) => m.event)).toEqual(['write'])
+  })
+
+  it('teardown clears a deferred EOS — a reopened session starts without one', async () => {
+    const { deps, ctx } = makeDeps()
+    const p = createPlayback(deps)
+    await p.ensureAudio()
+    p.write(new Uint8Array([0x01, 0x02]))
+    await p.teardown()
+    await p.ensureAudio()
+    p.write(new Uint8Array([0x03, 0x04]))
+    const posted = ctx.workletNode!.port.posted as { event?: string }[]
+    expect(posted.map((m) => m.event)).toEqual(['write'])
+  })
+
+  it('ensureAudio delivers the worklet module as a text/javascript blob of PLAYBACK_WORKLET_SRC', async () => {
+    const { deps } = makeDeps()
+    let captured: Blob | null = null
+    const spy = vi.spyOn(URL, 'createObjectURL').mockImplementation((obj) => {
+      captured = obj as Blob
+      return 'blob:spy'
+    })
+    const p = createPlayback(deps)
+    await p.ensureAudio()
+    spy.mockRestore()
+    expect(captured).toBeTruthy()
+    expect(captured!.type).toBe('text/javascript')
+    await expect(captured!.text()).resolves.toBe(PLAYBACK_WORKLET_SRC)
   })
 })

@@ -32,6 +32,7 @@ describe('synthesize', () => {
     const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/tts')
     expect(init.method).toBe('POST')
+    expect(init.headers).toEqual({ 'Content-Type': 'text/plain' })
     expect(init.body).toBe('你好。')
     expect(init.signal).toBe(signal)
   })
@@ -80,6 +81,7 @@ function heldStream() {
     stream,
     push: (b: Uint8Array) => ctl?.enqueue(b),
     end: () => ctl?.close(),
+    error: (e: unknown) => ctl?.error(e),
   }
 }
 
@@ -347,5 +349,164 @@ describe('createTTSQueue', () => {
     s.streams[0].end()
     await tick()
     expect(eos).toBe(0)
+  })
+
+  it('abort announces itself on the debug log', async () => {
+    const s = makeSynth()
+    const { queue } = makeQueue(s.fn)
+    queue.enqueue('s1')
+    await tick()
+    const dbg = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    queue.abort()
+    expect(dbg).toHaveBeenCalledWith('[tts] abort')
+    dbg.mockRestore()
+  })
+
+  it('debug logs carry measured ttf/ms/bytes and a 24-char head', async () => {
+    vi.useFakeTimers({ toFake: ['performance'] })
+    try {
+      const s = makeSynth()
+      const logs: string[] = []
+      const spy = vi
+        .spyOn(console, 'debug')
+        .mockImplementation((...a: unknown[]) => logs.push(a.map(String).join(' ')))
+      const { queue } = makeQueue(s.fn)
+      // Seed the performance clock past zero: t0 > 0 keeps elapsed-time math
+      // distinguishable from accumulated-time math in the logs.
+      vi.advanceTimersByTime(5000)
+      const text = Array.from({ length: 40 }, (_, i) => String.fromCharCode(65 + i)).join('')
+      queue.enqueue(text)
+      await tick()
+      vi.advanceTimersByTime(100)
+      s.streams[0].push(new Uint8Array([1]))
+      await tick()
+      vi.advanceTimersByTime(100)
+      s.streams[0].push(new Uint8Array([2]))
+      s.streams[0].end()
+      await tick()
+      spy.mockRestore()
+      const synthLog = logs.find((l) => l.includes('[tts] synth'))
+      expect(synthLog).toContain('len=40')
+      expect(synthLog).toContain('head="ABCDEFGHIJKLMNOPQRSTUVWX"')
+      const doneLog = logs.find((l) => l.includes('item done'))
+      expect(doneLog).toContain('ttf=100ms')
+      expect(doneLog).toContain('ms=200 bytes=2')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a failed item logs the elapsed ms and the error message', async () => {
+    vi.useFakeTimers({ toFake: ['performance'] })
+    try {
+      const logs: string[] = []
+      const spy = vi
+        .spyOn(console, 'debug')
+        .mockImplementation((...a: unknown[]) => logs.push(a.map(String).join(' ')))
+      let rejectSynth!: (e: Error) => void
+      const queue = createTTSQueue({
+        write: () => {},
+        deps: { synthesize: () => new Promise((_res, rej) => (rejectSynth = rej)) },
+      })
+      vi.advanceTimersByTime(5000) // t0 > 0 before the item starts
+      queue.enqueue('boom')
+      await tick()
+      vi.advanceTimersByTime(50) // the failure lands 50ms into the item
+      rejectSynth(new Error('tts: engine down'))
+      await tick()
+      spy.mockRestore()
+      const failLog = logs.find((l) => l.includes('item failed'))
+      expect(failLog).toContain('ms=50 err=tts: engine down')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a sentence that fails mid-stream never plays its buffered partial audio', async () => {
+    const s = makeSynth()
+    const { queue, writes, errors, settled } = makeQueue(s.fn)
+    queue.enqueue('s1')
+    queue.enqueue('s2')
+    await tick()
+    s.streams[1].push(new Uint8Array([9]))
+    await tick() // s2 (not the head) buffers its partial chunk
+    s.streams[1].error(new Error('mid-fail'))
+    await tick()
+    expect(errors).toEqual(['mid-fail'])
+    s.streams[0].end() // the head settles; advance walks past the failed s2
+    await tick()
+    expect(writes).toEqual([])
+    expect(settled()).toBe(2)
+    expect(queue.inFlight()).toBe(0)
+  })
+
+  it('a later enqueue cannot grow the pipeline past depth while the first three run', async () => {
+    const s = makeSynth()
+    const { queue } = makeQueue(s.fn)
+    for (let i = 1; i <= 3; i++) queue.enqueue(`s${i}`)
+    await tick()
+    expect(s.calls).toHaveLength(3)
+    queue.enqueue('s4') // pump re-runs with three live items: s4 must still wait
+    await tick()
+    expect(s.calls).toHaveLength(3)
+    for (const h of s.streams) h.end()
+    await tick()
+    expect(s.calls.map((c) => c.text)).toEqual(['s1', 's2', 's3', 's4'])
+  })
+
+  it('a stream ending after abort never settles or fires EOS', async () => {
+    const s = makeSynth()
+    let eos = 0
+    let settled = 0
+    const queue = createTTSQueue({
+      write: () => {},
+      onSettled: () => settled++,
+      onEOS: () => eos++,
+      deps: { synthesize: s.fn },
+    })
+    queue.enqueue('s1')
+    await tick()
+    s.streams[0].push(new Uint8Array([1]))
+    await tick() // the chunk read completes pre-abort
+    queue.abort()
+    s.streams[0].end() // done arrives post-abort
+    await tick()
+    expect(settled).toBe(0)
+    expect(eos).toBe(0)
+  })
+
+  it('a synthesis rejection landing after abort never settles or fires EOS', async () => {
+    let rejectSynth!: (e: Error) => void
+    let eos = 0
+    let settled = 0
+    const queue = createTTSQueue({
+      write: () => {},
+      onSettled: () => settled++,
+      onEOS: () => eos++,
+      deps: { synthesize: () => new Promise((_res, rej) => (rejectSynth = rej)) },
+    })
+    queue.enqueue('s1')
+    await tick() // the item is awaiting the synth promise
+    queue.abort()
+    rejectSynth(new Error('late failure'))
+    await tick()
+    expect(settled).toBe(0)
+    expect(eos).toBe(0)
+  })
+
+  it('a freed slot starts exactly one waiter — never a burst past depth', async () => {
+    const s = makeSynth()
+    const { queue } = makeQueue(s.fn)
+    for (let i = 1; i <= 3; i++) queue.enqueue(`s${i}`)
+    await tick()
+    for (let i = 4; i <= 6; i++) queue.enqueue(`s${i}`) // all wait: pipeline full
+    s.streams[0].end() // one slot frees
+    await tick()
+    expect(s.calls.map((c) => c.text)).toEqual(['s1', 's2', 's3', 's4'])
+    for (const h of s.streams.slice(1)) h.end()
+    await tick()
+    for (const h of s.streams.slice(4)) h.end() // s5/s6 started as the slots freed
+    await tick()
+    expect(queue.inFlight()).toBe(0)
   })
 })

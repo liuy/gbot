@@ -112,6 +112,15 @@ describe('auraTarget', () => {
     expect(auraTarget('listening', 0, 350).brightness).toBeCloseTo(2.0, 6)
     expect(auraTarget('speaking', 0.5, 777).brightness).toBeCloseTo(1.5, 6)
   })
+
+  it('the pulse mirrors back on the second half of the cycle (ph > 1)', () => {
+    // 525ms into a 350ms cycle: ph = 1.5 → k = 0.5 → brightness 1.5
+    expect(auraTarget('thinking', 0, 525).brightness).toBeCloseTo(1.5, 6)
+  })
+
+  it('a negative mic RMS floors the listening scale at 0.2', () => {
+    expect(auraTarget('listening', -0.5, 0).scale).toBeCloseTo(0.2, 6)
+  })
 })
 
 // ── volume math (readVol, aura-preview) ───────────────────────────────────
@@ -158,6 +167,17 @@ describe('hexToRgb / readAuraTheme', () => {
     expect(hexToRgb('var(--x)')).toEqual([0, 180 / 255, 1])
   })
 
+  it('padded non-blue tokens parse — the fallback must not mask a trim failure', () => {
+    expect(hexToRgb(' #333 ')).toEqual([0.2, 0.2, 0.2])
+    expect(hexToRgb(' #333333 ')).toEqual([0.2, 0.2, 0.2])
+  })
+
+  it('the hex match is anchored at both ends — garbage around #333 is a fallback', () => {
+    expect(hexToRgb('ab#333')).toEqual([0, 180 / 255, 1])
+    expect(hexToRgb('xx#333333')).toEqual([0, 180 / 255, 1])
+    expect(hexToRgb('#333333zz')).toEqual([0, 180 / 255, 1])
+  })
+
   it('dark token → bloom branch (mode 0, blue); light token → light branch (mode 1, ink)', () => {
     const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation(
       (() => ({
@@ -190,6 +210,17 @@ class FakeGL {
   draws = 0
   uniforms: Record<string, number[]> = {}
   lostExt = { loseContext: vi.fn() }
+  sources = new Map<unknown, string>()
+  compiled = new Set<unknown>()
+  attached: Array<[unknown, unknown]> = []
+  linked: unknown[] = []
+  used: unknown[] = []
+  bound: Array<[number, unknown]> = []
+  uploads: Array<[number, Float32Array, number]> = []
+  attribNames: string[] = []
+  enabledAttribs: number[] = []
+  pointerArgs: unknown[][] = []
+  viewports: unknown[][] = []
   private locs: Record<string, unknown> = {}
   readonly VERTEX_SHADER = 1
   readonly FRAGMENT_SHADER = 2
@@ -205,32 +236,53 @@ class FakeGL {
   createShader() {
     return { s: true }
   }
-  shaderSource() {}
-  compileShader() {}
-  getShaderParameter() {
-    return true
+  shaderSource(shader: unknown, src: string) {
+    this.sources.set(shader, src)
+  }
+  compileShader(shader: unknown) {
+    this.compiled.add(shader)
+  }
+  getShaderParameter(shader: unknown) {
+    return this.compiled.has(shader) && (this.sources.get(shader) ?? '').length > 0
   }
   getShaderInfoLog() {
     return ''
   }
-  attachShader() {}
-  linkProgram() {}
-  useProgram() {}
+  attachShader(program: unknown, shader: unknown) {
+    this.attached.push([program, shader])
+  }
+  linkProgram(program: unknown) {
+    this.linked.push(program)
+  }
+  useProgram(program: unknown) {
+    this.used.push(program)
+  }
   createBuffer() {
     return { b: 1 }
   }
-  bindBuffer() {}
-  bufferData() {}
-  getAttribLocation() {
+  bindBuffer(target: number, buffer: unknown) {
+    this.bound.push([target, buffer])
+  }
+  bufferData(target: number, data: Float32Array, usage: number) {
+    this.uploads.push([target, data, usage])
+  }
+  getAttribLocation(_p: unknown, name: string) {
+    this.attribNames.push(name)
     return 0
   }
-  enableVertexAttribArray() {}
-  vertexAttribPointer() {}
+  enableVertexAttribArray(index: number) {
+    this.enabledAttribs.push(index)
+  }
+  vertexAttribPointer(...args: unknown[]) {
+    this.pointerArgs.push(args)
+  }
   getUniformLocation(_p: unknown, name: string) {
     this.locs[name] ??= { name }
     return this.locs[name]
   }
-  viewport() {}
+  viewport(...args: unknown[]) {
+    this.viewports.push(args)
+  }
   uniform2f(loc: { name: string }, x: number, y: number) {
     this.uniforms[loc.name] = [x, y]
   }
@@ -245,6 +297,12 @@ class FakeGL {
   }
   getExtension(name: string) {
     return name === 'WEBGL_lose_context' ? this.lostExt : null
+  }
+}
+
+class FailingGL extends FakeGL {
+  getShaderParameter() {
+    return false
   }
 }
 
@@ -299,6 +357,8 @@ describe('createAuraVisual', () => {
     for (let i = 1; i < 60; i++) visual.frame(i * 33, 'listen', 0.8)
     expect(gl.uniforms.uScale[0]).toBeCloseTo(0.36, 3)
     expect(gl.uniforms.uSpeed[0]).toBeCloseTo(20, 6)
+    expect(gl.uniforms.uFrequency[0]).toBeCloseTo(0.7, 3)
+    expect(gl.uniforms.uAmplitude[0]).toBeCloseTo(1.0, 3)
     visual.destroy()
   })
 
@@ -368,5 +428,116 @@ describe('createAuraVisual', () => {
     delete document.documentElement.dataset.theme
     canvas.remove()
     visual.destroy()
+  })
+
+  it('compiles both shader sources, links, and uploads the fullscreen triangle', () => {
+    const { visual, gl } = makeVisual()
+    expect(visual.lost()).toBe(false)
+    expect([...gl.sources.values()]).toContain(AURA_VS)
+    expect([...gl.sources.values()]).toContain(AURA_FS)
+    expect(gl.compiled.size).toBe(2)
+    expect(gl.attached).toHaveLength(2)
+    expect(gl.linked).toHaveLength(1)
+    expect(gl.used).toHaveLength(1)
+    expect(gl.bound).toHaveLength(1)
+    expect(gl.uploads).toHaveLength(1)
+    expect(Array.from(gl.uploads[0][1])).toEqual([-1, -1, 3, -1, -1, 3])
+    expect(gl.attribNames).toEqual(['aPos'])
+    expect(gl.enabledAttribs).toEqual([0])
+    expect(gl.pointerArgs).toEqual([[0, 2, gl.FLOAT, false, 0, 0]])
+    visual.destroy()
+  })
+
+  it('a failed shader compile marks the visual lost and logs the fallback message', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const canvas = document.createElement('canvas')
+    const gl = new FailingGL()
+    const visual = createAuraVisual(canvas, {
+      getGL: () => gl as unknown as AuraGL,
+      readTheme: () => ({ color: [0, 0, 0], mode: 0 }),
+    })
+    expect(visual.lost()).toBe(true)
+    visual.frame(0, 'idle', 0)
+    expect(gl.draws).toBe(0)
+    expect(errSpy).toHaveBeenCalledTimes(1)
+    expect(String(errSpy.mock.calls[0][0])).toContain('voice aura')
+    expect(errSpy.mock.calls[0][1]).toBeInstanceOf(Error)
+    expect((errSpy.mock.calls[0][1] as Error).message).toBe('aura shader compile failed')
+    errSpy.mockRestore()
+    visual.destroy()
+  })
+
+  it('no GL: a restored event cannot resurrect a null context', () => {
+    const canvas = document.createElement('canvas')
+    const visual = createAuraVisual(canvas, {
+      getGL: () => null,
+      readTheme: () => ({ color: [0, 0, 0], mode: 0 }),
+    })
+    canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(visual.lost()).toBe(true)
+    visual.destroy()
+  })
+
+  it('the default GL getter requests a webgl context with the aura options', () => {
+    const canvas = document.createElement('canvas')
+    const spy = vi.spyOn(canvas, 'getContext').mockReturnValue(null)
+    const visual = createAuraVisual(canvas)
+    expect(spy).toHaveBeenCalledWith('webgl', { alpha: true, premultipliedAlpha: true })
+    expect(visual.lost()).toBe(true)
+    visual.destroy()
+    spy.mockRestore()
+  })
+
+  it('speed eases along the 0.5s cubic between state change and lock', () => {
+    const { visual, gl } = makeVisual()
+    visual.frame(0, 'idle', 0)
+    visual.frame(1000, 'speak', 0.5) // a = 0 → floor 0.02 → 11.2
+    visual.frame(1125, 'speak', 0.5) // a = 0.25 → e = 1 − 0.75³ = 0.578125 on the delta
+    expect(gl.uniforms.uSpeed[0]).toBeCloseTo(11.2 + (70 - 11.2) * 0.578125, 6)
+    visual.destroy()
+  })
+
+  it('each frame sizes the viewport, resolution, and time uniform to the canvas', () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 512
+    canvas.height = 256
+    const gl = new FakeGL()
+    const visual = createAuraVisual(canvas, {
+      getGL: () => gl as unknown as AuraGL,
+      readTheme: () => ({ color: [0, 180 / 255, 1], mode: 0 }),
+    })
+    visual.frame(33, 'idle', 0)
+    expect(gl.viewports[0]).toEqual([0, 0, 512, 256])
+    expect(gl.uniforms.iResolution).toEqual([512, 256])
+    expect(gl.uniforms.iTime[0]).toBeCloseTo(0.033, 6)
+    visual.destroy()
+  })
+
+  it('light mode boosts uMix to 1.3× brightness (shader clamps [1,2])', () => {
+    const canvas = document.createElement('canvas')
+    const gl = new FakeGL()
+    const visual = createAuraVisual(canvas, {
+      getGL: () => gl as unknown as AuraGL,
+      readTheme: () => ({ color: [0.2, 0.2, 0.2], mode: 1 }),
+    })
+    visual.frame(0, 'idle', 0) // idle brightness 1.0 → uMix 1.3 in light mode
+    expect(gl.uniforms.uMix[0]).toBeCloseTo(1.3, 6)
+    visual.destroy()
+  })
+
+  it('destroy disconnects the theme observer and removes the GL event listeners', () => {
+    const disconnectSpy = vi.spyOn(MutationObserver.prototype, 'disconnect').mockImplementation(() => {})
+    const canvas = document.createElement('canvas')
+    document.body.appendChild(canvas)
+    const visual = makeVisual()
+    expect(visual.visual.lost()).toBe(false)
+    visual.visual.destroy()
+    expect(disconnectSpy).toHaveBeenCalledTimes(1)
+    disconnectSpy.mockRestore()
+    // A lost event after destroy must not be preventDefault-ed by a removed listener.
+    const ev = new Event('webglcontextlost', { cancelable: true })
+    visual.canvas.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    visual.canvas.remove()
   })
 })
