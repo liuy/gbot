@@ -1381,7 +1381,7 @@ func TestHandleNotificationSilentWhenConnectionMissing(t *testing.T) {
 
 func TestHandleNotificationFetchFailureSkipsCallback(t *testing.T) {
 	// 会话关闭后 ListTools 确定性失败：原版必须静默返回（无回调）。
-	var fired atomic.Int32
+	var toolsFired, resFired, cmdsFired atomic.Int32
 	p := newInMemoryProvider()
 	srv, tr, closeSrv := closableInMemoryServer(t)
 	mcp.AddTool(srv, &mcp.Tool{Name: "t"}, noopToolHandler)
@@ -1400,17 +1400,23 @@ func TestHandleNotificationFetchFailureSkipsCallback(t *testing.T) {
 		t.Fatalf("fixture Reconnect: %v", err)
 	}
 	swapCallbacks(r, ChangeCallbacks{
-		OnToolsChanged:     func(string, []DiscoveredTool) { fired.Add(1) },
-		OnResourcesChanged: func(string, []ServerResource) { fired.Add(1) },
-		OnCommandsChanged:  func(string, []MCPCommand) { fired.Add(1) },
+		OnToolsChanged:     func(string, []DiscoveredTool) { toolsFired.Add(1) },
+		OnResourcesChanged: func(string, []ServerResource) { resFired.Add(1) },
+		OnCommandsChanged:  func(string, []MCPCommand) { cmdsFired.Add(1) },
 	})
 	closeSrv()
-
+	// Observed twice under full-suite load: "callbacks fired 1". Root cause
+	// UNRESOLVED: the SDK's Close is synchronous (verified against the
+	// vendored jsonrpc2 — the reader exits before Close returns), and ~2000
+	// adversarial iterations could not reproduce. The per-callback dump in
+	// the assertion below is the adjudication probe — the next red pins
+	// which fetch path fired.
 	r.handleToolNotification("srv")
 	r.handleResourceNotification("srv")
 	r.handleCommandNotification("srv")
-	if fired.Load() != 0 {
-		t.Fatalf("callbacks fired %d times on failed fetch, want 0", fired.Load())
+	if tF := toolsFired.Load(); tF != 0 || resFired.Load() != 0 || cmdsFired.Load() != 0 {
+		t.Fatalf("callbacks fired on failed fetch: tools=%d resources=%d commands=%d",
+			tF, resFired.Load(), cmdsFired.Load())
 	}
 }
 

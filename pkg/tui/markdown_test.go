@@ -674,7 +674,9 @@ func TestRender_MultipleCodeBlocks(t *testing.T) {
 }
 
 func TestLinkifyIssueReferences_NoHyperlinkSupport(t *testing.T) {
-	t.Parallel()
+	// Non-parallel: modifies TERM env (a parallel os.Setenv window once made
+	// the sibling TestLinkifyIssueReferences read TERM=dumb and flake under
+	// full-suite load).
 	orig := os.Getenv("TERM")
 	if err := os.Setenv("TERM", "dumb"); err != nil {
 		t.Fatalf("setenv failed: %v", err)
