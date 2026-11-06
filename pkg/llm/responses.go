@@ -635,13 +635,12 @@ func (p *ResponsesProvider) Stream(ctx context.Context, req *Request) (<-chan St
 
 	for attempt := 0; attempt <= retryCfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			// httpResp is nil on every path that reaches a retry (both the
+			// connection-error and drained-error branches clear it), so the
+			// server's Retry-After travels on the last APIError instead.
 			retryAfter := time.Duration(0)
-			if httpResp != nil {
-				if ra := httpResp.Header.Get("Retry-After"); ra != "" {
-					if sec, e := strconv.Atoi(ra); e == nil && sec > 0 {
-						retryAfter = time.Duration(sec) * time.Second
-					}
-				}
+			if apiErr, ok := errors.AsType[*APIError](lastErr); ok {
+				retryAfter = apiErr.RetryAfter
 			}
 			backoff := CalculateBackoffWithRetryAfter(attempt, retryCfg, retryAfter)
 			select {
@@ -672,6 +671,14 @@ func (p *ResponsesProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
 		_ = httpResp.Body.Close()
 		apiErr := p.parseHTTPError(errBody, httpResp.StatusCode)
+		// The body is drained and closed here, so the response headers are the
+		// only place the server's Retry-After advice can be captured for the
+		// retry loop.
+		if ra := httpResp.Header.Get("Retry-After"); ra != "" {
+			if sec, e := strconv.Atoi(ra); e == nil && sec > 0 {
+				apiErr.RetryAfter = time.Duration(sec) * time.Second
+			}
+		}
 
 		if !IsRetryableStatus(httpResp.StatusCode) {
 			return nil, apiErr

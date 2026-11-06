@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,7 +202,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 
 	for attempt := 0; attempt <= retryCfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := CalculateBackoff(attempt, retryCfg)
+			// httpResp is nil on every path that reaches a retry, so the
+			// server's Retry-After travels on the last APIError instead.
+			retryAfter := time.Duration(0)
+			if apiErr, ok := errors.AsType[*APIError](lastErr); ok {
+				retryAfter = apiErr.RetryAfter
+			}
+			backoff := CalculateBackoffWithRetryAfter(attempt, retryCfg, retryAfter)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -231,7 +238,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
 		_ = httpResp.Body.Close()
 		apiErr := p.ParseAPIError(errBody, httpResp.StatusCode)
-
+		// The body is drained and closed here, so the response headers are the
+		// only place the server's Retry-After advice can be captured.
+		if ra := httpResp.Header.Get("Retry-After"); ra != "" {
+			if sec, e := strconv.Atoi(ra); e == nil && sec > 0 {
+				apiErr.RetryAfter = time.Duration(sec) * time.Second
+			}
+		}
 		if !IsRetryableStatus(httpResp.StatusCode) {
 			return nil, apiErr
 		}

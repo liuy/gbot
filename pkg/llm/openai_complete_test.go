@@ -961,42 +961,11 @@ func TestOpenAIStream_StreamEndsWithoutDONE(t *testing.T) {
 	}
 }
 
-// TestOpenAIStream_RetryAfterHeader tests that Retry-After header is parsed
-// during retry backoff.
-func TestOpenAIStream_RetryAfterHeader(t *testing.T) {
-	callCount := 0
-	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		if callCount == 1 {
-			w.Header().Set("Retry-After", "1") // 1 second
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"service unavailable","type":"server_error"}}`)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n")
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-	}))
-	defer server.Close()
-
-	provider := newOpenAIProviderWithServer(server)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
-	ch, err := provider.Stream(ctx, req)
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
-
-	for range ch {
-	}
-
-	if callCount != 2 {
-		t.Errorf("expected 2 calls (1 retry), got %d", callCount)
-	}
-}
+// TestOpenAIStream_RetryAfterHeader was removed: it asserted only the retry
+// count and could not discriminate a honored from a dropped Retry-After (the
+// external package cannot lower the base backoff below the default 250-750ms
+// jitter window). The strong regression is TestOpenAIStream_RetryAfterHeaderHonored
+// in openai_mutate_test.go (5ms base, Retry-After: 3600, deadline-gated hits).
 
 // TestOpenAIStream_InterleavedParallelToolCalls tests real-world interleaved
 // parallel tool call streaming: 3 tools with deltas arriving out of order.
