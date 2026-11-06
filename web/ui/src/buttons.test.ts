@@ -199,6 +199,11 @@ describe('createIconButton', () => {
     expect((lg.children[0] as SVGElement).getAttribute('width')).toBe('20')
   })
 
+  it('iconSize default for size=auto is 18', () => {
+    const btn = createIconButton({ icon: 'plus', label: 'Plus', size: 'auto' })
+    expect((btn.children[0] as SVGElement).getAttribute('width')).toBe('18')
+  })
+
   it('strokeWidth override propagates to svg stroke-width', () => {
     const btn = createIconButton({ icon: 'refresh', label: 'Retry', iconSize: 9, strokeWidth: 2.5 })
     const svg = btn.children[0] as SVGElement
@@ -224,6 +229,17 @@ describe('createIconButton', () => {
     const spy = vi.fn()
     const btn = createIconButton({ icon: 'plus', label: 'Plus', onLongPress: spy })
     btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+    expect(spy).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(500)
+    expect(spy).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
+
+  it('onLongPress fires after mousedown + 500ms (desktop mouse-hold path)', () => {
+    vi.useFakeTimers()
+    const spy = vi.fn()
+    const btn = createIconButton({ icon: 'plus', label: 'Plus', onLongPress: spy })
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     expect(spy).not.toHaveBeenCalled()
     vi.advanceTimersByTime(500)
     expect(spy).toHaveBeenCalledOnce()
@@ -401,6 +417,22 @@ describe('createTextButton', () => {
     const spy = vi.fn()
     const btn = createTextButton({ text: 'X', variant: 'primary', onLongPress: spy })
     btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    expect(spy).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
+
+  it('size defaults to sm when omitted', () => {
+    const btn = createTextButton({ text: 'X', variant: 'primary' })
+    expect(btn.className).toContain('px-3 py-1.5 text-sm')
+  })
+
+  it('onLongPress fires after mousedown + 500ms (desktop mouse-hold path)', () => {
+    vi.useFakeTimers()
+    const spy = vi.fn()
+    const btn = createTextButton({ text: 'X', variant: 'primary', onLongPress: spy })
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(spy).not.toHaveBeenCalled()
     vi.advanceTimersByTime(500)
     expect(spy).toHaveBeenCalledOnce()
     vi.useRealTimers()
@@ -721,6 +753,11 @@ describe('createFloatButton', () => {
     expect(center).not.toBe(right)
   })
 
+  it('type=button (form-safe: default would be submit)', () => {
+    const h = createFloatButton({ position: 'center' })
+    expect(h.root.type).toBe('button')
+  })
+
   it('renders a progress circle with the caller-supplied progressClassName', () => {
     const h = createFloatButton({
       position: 'center',
@@ -771,6 +808,18 @@ describe('createFloatButton', () => {
     expect(text.textContent).toBe('hi')
   })
 
+  it('the empty <text> placeholder keeps its fill and font attributes', () => {
+    // The placeholder branch builds the tag from two concatenated literals;
+    // dropping the second leaves the tag unterminated and the parser silently
+    // drops the styling attributes while still creating the element.
+    const h = createFloatButton({ position: 'right' })
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.getAttribute('fill')).toBe('currentColor')
+    expect(text.getAttribute('style')).toBe(
+      'font-size:11px;font-weight:600;font-family:ui-monospace,monospace',
+    )
+  })
+
   it('labelClassName defaults to float-label', () => {
     const h = createFloatButton({ position: 'right', innerLabel: 'x' })
     expect(h.root.querySelector('.float-label')).not.toBeNull()
@@ -787,6 +836,32 @@ describe('createFloatButton', () => {
     expect(h.root.innerHTML).not.toContain('<script>')
   })
 
+  it('an entity-shaped label survives round-trip as literal text', () => {
+    // A raw & that spells a named reference would be reparsed as an entity;
+    // escaping & pins the label to its literal characters.
+    const h = createFloatButton({ position: 'right', innerLabel: '&amp;' })
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.textContent).toBe('&amp;')
+  })
+
+  it('ampersand in a plain label is kept as-is', () => {
+    const h = createFloatButton({ position: 'right', innerLabel: 'a&b' })
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.textContent).toBe('a&b')
+  })
+
+  it('apostrophes in labels are preserved character-for-character', () => {
+    const h = createFloatButton({ position: 'right', innerLabel: "it's" })
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.textContent).toBe("it's")
+  })
+
+  it('double quotes in labels are preserved character-for-character', () => {
+    const h = createFloatButton({ position: 'right', innerLabel: 'say "hi"' })
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.textContent).toBe('say "hi"')
+  })
+
   it('renders innerIcon via renderIcon (single source of truth)', () => {
     const h = createFloatButton({
       position: 'center',
@@ -797,6 +872,31 @@ describe('createFloatButton', () => {
     const innerSvg = h.root.querySelector('svg svg') as SVGElement | null
     expect(innerSvg).not.toBeNull()
     expect(innerSvg!.getAttribute('width')).toBe('28')
+  })
+
+  it('innerIcon group carries the translate and the label stays a direct svg child', () => {
+    const h = createFloatButton({
+      position: 'center',
+      innerIcon: 'scroll-to-bottom',
+      innerLabel: '0/9',
+    })
+    const g = h.root.querySelector('g')
+    expect(g).not.toBeNull()
+    expect(g!.getAttribute('transform')).toBe('translate(8, 8)')
+    // The label must be a sibling of the group, not a descendant: when the
+    // group stays open the parser nests <text> inside it and the layout
+    // inherits the icon translate.
+    const svg = h.root.querySelector('svg')!
+    const text = h.root.querySelector('.float-label') as SVGTextElement
+    expect(text.parentElement).toBe(svg)
+  })
+
+  it('a bare float button svg carries no stray text nodes', () => {
+    // The svg is assembled by joining string parts; any separator or stray
+    // fragment would surface as text content inside the svg.
+    const h = createFloatButton({ position: 'center' })
+    const svg = h.root.querySelector('svg')!
+    expect(svg.textContent).toBe('')
   })
 
   it('onClick fires when root is clicked', () => {
