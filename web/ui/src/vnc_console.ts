@@ -352,7 +352,6 @@ export function createVNCSheet(): VNCSheetHandles {
     viewMode = 'fit'
     chipOff(viewChip)
     chipOff(fullscreenChip)
-    keyboardModeOff()
     if (document.activeElement === kbdInput) kbdInput.blur()
     kbdInput.value = ''
     sheet.classList.remove('vnc-max')
@@ -363,6 +362,9 @@ export function createVNCSheet(): VNCSheetHandles {
   }
   const closeSheet = () => {
     connectSeq++
+    // Null it or a stray chip tap re-enters connect() and silently
+    // reopens a session on a hidden sheet.
+    device = null
     // Before disconnect(): a throw there would otherwise strand the meta on,
     // leaving the chat's input typing blind under the IME until a reload.
     setIMEOverlay(false)

@@ -329,7 +329,8 @@ describe('createVNCSheet', () => {
       const sheet = mount()
       sheet.open(WIN11)
       await vi.waitFor(() => expect(stateOf(sheet).textContent).toBe('Connection failed'))
-      expect(errSpy).toHaveBeenCalled()
+      // The cause stays greppable — the prefix is what identifies the module.
+      expect(errSpy).toHaveBeenCalledWith('VNC: failed to load the RFB module', expect.any(Error))
       expect(instances()).toHaveLength(0)
     } finally {
       errSpy.mockRestore()
@@ -539,6 +540,7 @@ describe('createVNCSheet', () => {
     ['A', 0x61],
     ['~', 0x60],
     ['@', 0x32],
+    ['Z', 0x7a],
   ])('typing %s composes shift + the US-layout base key', async (ch, base) => {
     const sheet = await openWin11()
     const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
@@ -562,5 +564,373 @@ describe('createVNCSheet', () => {
       { keysym: 0x31, down: true },
       { keysym: 0x31, down: false },
     ])
+  })
+
+  it('IME overlay: a missing content attribute reads as empty, not as filler', async () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'viewport')
+    document.head.appendChild(meta)
+    try {
+      const sheet = mount()
+      sheet.open(WIN11)
+      expect(meta.getAttribute('content')).toBe(', interactive-widget=overlays-content')
+      await vi.waitFor(() => expect(instances()).toHaveLength(1))
+    } finally {
+      meta.remove()
+    }
+  })
+
+  it('IME overlay: a second open neither strips nor duplicates the key', async () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'viewport')
+    meta.setAttribute('content', 'width=device-width')
+    document.head.appendChild(meta)
+    try {
+      const sheet = mount()
+      sheet.open(WIN11)
+      sheet.open(NAS)
+      // Opening is not toggling — the key must remain appended exactly once.
+      expect(meta.getAttribute('content')).toBe(
+        'width=device-width, interactive-widget=overlays-content',
+      )
+      await vi.waitFor(() => expect(instances()).toHaveLength(1))
+    } finally {
+      meta.remove()
+    }
+  })
+
+  it('IME overlay: closing when the key was never added leaves the meta untouched', () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'viewport')
+    meta.setAttribute('content', 'width=device-width')
+    document.head.appendChild(meta)
+    try {
+      const sheet = mount()
+      sheet.close()
+      expect(meta.getAttribute('content')).toBe('width=device-width')
+    } finally {
+      meta.remove()
+    }
+  })
+
+  it('chip clicks before the first open cannot start a connect', async () => {
+    const sheet = mount()
+    ;(sheet.root.querySelector('[data-vnc-chip="view"]') as HTMLElement).click()
+    // No device is configured yet — the guard must suppress every connect
+    // side effect, including the synchronous latency placeholder.
+    expect((sheet.root.querySelector('[data-vnc-latency]') as HTMLElement).textContent).toBe('')
+    await flushMicrotasks()
+    expect(instances()).toHaveLength(0)
+  })
+
+  it('a live probe rejection clears the latency label', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('probe refused')
+      }),
+    )
+    const sheet = mount()
+    sheet.open(WIN11)
+    const label = sheet.root.querySelector('[data-vnc-latency]') as HTMLElement
+    // Stale ms numbers lie — a failed probe must leave no number behind.
+    await vi.waitFor(() => expect(label.textContent).toBe(''))
+  })
+
+  it('reconnecting drops the previous session canvas before the new one lands', async () => {
+    const sheet = await openWin11()
+    instances()[0].fire('disconnect', { clean: false })
+    ;(sheet.root.querySelector('[data-vnc-chip="view"]') as HTMLElement).click()
+    const screenEl = sheet.root.querySelector('[data-vnc-screen]') as HTMLElement
+    // Two stacked canvases would double-render remote pixels.
+    expect(screenEl.querySelectorAll('canvas')).toHaveLength(0)
+    await vi.waitFor(() => expect(instances()).toHaveLength(2))
+    expect(screenEl.querySelectorAll('canvas')).toHaveLength(1)
+  })
+
+  it('the latency label holds the in-flight placeholder while connecting', async () => {
+    const sheet = mount()
+    sheet.open(WIN11)
+    expect((sheet.root.querySelector('[data-vnc-latency]') as HTMLElement).textContent).toBe('…')
+    await vi.waitFor(() => expect(instances()).toHaveLength(1))
+  })
+
+  it('a load settling after close-and-reopen constructs exactly one session', async () => {
+    let releaseFirst!: (cls: unknown) => void
+    vi.mocked(loadRFB).mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          releaseFirst = res
+        }),
+    )
+    const sheet = mount()
+    sheet.open(WIN11)
+    sheet.close()
+    sheet.open(NAS)
+    await vi.waitFor(() => expect(instances()).toHaveLength(1))
+    // The close bumped the sequence; the stale load resolving now must hit
+    // the seq guard — otherwise one device ends up with two live sessions.
+    releaseFirst(await loadRFB())
+    await flushMicrotasks()
+    expect(instances()).toHaveLength(1)
+  })
+
+  it('the release mouseup bubbles up to the screen element', async () => {
+    const sheet = await openWin11()
+    const seen: number[] = []
+    ;(sheet.root.querySelector('[data-vnc-screen]') as HTMLElement).addEventListener(
+      'mouseup',
+      (e) => seen.push((e as MouseEvent).button),
+    )
+    ;(sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement).click()
+    // noVNC's own handlers sit on the screen — a non-bubbling synthetic
+    // release would be invisible to them and the drag would stick.
+    expect(seen).toEqual([0])
+  })
+
+  it('re-entering control dispatches no second release mouseup', async () => {
+    const sheet = await openWin11()
+    const inst = instances()[0]
+    let mouseups = 0
+    inst.canvas.addEventListener('mouseup', () => mouseups++)
+    const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    chip.click()
+    chip.click()
+    // Only leaving control needs the release: entering control would
+    // dispatch behind the viewOnly guard, where noVNC drops it.
+    expect(mouseups).toBe(1)
+  })
+
+  it('the keyboard button toggles the capture off when it already holds focus', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const btn = sheet.root.querySelector('[data-vnc-keyboard]') as HTMLElement
+    btn.click()
+    expect(document.activeElement).toBe(kbd)
+    btn.click()
+    expect(document.activeElement).not.toBe(kbd)
+    expect(btn.className).toContain('text-t2')
+  })
+
+  it('special keydowns are forwarded and default-prevented; ordinary keys are ignored', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const inst = instances()[0]
+    inst.sentKeys = []
+    for (const key of ['Enter', 'Backspace', 'CapsLock'] as const) {
+      const ev = new KeyboardEvent('keydown', { key, cancelable: true })
+      kbd.dispatchEvent(ev)
+      // The capture textarea must never keep a raw copy of a special key —
+      // the forwarded keysym is the only one that reaches the guest.
+      expect(ev.defaultPrevented).toBe(true)
+    }
+    expect(inst.sentKeys).toEqual([
+      { keysym: 0xff0d, down: true },
+      { keysym: 0xff0d, down: false },
+      { keysym: 0xff08, down: true },
+      { keysym: 0xff08, down: false },
+      { keysym: 0xffe5, down: true },
+      { keysym: 0xffe5, down: false },
+    ])
+    const plain = new KeyboardEvent('keydown', { key: 'a', cancelable: true })
+    kbd.dispatchEvent(plain)
+    // Printables ride the input event — a keydown fallback shaped like the
+    // CapsLock branch would flip the guest lock on every keystroke.
+    expect(plain.defaultPrevented).toBe(false)
+    expect(inst.sentKeys).toHaveLength(6)
+  })
+
+  it('the non-ASCII toast fades back out on its timer', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const toast = sheet.root.querySelector('[data-vnc-toast]') as HTMLElement
+    vi.useFakeTimers()
+    try {
+      kbd.dispatchEvent(new InputEvent('input', { data: '你' }))
+      expect(toast.classList.contains('opacity-0')).toBe(false)
+      vi.advanceTimersByTime(2500)
+      // A toast that never fades covers the remote view for good.
+      expect(toast.classList.contains('opacity-0')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('printable ASCII — shifted, plain, and DEL — sends keys without the toast', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const toast = sheet.root.querySelector('[data-vnc-toast]') as HTMLElement
+    const inst = instances()[0]
+    inst.sentKeys = []
+    for (const ch of [':', '1', '\u007f']) kbd.dispatchEvent(new InputEvent('input', { data: ch }))
+    // DEL (U+007F) is the boundary: ASCII, so it is forwardable as-is —
+    // treating it as IME text would strand the Delete key.
+    expect(inst.sentKeys).toEqual([
+      { keysym: 0xffe1, down: true },
+      { keysym: 0x3b, down: true },
+      { keysym: 0x3b, down: false },
+      { keysym: 0xffe1, down: false },
+      { keysym: 0x31, down: true },
+      { keysym: 0x31, down: false },
+      { keysym: 0x7f, down: true },
+      { keysym: 0x7f, down: false },
+    ])
+    expect(toast.classList.contains('opacity-0')).toBe(true)
+    expect(toast.textContent).toBe('')
+  })
+
+  it('the fallback maximize reflects its state on the chip', async () => {
+    const sheet = await openWin11()
+    const chip = sheet.root.querySelector('[data-vnc-chip="fullscreen"]') as HTMLElement
+    chip.click()
+    expect(chip.className).toContain('text-green')
+    chip.click()
+    expect(chip.className).toContain('text-t2')
+  })
+
+  it('document fullscreenchange lights the chip only for this sheet', async () => {
+    const sheet = await openWin11()
+    const chip = sheet.root.querySelector('[data-vnc-chip="fullscreen"]') as HTMLElement
+    const sheetEl = sheet.root.querySelector('[data-vnc-sheet]') as HTMLElement
+    const foreign = document.createElement('div')
+    const setFS = (el: Element | null) =>
+      Object.defineProperty(document, 'fullscreenElement', { get: () => el, configurable: true })
+    try {
+      expect(chip.className).toContain('text-t2')
+      setFS(sheetEl)
+      document.dispatchEvent(new Event('fullscreenchange'))
+      expect(chip.className).toContain('text-green')
+      setFS(null)
+      document.dispatchEvent(new Event('fullscreenchange'))
+      expect(chip.className).toContain('text-t2')
+      // Another element going fullscreen must not light this sheet's chip.
+      setFS(foreign)
+      document.dispatchEvent(new Event('fullscreenchange'))
+      expect(chip.className).toContain('text-t2')
+    } finally {
+      Reflect.deleteProperty(document, 'fullscreenElement')
+    }
+  })
+
+  it('closing exits fullscreen only when this sheet is the fullscreen element', async () => {
+    const sheet = await openWin11()
+    const sheetEl = sheet.root.querySelector('[data-vnc-sheet]') as HTMLElement
+    const exit = vi.fn()
+    Object.defineProperty(document, 'exitFullscreen', { value: exit, configurable: true })
+    const setFS = (el: Element | null) =>
+      Object.defineProperty(document, 'fullscreenElement', { get: () => el, configurable: true })
+    try {
+      setFS(sheetEl)
+      sheet.close()
+      expect(exit).toHaveBeenCalledTimes(1)
+      // A foreign element's fullscreen must survive this sheet closing.
+      setFS(document.createElement('div'))
+      sheet.open(NAS)
+      await vi.waitFor(() => expect(instances()).toHaveLength(2))
+      sheet.close()
+      expect(exit).toHaveBeenCalledTimes(1)
+      setFS(null)
+      sheet.open(WIN11)
+      await vi.waitFor(() => expect(instances()).toHaveLength(3))
+      sheet.close()
+      expect(exit).toHaveBeenCalledTimes(1)
+    } finally {
+      Reflect.deleteProperty(document, 'fullscreenElement')
+      Reflect.deleteProperty(document, 'exitFullscreen')
+    }
+  })
+
+  it('fullscreen calls tolerate absent browser APIs without throwing', async () => {
+    const sheet = await openWin11()
+    const sheetEl = sheet.root.querySelector('[data-vnc-sheet]') as HTMLElement
+    const errors: string[] = []
+    const onErr = (e: Event) => errors.push(String((e as ErrorEvent).message))
+    window.addEventListener('error', onErr)
+    Object.defineProperty(document, 'fullscreenEnabled', { value: true, configurable: true })
+    try {
+      // Native path on a WebView without fullscreen support: every optional
+      // call must silently no-op, never surface an error event.
+      ;(sheet.root.querySelector('[data-vnc-chip="fullscreen"]') as HTMLElement).click()
+      Object.defineProperty(document, 'fullscreenElement', { get: () => sheetEl, configurable: true })
+      ;(sheet.root.querySelector('[data-vnc-chip="fullscreen"]') as HTMLElement).click()
+      sheet.close()
+      await flushMicrotasks()
+      expect(errors).toEqual([])
+    } finally {
+      window.removeEventListener('error', onErr)
+      Reflect.deleteProperty(document, 'fullscreenElement')
+      Reflect.deleteProperty(document, 'fullscreenEnabled')
+    }
+  })
+
+  it('reopening resets keyboard capture focus, value, and both toggled chips', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const kbdBtn = sheet.root.querySelector('[data-vnc-keyboard]') as HTMLElement
+    const fsChip = sheet.root.querySelector('[data-vnc-chip="fullscreen"]') as HTMLElement
+    kbdBtn.click()
+    expect(document.activeElement).toBe(kbd)
+    // The explicit blur is the only one that fires an event: the re-parenting
+    // in connect() resets focus silently, so the count pins the open-path blur.
+    let blurs = 0
+    kbd.addEventListener('blur', () => blurs++)
+    kbd.value = 'stale'
+    fsChip.click()
+    sheet.open(NAS)
+    // A fresh open is a clean slate: no leftover focus, text, maximize, or
+    // lit chips leaking in from the previous session.
+    expect(blurs).toBe(1)
+    expect(document.activeElement).not.toBe(kbd)
+    expect(kbd.value).toBe('')
+    expect(kbdBtn.className).toContain('text-t2')
+    expect(fsChip.className).toContain('text-t2')
+    await vi.waitFor(() => expect(instances()).toHaveLength(2))
+  })
+})
+
+describe('createVNCSheet — close leaves no stale session', () => {
+  beforeEach(() => {
+    instances().length = 0
+    localStorage.removeItem('gbot-language')
+    initLocale()
+    stubTestEndpoint({ ok: true, latencyMs: 12 })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.removeItem('gbot-language')
+    initLocale()
+    document.body.innerHTML = ''
+  })
+  function mount() {
+    const sheet = createVNCSheet()
+    document.body.appendChild(sheet.root)
+    return sheet
+  }
+  async function openWin11() {
+    const sheet = mount()
+    sheet.open(WIN11)
+    await vi.waitFor(() => expect(instances()).toHaveLength(1))
+    return sheet
+  }
+
+  it('a chip tap after close cannot silently reconnect the closed session', async () => {
+    const sheet = await openWin11()
+    sheet.close()
+    await flushMicrotasks()
+    const chip = sheet.root.querySelector('[data-vnc-chip="control"]') as HTMLElement
+    chip.click()
+    await flushMicrotasks()
+    expect(instances()).toHaveLength(1)
+  })
+
+  it('closing with the keyboard open clears the keyboard chip for the next open', async () => {
+    const sheet = await openWin11()
+    const kbdChip = sheet.root.querySelector('[data-i18n-title="rdChipKeyboard"]') as HTMLElement
+    const input = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLInputElement
+    kbdChip.click()
+    await vi.waitFor(() => { if (document.activeElement !== input) throw new Error('not focused') })
+    sheet.close()
+    sheet.open(WIN11)
+    expect(kbdChip.className).not.toContain('text-green')
   })
 })
