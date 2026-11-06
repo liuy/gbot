@@ -366,7 +366,7 @@ export function createInputBar(initial: {
   // feedback on click; authority lives server-side and arrives via
   // setThinking, which is also the only path that should restyle to the
   // non-default color.
-  const EFFORTS = ['none', 'auto', 'low', 'medium', 'high', 'max'] as const
+  const EFFORTS = ['auto', 'none', 'low', 'medium', 'high', 'max'] as const
   let thinking = 'auto'
   let thinkingCb: ((effort: string) => void) | null = null
   // Effort selector: the send arrow doubles as the control (long-press to

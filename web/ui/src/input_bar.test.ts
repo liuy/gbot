@@ -1328,7 +1328,7 @@ describe('input bar mutation kills: send long-press effort strip mechanics', () 
     sendBtn(ib).dispatchEvent(new MouseEvent('pointerdown'))
     vi.advanceTimersByTime(500)
     expect(strip(ib).childNodes.length).toBe(6)
-    expect(strip(ib).textContent).toBe('noneautolowmediumhighmax')
+    expect(strip(ib).textContent).toBe('autononelowmediumhighmax')
     vi.useRealTimers()
   })
 
