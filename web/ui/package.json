@@ -29,6 +29,7 @@
     "katex": "^0.16.47",
     "lit": "3.3.3",
     "markdown-it": "^14.1.0",
+    "markdown-it-cjk-friendly": "^3.0.0",
     "markdown-it-highlightjs": "^4.2.0",
     "modern-screenshot": "^4.7.0",
     "tailwind-merge": "^3.6.0",

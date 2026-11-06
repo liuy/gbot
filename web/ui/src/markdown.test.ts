@@ -233,3 +233,36 @@ describe('Markdown CSS rules', () => {
     expect(tableRule).not.toContain('width: 100%')
   })
 })
+
+describe('CJK emphasis (CommonMark #650)', () => {
+  it('renders bold wrapping a quoted phrase followed by an em dash', () => {
+    const out = renderMarkdown('还是**"继续等这个档位，还是切到便宜档位"的路由信号**——服务端说 5 分钟后再来')
+    expect(out).toContain('<strong>"继续等这个档位，还是切到便宜档位"的路由信号</strong>')
+    expect(out).not.toContain('**')
+  })
+  it('renders bold closing quote followed by a space', () => {
+    const out = renderMarkdown('还是**"路由信号"** 后面空格')
+    expect(out).toContain('<strong>"路由信号"</strong>')
+    expect(out).not.toContain('**')
+  })
+  it('renders bold closing quote followed by CJK text', () => {
+    const out = renderMarkdown('**"引用"**尾巴汉字')
+    expect(out).toContain('<strong>"引用"</strong>')
+  })
+  it('leaves genuinely unclosed emphasis raw', () => {
+    const out = renderMarkdown('not ** closed')
+    expect(out).not.toContain('<strong>')
+  })
+  it('does not touch emphasis inside code spans', () => {
+    const out = renderMarkdown('`**"不渲染"**` in code')
+    expect(out).toContain('<code>**"不渲染"**</code>')
+  })
+  it('keeps plain CJK and ASCII emphasis unchanged', () => {
+    expect(renderMarkdown('中文**粗体**中文')).toContain('<strong>粗体</strong>')
+    expect(renderMarkdown('a **b** c')).toContain('<strong>b</strong>')
+  })
+  it('no-highlight variant honors CJK emphasis too', () => {
+    const out = renderMarkdownNoHighlight('还是**"路由信号"**——尾巴')
+    expect(out).toContain('<strong>"路由信号"</strong>')
+  })
+})

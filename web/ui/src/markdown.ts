@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it'
 import highlightjs from 'markdown-it-highlightjs'
 import DOMPurify from 'dompurify'
 import katexMath from '@vscode/markdown-it-katex'
+import cjkFriendly from 'markdown-it-cjk-friendly'
 // output:'mathml' renders through the browser's native MathML engine with
 // system fonts — no KaTeX webfonts bundled, which keeps the single-file
 // build ~1MB gz smaller. The top-level katex stays on the plugin's native
@@ -11,8 +12,10 @@ import katexMath from '@vscode/markdown-it-katex'
 // <style>body{width:600px}</style> once passed markdown-it, survived
 // DOMPurify's html profile (it keeps <style> elements in real browsers), and
 // applied document-wide — blowing every mobile layout.
-const mdHighlighted: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(highlightjs).use(katexMath, { throwOnError: false, output: 'mathml' })
-const mdPlain: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(katexMath, { throwOnError: false, output: 'mathml' })
+// CommonMark's flanking rules reject emphasis whose delimiters touch CJK
+// punctuation (**"引用"**——) — the pattern LLMs emit constantly in Chinese.
+const mdHighlighted: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(cjkFriendly).use(highlightjs).use(katexMath, { throwOnError: false, output: 'mathml' })
+const mdPlain: MarkdownIt = MarkdownIt({ linkify: true, breaks: true }).use(cjkFriendly).use(katexMath, { throwOnError: false, output: 'mathml' })
 
 for (const md of [mdHighlighted, mdPlain]) {
   md.renderer.rules.table_open = () => '<div class="table-wrap"><table>'
