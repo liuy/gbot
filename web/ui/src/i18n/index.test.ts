@@ -360,3 +360,108 @@ describe('retranslate — data-i18n-title anchors', () => {
     document.body.innerHTML = ''
   })
 })
+
+// The config/providers template entries had zero execution coverage in zh and
+// zh-TW — a broken template would ship silently. Exact-string pins through
+// t(), the same read path settings uses.
+describe('locale template pins — providers/status entries', () => {
+  it('zh renders the seven template entries verbatim', () => {
+    setLocale('zh')
+    expect(t('saveFailed')('kv')).toBe('保存失败：kv')
+    expect(t('loadFailed')('api')).toBe('加载失败：api')
+    expect(t('pinging')('http://x')).toBe('正在请求http://x…')
+    expect(t('fetchedModels')(12, 3)).toBe('已获取12个模型，新增3个（现有保留）')
+    expect(t('configLastReload')('10:00')).toBe('上次重载：10:00')
+    expect(t('configBannerOk')(2, 1, 0)).toBe('重载成功 · 2 个变更 · 1 个未变更 · 0 失败')
+    expect(t('configBannerErr')(2)).toBe('已放弃 · 2 个文件解析失败 · 现状零影响')
+  })
+
+  it('zh-TW renders the seven template entries verbatim', () => {
+    setLocale('zh-TW')
+    expect(t('saveFailed')('kv')).toBe('儲存失敗：kv')
+    expect(t('loadFailed')('api')).toBe('載入失敗：api')
+    expect(t('pinging')('http://x')).toBe('正在請求http://x…')
+    expect(t('fetchedModels')(12, 3)).toBe('已擷取12個模型，新增3個（現有保留）')
+    expect(t('configLastReload')('10:00')).toBe('上次重新載入：10:00')
+    expect(t('configBannerOk')(2, 1, 0)).toBe('重新載入成功 · 2 個變更 · 1 個未變更 · 0 失敗')
+    expect(t('configBannerErr')(2)).toBe('已放棄 · 2 個檔案解析失敗 · 現狀零影響')
+  })
+
+  it('en keeps the same entries as the source of truth', () => {
+    setLocale('en')
+    expect(t('saveFailed')('kv')).toBe('Save failed: kv')
+    expect(t('loadFailed')('api')).toBe('Load failed: api')
+    expect(t('pinging')('http://x')).toBe('Pinging http://x…')
+    expect(t('fetchedModels')(12, 3)).toBe('Fetched 12 models, 3 added (existing kept)')
+    expect(t('configLastReload')('10:00')).toBe('Last reload: 10:00')
+    expect(t('configBannerOk')(2, 1, 0)).toBe('Reloaded · 2 changed · 1 unchanged · 0 failed')
+    expect(t('configBannerErr')(2)).toBe('Aborted · 2 file parse failure · nothing applied')
+  })
+})
+
+describe('retranslate — multi-digit and multi-arg values', () => {
+  it('splits data-i18n-arg on commas, not into digits', () => {
+    const root = document.createElement('div')
+    const count = document.createElement('span')
+    count.setAttribute('data-i18n', 'modelsCount')
+    // Two digits: digit-splitting parses ['1','2'] and pluralizes on 1.
+    count.setAttribute('data-i18n-arg', '12')
+    count.textContent = '12 models'
+    root.append(count)
+    setLocale('zh')
+    retranslate(root)
+    expect(count.textContent).toBe('12个模型')
+    setLocale('en')
+    retranslate(root)
+    expect(count.textContent).toBe('12 models')
+  })
+
+  it('carries both comma-separated args into two-parameter templates', () => {
+    const root = document.createElement('div')
+    const span = document.createElement('span')
+    span.setAttribute('data-i18n', 'fetchedModels')
+    span.setAttribute('data-i18n-arg', '7,2')
+    span.textContent = 'Fetched 7 models, 2 added (existing kept)'
+    root.append(span)
+    setLocale('zh')
+    retranslate(root)
+    expect(span.textContent).toBe('已获取7个模型，新增2个（现有保留）')
+  })
+})
+
+describe('detectLocale — junk tags', () => {
+  it('a stem-prefixed tag without a dash never partially matches', () => {
+    // RFC 4647 Lookup truncates at '-' boundaries only: 'zh1' must fall to
+    // en, not leak into 'zh' by character truncation.
+    vi.stubGlobal('navigator', { languages: ['zh1'] })
+    expect(detectLocale()).toBe('en')
+  })
+})
+
+describe('pluralCat — unregistered locales follow en rules exactly', () => {
+  it('fr-classified locales do not import their native zero-is-one rule', () => {
+    // Intl.PluralRules('fr').select(0) === 'one'; en rules say 'other'.
+    setLocale('fr')
+    expect(pluralCat(0)).toBe('other')
+    expect(pluralCat(1)).toBe('one')
+  })
+
+  it('a fresh locale entry constructs its rules object exactly once', () => {
+    // zh-TW is used by no other pluralCat test, so the module-level cache
+    // starts empty here — the first call must build, later ones must reuse.
+    // A bare spyOn replaces the constructor with a broken stub, so the spy
+    // delegates construction to the real class and only counts the calls.
+    const real = Intl.PluralRules
+    const spy = vi.spyOn(Intl, 'PluralRules')
+    spy.mockImplementation(function (locale?: string | string[]) {
+      return new real(locale)
+    } as unknown as typeof Intl.PluralRules)
+    setLocale('zh-TW')
+    expect(pluralCat(1)).toBe('other')
+    expect(spy.mock.calls.length).toBe(1)
+    expect(pluralCat(2)).toBe('other')
+    expect(pluralCat(0)).toBe('other')
+    expect(spy.mock.calls.length).toBe(1)
+    spy.mockRestore()
+  })
+})

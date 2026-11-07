@@ -72,6 +72,13 @@ describe('extractShareText', () => {
   it('returns empty string when no shareable block exists', () => {
     expect(extractShareText([block('thinking'), block('tool')])).toBe('')
   })
+
+  it('a reply followed by chrome blocks still shares the reply', () => {
+    // The shareable pick must be the last TEXT/USER block, not the last
+    // block of any kind.
+    const blocks: Block[] = [block('text', 'final answer'), block('tool'), block('image')]
+    expect(extractShareText(blocks)).toBe('final answer')
+  })
 })
 
 // --- gesture / menu suites ---
@@ -1042,5 +1049,400 @@ describe('destroy', () => {
     // menu leaves behind is the 350ms click swallow — a missing
     // disarmClickSwallow() shows up here as count 1.
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('destroy during an armed hold cancels the pending long-press timer', () => {
+    setup()
+    press()
+    vi.advanceTimersByTime(200)
+    handle!.destroy()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+// --- mutation-kill pins: timer hygiene, boundary arithmetic, teardown ---
+
+describe('timer hygiene', () => {
+  it('a move-cancelled hold leaves no pending timer', () => {
+    setup()
+    press(100)
+    row.dispatchEvent(pointer('pointermove', 100 + CANCEL_MOVE_PX + 2))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a lift before expiry leaves no pending timer', () => {
+    setup()
+    press()
+    vi.advanceTimersByTime(200)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a pointercancel during the armed hold leaves no pending timer', () => {
+    setup()
+    press()
+    vi.advanceTimersByTime(100)
+    row.dispatchEvent(pointer('pointercancel'))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a press on a null-source row arms nothing', () => {
+    setup(() => null)
+    press()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('after a contextmenu open only the swallow window timer remains', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    expect(vi.getTimerCount()).toBe(1)
+    vi.advanceTimersByTime(400)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a closed menu leaves no swallow timer behind', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.advanceTimersByTime(130)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a pointerup after the menu closed arms no new swallow window', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.advanceTimersByTime(130)
+    // A stray container-level pointerup must not re-arm a swallow for a
+    // menu that is already gone.
+    container.dispatchEvent(pointer('pointerup'))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('the swallow window restarts on pointercancel', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    vi.advanceTimersByTime(300)
+    row.dispatchEvent(pointer('pointercancel'))
+    vi.advanceTimersByTime(100)
+    // t=400: past the original window, inside the restarted one — the row
+    // click is still eaten.
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(false)
+  })
+})
+
+describe('click swallow disarm', () => {
+  function openMenu(): void {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+  }
+
+  it('an eaten click is prevented and disarms the swallow for the next click', () => {
+    openMenu()
+    vi.advanceTimersByTime(100)
+    const first = new MouseEvent('click', { bubbles: true, cancelable: true })
+    row.dispatchEvent(first)
+    expect(first.defaultPrevented).toBe(true)
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(false)
+    // The swallow consumed itself: a second row click inside the original
+    // window reaches the doc-click closer.
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
+  })
+})
+
+describe('cancel threshold arithmetic', () => {
+  it('a move of exactly CANCEL_MOVE_PX stays within the hold', () => {
+    setup()
+    press(100)
+    row.dispatchEvent(pointer('pointermove', 100 + CANCEL_MOVE_PX))
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+  })
+
+  it('horizontal drift measures from the press origin', () => {
+    setup()
+    const down = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 100, clientY: 50 })
+    row.dispatchEvent(down)
+    // 7px right of the 100px origin — inside the threshold, hold survives.
+    row.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 107, clientY: 50 }))
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientY: 50 }))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+  })
+})
+
+describe('flip and clamp boundaries', () => {
+  it('stays above when the above-position lands exactly at the 8px margin', () => {
+    setup()
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    // touch 64 → 64-48-8 = 8 exactly: not below 8, no flip.
+    press(64)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    const menu = host.querySelector('.share-menu') as HTMLElement
+    expect(menu.classList.contains('share-below')).toBe(false)
+    expect(menu.style.top).toBe('8px')
+  })
+
+  it('the below-clamp pulls a flip back inside a short host', () => {
+    setup()
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 60, right: 390, bottom: 60 }),
+    )
+    // touch 12 → flip lands at 20; 20+48 overflows 60-8 → clamped to 8.
+    press(12)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    const menu = host.querySelector('.share-menu') as HTMLElement
+    expect(menu.style.top).toBe('8px')
+  })
+
+  it('the below-clamp leaves an exact-fit flip alone, even above the host', () => {
+    setup()
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 56, right: 390, bottom: 56 }),
+    )
+    // touch -8 → flip top 0; 0+48 === 56-8 exactly — no clamp, the menu
+    // hugs the touch point.
+    press(-8)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    const menu = host.querySelector('.share-menu') as HTMLElement
+    expect(menu.style.top).toBe('0px')
+  })
+})
+
+describe('menu item attributes', () => {
+  it('items are type=button with localized aria-labels', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    const items = host.querySelectorAll('button.share-menu-item')
+    expect(items[0].getAttribute('type')).toBe('button')
+    expect(items[0].getAttribute('aria-label')).toBe(t('shareMenuImage'))
+    expect(items[1].getAttribute('type')).toBe('button')
+    expect(items[1].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+  })
+
+  it('the copy-only capsule carries the copy aria-label', () => {
+    setup(() => ({ ...source, shareable: false }))
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    const item = host.querySelector('button.share-menu-item') as HTMLElement
+    expect(item.getAttribute('type')).toBe('button')
+    expect(item.getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+  })
+})
+
+describe('toast lifecycle', () => {
+  async function flush(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  it('the toast fades at 1400ms and removes itself at 1800ms', async () => {
+    setup()
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    vi.mocked(copyText).mockResolvedValue()
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    const toast = host.querySelector('.share-toast') as HTMLElement
+    expect(toast).not.toBeNull()
+    vi.advanceTimersByTime(1400)
+    expect(toast.style.opacity).toBe('0')
+    vi.advanceTimersByTime(400)
+    expect(host.querySelector('.share-toast')).toBeNull()
+  })
+})
+
+describe('share item closes the menu', () => {
+  async function flush(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  it('a successful share tears the menu down immediately', async () => {
+    setup()
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    vi.mocked(shareMessage).mockResolvedValue('opened')
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
+  })
+})
+
+describe('selection rect degenerate cases', () => {
+  function openWithRect(rect: DOMRect, touchY: number): HTMLElement {
+    setup()
+    row.textContent = 'hello partial world'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 6)
+    range.setEnd(row.firstChild!, 13)
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', { value: () => rect })
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 200, left: 100, width: 200, height: 50, right: 300, bottom: 250 }),
+    )
+    press(touchY)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    return host.querySelector('.share-menu') as HTMLElement
+  }
+
+  it('a flat selection rect (height 0, width > 0) still anchors the menu', () => {
+    const menu = openWithRect(
+      domRect({ top: 120, left: 40, width: 100, height: 0, right: 140, bottom: 120 }),
+      300,
+    )
+    // Selection top 120 wins: 120-48-8 = 64.
+    expect(menu.style.top).toBe('64px')
+  })
+
+  it('a zero-area selection rect falls back to the touch point', () => {
+    const menu = openWithRect(
+      domRect({ top: 120, left: 40, width: 0, height: 0, right: 40, bottom: 120 }),
+      300,
+    )
+    // No usable rect: touch 300 → 300-48-8 = 244.
+    expect(menu.style.top).toBe('244px')
+  })
+})
+
+describe('reposition race with DOM teardown', () => {
+  function openSelectionAnchored(rect: { top: number }): HTMLElement {
+    setup()
+    row.textContent = 'hello partial world'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 6)
+    range.setEnd(row.firstChild!, 13)
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () =>
+        domRect({ top: rect.top, left: 40, width: 100, height: 20, right: 140, bottom: rect.top + 20 }),
+    })
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 200, left: 100, width: 200, height: 50, right: 300, bottom: 250 }),
+    )
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    return host.querySelector('.share-menu') as HTMLElement
+  }
+
+  it('a reposition scheduled while attached closes the menu when the row dies first', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    rect.top = 260
+    // Schedule with the row attached and selected...
+    container.dispatchEvent(new Event('scroll'))
+    expect(menu.classList.contains('share-closing')).toBe(false)
+    // ...then rewind detaches the row before the frame runs.
+    row.remove()
+    vi.advanceTimersByTime(16)
+    expect(menu.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('a reposition scheduled while attached closes the menu when the selection dies first', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    rect.top = 260
+    // The scroll must fire while the selection is still alive: a dead
+    // selection makes onScroll itself take the close branch, and the frame
+    // (the only || arm under test here) never gets scheduled.
+    container.dispatchEvent(new Event('scroll'))
+    expect(menu.classList.contains('share-closing')).toBe(false)
+    // jsdom does not fire selectionchange on removeAllRanges, so the frame
+    // is the only closer left — row stays attached, selection is gone.
+    window.getSelection()?.removeAllRanges()
+    vi.advanceTimersByTime(16)
+    expect(menu.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('a reposition schedules exactly one frame per burst', () => {
+    const rect = { top: 120 }
+    openSelectionAnchored(rect)
+    rect.top = 260
+    container.dispatchEvent(new Event('scroll'))
+    container.dispatchEvent(new Event('scroll'))
+    expect(vi.getTimerCount()).toBe(2) // rAF frame + 350ms click swallow
+  })
+
+  it('a second scroll burst after the first frame repositions again', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    rect.top = 260
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(16)
+    expect(menu.style.top).toBe('204px')
+    rect.top = 320
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(16)
+    expect(menu.style.top).toBe('264px')
+  })
+})
+
+describe('contextmenu scope', () => {
+  it('a contextmenu outside the container is not prevented', () => {
+    setup()
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    host.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+  })
+})
+
+describe('selectionchange with a foreign selection', () => {
+  it('a selection outside the held row leaves the menu in place', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    const other = document.createElement('div')
+    other.textContent = 'foreign selection'
+    host.insertBefore(other, container)
+    const range = document.createRange()
+    range.setStart(other.firstChild!, 0)
+    range.setEnd(other.firstChild!, 7)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(false)
+  })
+})
+
+describe('destroy removes the document-level and capture listeners by name', () => {
+  it('selectionchange comes off the document and scroll comes off the host in capture phase', () => {
+    setup()
+    const docSpy = vi.spyOn(document, 'removeEventListener')
+    const hostSpy = vi.spyOn(host, 'removeEventListener')
+    handle!.destroy()
+    expect(docSpy).toHaveBeenCalledWith('selectionchange', expect.any(Function))
+    expect(hostSpy).toHaveBeenCalledWith('scroll', expect.any(Function), true)
+    docSpy.mockRestore()
+    hostSpy.mockRestore()
   })
 })

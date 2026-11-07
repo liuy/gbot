@@ -34,7 +34,7 @@ const PATH_SUFFIX = '.ts'
 
 // eager: the registry must be populated before initLocale() runs at module
 // scope below.
-const modules = import.meta.glob<LocaleModule>('./locales/*.ts', { eager: true })
+const modules = import.meta.glob('./locales/*.ts', { eager: true }) as Record<string, LocaleModule>
 
 // Registered by file stem ('./locales/en.ts' → 'en') — dropping a new file
 // into locales/ adds a language with zero further edits.

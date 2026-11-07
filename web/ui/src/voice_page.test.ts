@@ -45,6 +45,48 @@ describe('createVoicePage', () => {
     expect(page.root.querySelector('.voice-hint')).toBe(null)
   })
 
+  it('mounts with data-st="idle" and the chrome structure pinned', () => {
+    // Fresh page: idle before any setState call.
+    const fresh = setup().page
+    expect(fresh.root.dataset.st).toBe('idle')
+    fresh.destroy()
+    // X button: the ONLY close affordance — a real button, labeled, with an
+    // svg glyph (a text-only X would regress the 10-28 ruling).
+    const x = page.root.querySelector('.voice-x') as HTMLElement
+    expect(x.tagName).toBe('BUTTON')
+    expect(x.getAttribute('aria-label')).toBe('close voice')
+    expect(x.querySelector('svg')).toBeTruthy()
+    // Top strip: engine label inside .voice-engine inside .voice-top.
+    const top = page.root.querySelector(':scope > .voice-top') as HTMLElement
+    expect(top).toBeTruthy()
+    const engine = top.querySelector('.voice-engine') as HTMLElement
+    expect((engine.querySelector('.span') as HTMLElement)?.className).toBe('span')
+    expect(engine.textContent).toBe('小爪')
+    // Stage children in order: avatar wrap, partial, vcontent.
+    const stage = page.root.querySelector(':scope > .voice-stage') as HTMLElement
+    expect(stage.children[0].className).toBe('voice-avatar-wrap')
+    expect((stage.children[0] as HTMLElement).querySelector('.voice-aura')).toBeTruthy()
+    expect((stage.children[0] as HTMLElement).querySelector('.voice-avatar')).toBeTruthy()
+    expect(stage.children[1].className).toBe('voice-partial')
+    expect(stage.children[2].className).toBe('voice-vcontent')
+    // Controls strip under the stage.
+    expect(page.root.querySelector(':scope > .voice-controls > .voice-mic')).toBeTruthy()
+    // Root child order: x, top, stage, controls.
+    const classes = [...page.root.children].map((c) => (c as HTMLElement).className)
+    expect(classes).toEqual(['voice-x', 'voice-top', 'voice-stage', 'voice-controls'])
+  })
+
+  it('the partial transcript carries the bare hidden attribute', () => {
+    // hidden="" hides; any other value would still hide but drifts from the
+    // HTML boolean-attribute idiom this DOM relies on.
+    const partial = page.root.querySelector('.voice-partial') as HTMLElement
+    expect(partial.getAttribute('hidden')).toBe('')
+    page.setPartial('hi')
+    expect(partial.getAttribute('hidden')).toBe(null)
+    page.setPartial('')
+    expect(partial.getAttribute('hidden')).toBe('')
+  })
+
   it('the aura canvas keeps the ≤512 WebGL backing-store discipline', () => {
     const canvas = page.root.querySelector('.voice-aura') as HTMLCanvasElement
     expect(canvas.width).toBe(VOICE_AURA_SIZE)
@@ -300,5 +342,78 @@ describe('createVoicePage', () => {
     // Events after destroy must not touch the detached DOM (or throw).
     expect(() => store.apply({ type: 'thinking_start' })).not.toThrow()
     expect(page.root.querySelectorAll('[data-thinking="1"]').length).toBe(0)
+  })
+
+  it('setState(listen) resets the transient blocks like speak/idle do', () => {
+    const { page, store } = setup()
+    page.setState('tool')
+    store.apply(toolStart('t1', 'web'))
+    expect(page.root.querySelectorAll('[data-tool-root]').length).toBe(1)
+    page.setState('listen')
+    expect(page.root.querySelectorAll('[data-tool-root]').length).toBe(0)
+    expect(store.blocks()).toEqual([])
+  })
+
+  it('mic pointerdown prevents default so the browser never synthesizes a tap', () => {
+    const mic = page.root.querySelector('.voice-mic') as HTMLElement
+    const e = new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
+    mic.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  it('pointerleave in speak state never releases a hold (no barge-in)', () => {
+    const onHold = vi.fn()
+    document.body.innerHTML = ''
+    const p = createVoicePage({ engineName: 'e', level: () => 0, blocks: createEventBlockStore(), onHold, onClose: vi.fn() })
+    document.body.appendChild(p.root)
+    const mic = p.root.querySelector('.voice-mic') as HTMLElement
+    p.setState('speak')
+    mic.dispatchEvent(new MouseEvent('pointerleave', { bubbles: true }))
+    expect(onHold).not.toHaveBeenCalled()
+    p.destroy()
+  })
+
+  it('an isolated tool_end stamps the duration without any param delta', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const { page, store } = setup()
+      page.setState('tool')
+      store.apply(toolStart('t1', 'web'))
+      vi.setSystemTime(new Date('2026-01-01T00:00:03Z'))
+      store.apply({
+        type: 'tool_end',
+        tool_result: { tool_use_id: 't1', output: '', display_output: 'done' },
+      })
+      const row = page.root.querySelector('[data-tool-root]') as HTMLElement
+      // tool_end alone must reach the patchTool path: duration stamped with
+      // no param delta ever arriving.
+      expect(row.dataset.toolTimingNs).toBe('3000000000')
+      expect(row.textContent).toContain('3s')
+      // Render-on-visible: the settled body folds, so expand to see the
+      // final output the finish path stored.
+      ;(row.querySelector('[data-tool-header]') as HTMLElement).click()
+      expect(row.textContent).toContain('done')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an isolated tool_output_delta streams its output into the running row', () => {
+    const { page, store } = setup()
+    page.setState('tool')
+    store.apply(toolStart('t1', 'web'))
+    store.apply({
+      type: 'tool_output_delta',
+      tool_result: { tool_use_id: 't1', output: '', display_output: 'streaming output' },
+    })
+    const row = page.root.querySelector('[data-tool-root]') as HTMLElement
+    // Still exactly one tool row: no duplicate block appended.
+    expect(page.root.querySelectorAll('[data-tool-root]').length).toBe(1)
+    // tool_output_delta routes through patchTool, which parks the output as
+    // pending behind the folded body; expanding reveals it. A root sync
+    // instead leaves the running row's pending slot empty.
+    ;(row.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(row.textContent).toContain('streaming output')
   })
 })

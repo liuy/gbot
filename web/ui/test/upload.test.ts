@@ -131,6 +131,57 @@ describe('uploadAttachment', () => {
     XHRStub.instances[0].onerror!()
     await expect(p).rejects.toThrow(/.+/) // non-empty message, no raw exception
   })
+
+  it('a 200 with a garbage body rejects as a bad response', async () => {
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 200
+    x.responseText = '<html>not json</html>'
+    x.onload!()
+    await expect(p).rejects.toThrow('upload failed: bad response')
+  })
+
+  it('a 200 with an empty body rejects as a bad response', async () => {
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 200
+    x.responseText = ''
+    x.onload!()
+    await expect(p).rejects.toThrow('upload failed: bad response')
+  })
+
+  it('a non-string error envelope never becomes the message', async () => {
+    // {"error": 5} — a non-string envelope must not become the message.
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 400
+    x.responseText = JSON.stringify({ error: 5 })
+    x.onload!()
+    await expect(p).rejects.toThrow('upload failed: 400')
+  })
+
+  it('a null error envelope never becomes the message', async () => {
+    // JSON.parse('null') succeeds; the ?. must treat it as no message.
+    const p = uploadAttachment(pngFile(), {})
+    const x = XHRStub.instances[0]
+    x.status = 502
+    x.responseText = 'null'
+    x.onload!()
+    await expect(p).rejects.toThrow('upload failed: 502')
+  })
+
+  it('a zero total never invokes the progress callback', async () => {
+    // lengthComputable with total 0 would divide 0/0 into NaN bar widths.
+    const onProgress = vi.fn()
+    const p = uploadAttachment(pngFile(), { onProgress })
+    const x = XHRStub.instances[0]
+    x.upload.onprogress!({ lengthComputable: true, loaded: 0, total: 0 })
+    expect(onProgress).not.toHaveBeenCalled()
+    x.status = 200
+    x.responseText = okBody('i:zero')
+    x.onload!()
+    await p
+  })
 })
 
 describe('attachmentMeta', () => {
@@ -152,6 +203,55 @@ describe('attachmentMeta', () => {
     expect(attachmentMeta(pdf, 'd:pdf').mime).toBe('application/pdf')
     const unknown = new File([new Uint8Array([0x01])], 'weird.xyz', { type: '' })
     expect(attachmentMeta(unknown, 'd:x').mime).toBe('application/octet-stream')
+  })
+
+  it('sniffs the exact mime for every extension in the table', () => {
+    // Mirrors pkg/media/mime.go — one wrong mapping here is a wrong
+    // Content-Type on the server, so every entry is pinned.
+    const table: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', bmp: 'image/bmp',
+      pdf: 'application/pdf', doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      epub: 'application/epub+zip', csv: 'text/csv', txt: 'text/plain', md: 'text/markdown',
+      json: 'application/json', xml: 'application/xml', html: 'text/html',
+      ipynb: 'application/x-ipynb+json', zip: 'application/zip',
+    }
+    for (const [ext, mime] of Object.entries(table)) {
+      const sniffed = new File([new Uint8Array([0x01])], `f.${ext}`, { type: '' })
+      expect(attachmentMeta(sniffed, 'i:x').mime, `extension ${ext}`).toBe(mime)
+    }
+    // The extension match is case-insensitive.
+    const upper = new File([new Uint8Array([0x01])], 'PHOTO.PNG', { type: '' })
+    expect(attachmentMeta(upper, 'i:x').mime).toBe('image/png')
+    // A dotless name sniffs the whole string (lastIndexOf → -1 → slice(0)).
+    const dotless = new File([new Uint8Array([0x01])], 'png', { type: '' })
+    expect(attachmentMeta(dotless, 'i:x').mime).toBe('image/png')
+    // A real file.type always wins over the sniff.
+    const typed = new File([new Uint8Array([0x01])], 'photo.png', { type: 'image/x-custom' })
+    expect(attachmentMeta(typed, 'i:x').mime).toBe('image/x-custom')
+  })
+})
+
+describe('pooled error selection', () => {
+  it('two failures rethrow the first error, not the last', async () => {
+    // Serial pool (limit 1): item 0 fails with E1, item 1 with E2 — the
+    // rethrown error must be E1 even though E2 landed later.
+    const p = pooled([0, 1], 1, async (i) => {
+      throw new Error(i === 0 ? 'first-boom' : 'second-boom')
+    })
+    await expect(p).rejects.toThrow('first-boom')
+  })
+
+  it('one failure after a success still rethrows that error', async () => {
+    const p = pooled([0, 1], 2, async (i) => {
+      if (i === 1) throw new Error('late-boom')
+    })
+    await expect(p).rejects.toThrow('late-boom')
   })
 })
 
