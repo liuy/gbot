@@ -309,7 +309,7 @@ func TestNormalizeMediaType(t *testing.T) {
 func TestCompressAfterResize_PngPaletteSucceeds(t *testing.T) {
 	t.Parallel()
 	src := solidRGBA(200, 200, color.RGBA{R: 50, G: 100, B: 150, A: 255})
-	res := compressAfterResize(src, 200, 200, 200, 200, true)
+	res := compressAfterResize(src, 200, 200, 200, 200, true, IMAGE_TARGET_RAW_SIZE)
 	if res.MediaType != "png" {
 		t.Errorf("MediaType = %q, want png (palette path)", res.MediaType)
 	}
@@ -321,7 +321,7 @@ func TestCompressAfterResize_PngPaletteSucceeds(t *testing.T) {
 func TestCompressAfterResize_JpegLoop(t *testing.T) {
 	t.Parallel()
 	src := noiseRGBA(800, 800, 5)
-	res := compressAfterResize(src, 800, 800, 800, 800, false)
+	res := compressAfterResize(src, 800, 800, 800, 800, false, IMAGE_TARGET_RAW_SIZE)
 	if res.MediaType != "jpeg" {
 		t.Errorf("MediaType = %q, want jpeg (loop or fallback)", res.MediaType)
 	}
@@ -389,4 +389,25 @@ func (p *proceduralNoise) At(x, y int) color.Color {
 		B: uint8(h >> 16),
 		A: 255,
 	}
+}
+
+// TestCompressAfterResize_LoopKeepsDims pins that a JPEG-loop acceptance
+// returns the input dimensions: a mutant inverting the size comparison
+// (`ok && len > cap`) skips every loop step and lands on the 1000px final
+// fallback, whose DisplayWidth (1000) differs from the loop's (1200).
+func TestCompressAfterResize_LoopKeepsDims(t *testing.T) {
+	t.Parallel()
+	src := noiseRGBA(1200, 1200, 5)
+	res := compressAfterResize(src, 1200, 1200, 1200, 1200, false, IMAGE_TARGET_RAW_SIZE)
+	if res.MediaType != "jpeg" {
+		t.Errorf("MediaType = %q, want jpeg", res.MediaType)
+	}
+	if res.Dimensions == nil {
+		t.Fatal("Dimensions nil")
+	}
+	if res.Dimensions.DisplayWidth != 1200 || res.Dimensions.DisplayHeight != 1200 {
+		t.Errorf("Display = %dx%d, want 1200x1200 (loop acceptance, not the 1000px fallback)",
+			res.Dimensions.DisplayWidth, res.Dimensions.DisplayHeight)
+	}
+	reDecode(t, res.Buffer, "CompressAfterResize_LoopKeepsDims")
 }

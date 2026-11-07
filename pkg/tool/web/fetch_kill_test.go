@@ -491,67 +491,6 @@ func clip(s string, n int) string {
 	return s
 }
 
-func TestFKFormatISODateFastPath(t *testing.T) {
-	tests := []struct {
-		input any
-		want  string
-	}{
-		// 10+ chars with dashes at 4 and 7 returns the raw 10-byte prefix,
-		// no calendar validation. "abcd-ef-gh" is exactly 10 bytes, pinning
-		// the >= boundary.
-		{"abcd-ef-gh", "abcd-ef-gh"},
-		{"abcd-ef-ghi", "abcd-ef-gh"},
-		// v[4] or v[7] missing the dash falls to the layout loop, which
-		// cannot parse these, so "".
-		{"abcde67-90", ""},
-		{"abcd-ef8ghi", ""},
-		{"abcd-ef-g", ""},
-	}
-	for _, tt := range tests {
-		if got := FormatISODate(tt.input); got != tt.want {
-			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestFKFormatISODateUnixNanos(t *testing.T) {
-	// Local midnight flips to the previous day when the nanosecond argument
-	// is nudged to -1, and midnight-1s flips forward with +1.
-	mid := time.Date(2024, 1, 15, 0, 0, 0, 0, time.Local).Unix()
-	tests := []struct {
-		input any
-		want  string
-	}{
-		{mid, "2024-01-15"},
-		{mid - 1, "2024-01-14"},
-		{int(mid), "2024-01-15"},
-		{int(mid - 1), "2024-01-14"},
-		{float64(mid), "2024-01-15"},
-		{float64(mid - 1), "2024-01-14"},
-	}
-	for _, tt := range tests {
-		if got := FormatISODate(tt.input); got != tt.want {
-			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestFKFormatISODateEpochBoundary(t *testing.T) {
-	// float64 seconds below 1e9 are "not a unix timestamp" and return "".
-	tests := []struct {
-		input any
-		want  string
-	}{
-		{float64(1e9), ""},
-		{float64(1000000001), time.Unix(1000000001, 0).Format("2006-01-02")},
-	}
-	for _, tt := range tests {
-		if got := FormatISODate(tt.input); got != tt.want {
-			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestFKFormatMediaDurationBoundaries(t *testing.T) {
 	tests := []struct {
 		input float64

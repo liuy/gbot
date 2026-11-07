@@ -3,8 +3,10 @@ package web
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,9 +19,20 @@ import (
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/web/scrapers"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 const defaultLimit = 10
+
+// Inline-image ceilings from omp fetch.ts:87-88 — a 20MB source cap
+// (MAX_INLINE_IMAGE_SOURCE_BYTES) feeding the shared resize pipeline, whose
+// output must fit a 300KB budget (MAX_INLINE_IMAGE_OUTPUT_BYTES). Vars, not
+// consts, so boundary tests can shrink the output budget instead of forcing
+// an image the ladder provably cannot compress under it.
+var (
+	maxInlineImageSourceBytes = int64(20 * 1024 * 1024)
+	maxInlineImageOutputBytes = 300 * 1024
+)
 
 // Option configures the web tool.
 type Option func(*webConfig)
@@ -46,6 +59,9 @@ type Output struct {
 	Mode    string
 	Content string
 	Raw     *providers.SearchResponse
+	// Image carries an inline image for fetch results whose body was an
+	// image. Non-nil only — presence is the signal the wire path keys on.
+	Image *FetchImage
 }
 
 // New constructs the web tool with default search providers and scrapers.
@@ -131,6 +147,9 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			}
 		},
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
+			if o, ok := decodeImageWire(raw); ok {
+				return o, nil
+			}
 			text, err := tool.UnmarshalSingleBlock(raw)
 			if err != nil {
 				return nil, err
@@ -158,7 +177,18 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			// Source: WebFetchTool.ts:300-306 — wire content is the processed
 			// result string verbatim; Content already holds the LLM-ready text
 			// from formatForLLM/BuildResult for both modes of the merged tool.
-			return []types.ContentBlock{types.NewTextBlock(out.Content)}
+			blocks := []types.ContentBlock{types.NewTextBlock(out.Content)}
+			if out.Image != nil {
+				// Text first, image second — same order as Computer's
+				// screenshot wire, which persist/budget already treat as a
+				// skip-image unit.
+				blocks = append(blocks, types.NewImageBlock(types.ImageSource{
+					Type:      "base64",
+					MediaType: out.Image.MimeType,
+					Data:      out.Image.Base64,
+				}))
+			}
+			return blocks
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}
@@ -285,12 +315,7 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 					ContentType: result.ContentType,
 					Notes:       notes,
 				})
-				return &tool.ToolResult{
-					Data: &Output{
-						Mode:    "fetch",
-						Content: fetchResult.Content,
-					},
-				}, nil
+				return fetchToolResult(fetchResult), nil
 			}
 		}
 	}
@@ -303,12 +328,7 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 			FinalURL: url,
 			Notes:    []string{"converted from binary document"},
 		})
-		return &tool.ToolResult{
-			Data: &Output{
-				Mode:    "fetch",
-				Content: fetchResult.Content,
-			},
-		}, nil
+		return fetchToolResult(fetchResult), nil
 	}
 
 	result := LoadPage(ctx, url, LoadPageOptions{Client: client})
@@ -320,20 +340,58 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 
 	slog.Info("web:fetch completed via HTTP", "url", url, "status", result.Status, "content_len", len(result.Content))
 
+	var notes []string
+	if result.Status == http.StatusNoContent {
+		// omp renderUrl short-circuits 204 with exactly this note; the body
+		// is empty by definition, so flowing on through the text path is
+		// equivalent to its early return.
+		notes = append(notes, "HTTP 204 No Content")
+		// omp renderUrl short-circuits here: the body is empty by
+		// definition, so flowing on would only re-fetch nothing and stack
+		// image-path notes onto a 204.
+		return fetchToolResult(BuildResult("", FetchResultOptions{URL: url, FinalURL: result.FinalURL, ContentType: result.ContentType, Notes: notes})), nil
+	}
+	if result.FinalURL != url {
+		notes = append(notes, fmt.Sprintf("redirected to %s", result.FinalURL))
+	}
+	if result.Truncated {
+		// Quoting MaxBytes is exact here: this call sets no custom MaxBytes,
+		// so LoadPage enforced its default, which is the MaxBytes constant.
+		// formatBytes mirrors omp's note style so the ports read alike.
+		notes = append(notes, fmt.Sprintf("Response body exceeded %s and was cut mid-stream; content is incomplete", formatBytes(MaxBytes)))
+	}
+
+	if imageMime := resolveImageMimeType(result.ContentType, imageExtHint(result.FinalURL)); imageMime != "" {
+		if !supportedInlineImageMime(imageMime) {
+			notes = append(notes, fmt.Sprintf(
+				"Image MIME type %s is unsupported for inline model serialization; returning text metadata only", imageMime))
+			// omp falls back to its textual renderer here, which serves the
+			// initial response's body when it is text (svg is the common
+			// case); a binary body stays metadata-only so raw bytes never
+			// reach the model as mojibake.
+			if !textuallyDecodable(result.Content) {
+				return fetchToolResult(BuildResult(
+					fmt.Sprintf("Fetched image content (%s), but its MIME type is unsupported for inline model serialization.", imageMime),
+					FetchResultOptions{Notes: notes})), nil
+			}
+			notes = append(notes, "Falling back to textual rendering from initial response")
+		} else if data, err := fetchImageBinary(ctx, result.FinalURL, client); err != nil {
+			// omp: explain the failure, then serve the textual rendering the
+			// initial response already produced.
+			notes = append(notes, fmt.Sprintf("Binary fetch failed: %v", err),
+				"Falling back to textual rendering from initial response")
+		} else {
+			notes = append(notes, "Fetched image binary")
+			return inlineImageResult(notes, imageMime, result.Content, data), nil
+		}
+	}
+
 	content := result.Content
 	if LooksLikeHTML(content) {
 		md, err := HTMLToMarkdown(content)
 		if err == nil {
 			content = md
 		}
-	}
-
-	var notes []string
-	if result.FinalURL != url {
-		notes = append(notes, fmt.Sprintf("redirected to %s", result.FinalURL))
-	}
-	if result.Truncated {
-		notes = append(notes, "output truncated")
 	}
 
 	fetchResult := BuildResult(content, FetchResultOptions{
@@ -343,12 +401,7 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 		Notes:       notes,
 	})
 
-	return &tool.ToolResult{
-		Data: &Output{
-			Mode:    "fetch",
-			Content: fetchResult.Content,
-		},
-	}, nil
+	return fetchToolResult(fetchResult), nil
 }
 
 func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*tool.ToolResult, error) {
@@ -374,12 +427,135 @@ func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*too
 	})
 
 	slog.Info("web:fetch JS mode succeeded", "url", url, "content_len", len(fetchResult.Content))
+	return fetchToolResult(fetchResult), nil
+}
+
+// fetchToolResult is the single assembly point for every fetch path's
+// model-visible output. The render-limit trim note lives here, not at call
+// sites, so no path can serve a truncated body as complete truth.
+func fetchToolResult(fr FetchResult) *tool.ToolResult {
+	notes := fr.Notes
+	if fr.Truncated {
+		notes = append(notes, "output trimmed to the render limit")
+	}
 	return &tool.ToolResult{
 		Data: &Output{
 			Mode:    "fetch",
-			Content: fetchResult.Content,
+			Content: notesLedContent(notes, fr.Content),
+			Image:   fr.Image,
 		},
-	}, nil
+	}
+}
+
+// inlineImageResult runs the omp fetch.ts image path (fetch.ts:1181-1260)
+// over the fetched bytes: source-size gate → magic-number sniff → resize
+// against the output budget → decode validation → output-size gate. Every
+// outcome returns a tool result; the caller never falls through.
+func inlineImageResult(notes []string, imageMime, textual string, data []byte) *tool.ToolResult {
+	if int64(len(data)) > maxInlineImageSourceBytes {
+		tooLargeNotes := append(notes, fmt.Sprintf(
+			"Image exceeds inline source limit (%d bytes > %d bytes)", len(data), maxInlineImageSourceBytes))
+		return fetchToolResult(BuildResult(
+			fmt.Sprintf("Fetched image content (%s), but it is too large to inline render.", imageMime),
+			FetchResultOptions{Notes: tooLargeNotes}))
+	}
+	sniffed := sniffedInlineImageMime(data)
+	if sniffed == "" {
+		return imageInvalidResult(notes, imageMime, textual, "")
+	}
+	resized, err := utils.MaybeResizeAndDownsampleImageBufferWithBudget(
+		data, len(data), strings.TrimPrefix(sniffed, "image/"), maxInlineImageOutputBytes)
+	if err != nil {
+		return imageInvalidResult(notes, imageMime, textual, err.Error())
+	}
+	// The passthrough sub-case (Dimensions nil — DecodeConfig failed and the
+	// resizer returned the original bytes) and a fast path over a
+	// header-valid/body-broken payload both land here: DecodeConfig only
+	// parses headers, so full-decode validation is what the API will do.
+	if _, _, err := image.Decode(bytes.NewReader(resized.Buffer)); err != nil {
+		return imageInvalidResult(notes, imageMime, textual, "")
+	}
+	if len(resized.Buffer) > maxInlineImageOutputBytes {
+		outputNotes := append(notes, fmt.Sprintf(
+			"Image exceeds inline output limit after resize (%d bytes > %d bytes)",
+			len(resized.Buffer), maxInlineImageOutputBytes))
+		return fetchToolResult(BuildResult(
+			fmt.Sprintf("Fetched image content (%s), but it is too large to inline render.", imageMime),
+			FetchResultOptions{Notes: outputNotes}))
+	}
+	// The wire MIME comes from the payload bytes, not the resizer's label:
+	// the ladder re-encodes across formats (gif/webp sources become png/jpeg)
+	// and a mismatched media_type is an API-side image rejection.
+	mimeType := utils.DetectImageFormatFromBuffer(resized.Buffer)
+	return fetchToolResult(BuildResult(
+		fmt.Sprintf("Fetched image content (%s).", mimeType),
+		FetchResultOptions{
+			Notes: notes,
+			Image: &FetchImage{
+				Base64:   base64.StdEncoding.EncodeToString(resized.Buffer),
+				MimeType: mimeType,
+			},
+		}))
+}
+
+// imageInvalidResult is omp fetch.ts:1206-1221 (image-invalid): a payload
+// that claimed to be an image but would not decode degrades to the textual
+// rendering (or the labeled-fallback sentence when the body is empty) plus a
+// note, never an inline block. detail carries the resizer error when there
+// is one; the bare note is omp's exact text.
+func imageInvalidResult(notes []string, imageMime, textual, detail string) *tool.ToolResult {
+	note := fmt.Sprintf("Fetched payload could not be decoded as %s; returning text metadata only", imageMime)
+	if detail != "" {
+		note = fmt.Sprintf("Fetched payload could not be decoded as %s: %s; returning text metadata only", imageMime, detail)
+	}
+	invalidNotes := append(notes, note)
+	if textual == "" {
+		textual = fmt.Sprintf("Fetched payload was labeled %s, but bytes were not a valid image.", imageMime)
+	}
+	return fetchToolResult(BuildResult(textual, FetchResultOptions{Notes: invalidNotes}))
+}
+
+// decodeImageWire unwraps the [text, image] wire form image fetches emit.
+// It must run before UnmarshalSingleBlock, which returns only the first
+// non-empty text block and would silently drop the image; ok=false keeps
+// every legacy wire shape on that path untouched.
+func decodeImageWire(raw json.RawMessage) (*Output, bool) {
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil, false
+	}
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	var out Output
+	for _, b := range blocks {
+		switch b.Type {
+		case types.ContentTypeText:
+			if b.Text != "" {
+				out.Content = b.Text
+			}
+		case types.ContentTypeImage:
+			if b.Source == nil {
+				continue
+			}
+			out.Image = &FetchImage{Base64: b.Source.Data, MimeType: b.Source.MediaType}
+		}
+	}
+	if out.Image == nil {
+		return nil, false
+	}
+	out.Mode = "fetch"
+	return &out, true
+}
+
+// Notes lead the model-visible content instead of riding on FetchResult fields
+// the Output assembly drops: a truncated or redirected body without its note
+// reads as complete truth to the model (omp: notes lead the output).
+func notesLedContent(notes []string, content string) string {
+	if len(notes) == 0 {
+		return content
+	}
+	return "[note] " + strings.Join(notes, "; ") + "\n\n" + content
 }
 
 // IsConvertibleDocument returns true if the MIME type or file extension indicates
@@ -596,3 +772,18 @@ func scraperRegistry() *scrapers.Registry {
 // A var, not a const, so boundary tests can shrink it instead of pushing a
 // real 50 MiB body through markitdown under the race detector.
 var maxDownloadBytes int64 = 50 * 1024 * 1024
+
+// formatBytes renders sizes in omp's B/KB/MB/GB tiers (pi-utils formatBytes),
+// so size notes read the same across the two ports.
+func formatBytes(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	case n < 1024*1024*1024:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1024*1024*1024))
+	}
+}

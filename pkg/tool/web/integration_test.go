@@ -272,14 +272,7 @@ func TestNew_ToolProperties(t *testing.T) {
 }
 
 func TestBuildResult(t *testing.T) {
-	result := BuildResult("# Hello", struct {
-		URL         string
-		FinalURL    string
-		Method      string
-		FetchedAt   string
-		Notes       []string
-		ContentType string
-	}{
+	result := BuildResult("# Hello", FetchResultOptions{
 		URL:         "https://example.com",
 		FinalURL:    "https://example.com/page",
 		ContentType: "text/html",
@@ -304,14 +297,7 @@ func TestBuildResult(t *testing.T) {
 }
 
 func TestBuildResult_DefaultContentType(t *testing.T) {
-	result := BuildResult("plain text", struct {
-		URL         string
-		FinalURL    string
-		Method      string
-		FetchedAt   string
-		Notes       []string
-		ContentType string
-	}{URL: "https://example.com"})
+	result := BuildResult("plain text", FetchResultOptions{URL: "https://example.com"})
 
 	if result.ContentType != "text/markdown" {
 		t.Errorf("ContentType = %q, want default text/markdown", result.ContentType)
@@ -696,6 +682,7 @@ func TestExecuteFetch_ScraperMatch(t *testing.T) {
 			Content:     "scraper content",
 			Method:      "custom",
 			ContentType: "text/plain",
+			Notes:       []string{"note a", "note b"},
 		}, nil
 	})
 
@@ -710,8 +697,8 @@ func TestExecuteFetch_ScraperMatch(t *testing.T) {
 	if output.Mode != "fetch" {
 		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
 	}
-	if !strings.Contains(output.Content, "scraper content") {
-		t.Errorf("content should contain scraper output, got: %q", output.Content)
+	if got, want := output.Content, "[note] note a; note b\n\nscraper content"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
 	}
 }
 

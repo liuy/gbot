@@ -910,3 +910,135 @@ func TestWKFACDControlCharURL(t *testing.T) {
 		t.Errorf("md = %q, want empty for unparseable URL", md)
 	}
 }
+
+// Fetch notes must reach the model (omp parity: notes lead the output) —
+// a truncated or redirected body without its note reads as complete truth.
+func TestWKFetchNotesLeadContent(t *testing.T) {
+	if got := notesLedContent(nil, "body"); got != "body" {
+		t.Errorf("no notes: %q", got)
+	}
+	if got := notesLedContent([]string{"a", "b"}, "body"); got != "[note] a; b\n\nbody" {
+		t.Errorf("two notes: %q", got)
+	}
+}
+func TestWKJSModeNoteSurfaces(t *testing.T) {
+	restore := stubChromedpFetch(func(url string, timeout time.Duration, proxy string) (string, error) {
+		return "<html><body><h1>Hi</h1></body></html>", nil
+	})
+	defer restore()
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "https://example.com/page", "js": true}`), &providers.SearchChain{}, nil, nil)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if !strings.HasPrefix(output.Content, "[note] fetched with JS rendering\n\n") {
+		t.Errorf("JS note missing from model-visible content: %q", output.Content[:min(60, len(output.Content))])
+	}
+}
+func TestWKRedirectNoteSurfaces(t *testing.T) {
+	var final string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/landing.md", http.StatusFound)
+			return
+		}
+		final = r.URL.Path
+		w.Header().Set("Content-Type", "text/markdown")
+		_, _ = w.Write([]byte("# Landed"))
+	}))
+	defer srv.Close()
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "`+srv.URL+`/start"}`), &providers.SearchChain{}, srv.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if final != "/landing.md" {
+		t.Fatalf("redirect not followed, landed at %q", final)
+	}
+	if !strings.HasPrefix(output.Content, "[note] redirected to ") {
+		t.Errorf("redirect note missing: %q", output.Content)
+	}
+}
+
+func TestWKDocumentNoteSurfaces(t *testing.T) {
+	docx := mustTestdata(t, "test.docx")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", docxMIME)
+		_, _ = w.Write(docx)
+	}))
+	defer srv.Close()
+
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "`+srv.URL+`/test.docx"}`), &providers.SearchChain{}, srv.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if !strings.HasPrefix(output.Content, "[note] converted from binary document\n\n") {
+		t.Errorf("conversion note must lead content, got: %q", truncateRunes(output.Content, 120))
+	}
+}
+
+// assertTrimmedNote pins the render-limit contract for the non-HTTP fetch
+// paths: the trim note must join the note line and the body must land exactly
+// on the MaxOutputChars cap.
+func assertTrimmedNote(t *testing.T, content, wantNoteLine string) {
+	t.Helper()
+	note, body, _ := strings.Cut(content, "\n\n")
+	if note != wantNoteLine {
+		t.Errorf("note line = %q, want %q", note, wantNoteLine)
+	}
+	if runes := len([]rune(body)); runes != MaxOutputChars {
+		t.Errorf("body runes = %d, want exactly MaxOutputChars %d", runes, MaxOutputChars)
+	}
+}
+
+func TestWKScraperTrimNoteSurfaces(t *testing.T) {
+	reg := scrapers.New()
+	reg.Register(func(ctx context.Context, u *neturl.URL, client *http.Client, js scrapers.JSFetcher) (*scrapers.Result, error) {
+		return &scrapers.Result{
+			Content:     strings.Repeat("y", MaxOutputChars+1000),
+			Method:      "custom",
+			ContentType: "text/plain",
+			Notes:       []string{"scraped via custom method"},
+		}, nil
+	})
+
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "https://example.com/page"}`), &providers.SearchChain{}, http.DefaultClient, reg)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	assertTrimmedNote(t, output.Content, "[note] scraped via custom method; output trimmed to the render limit")
+}
+
+func TestWKJSTrimNoteSurfaces(t *testing.T) {
+	restore := stubChromedpFetch(func(url string, timeout time.Duration, proxy string) (string, error) {
+		return strings.Repeat("x", MaxOutputChars+1000), nil
+	})
+	defer restore()
+
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "https://example.com/page", "js": true}`), &providers.SearchChain{}, nil, nil)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	assertTrimmedNote(t, output.Content, "[note] fetched with JS rendering; output trimmed to the render limit")
+}
+
+func TestWKDocumentTrimNoteSurfaces(t *testing.T) {
+	// One-column CSV whose markdown table exceeds MaxOutputChars: each row
+	// renders as "| xxx… |" (~104 chars), so 6000 rows clear the 500K cap.
+	csvBody := strings.Repeat(strings.Repeat("x", 100)+"\n", 6000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte(csvBody))
+	}))
+	defer srv.Close()
+
+	result, err := execute(context.Background(), json.RawMessage(`{"query": "`+srv.URL+`/big.csv"}`), &providers.SearchChain{}, srv.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	output := result.Data.(*Output)
+	assertTrimmedNote(t, output.Content, "[note] converted from binary document; output trimmed to the render limit")
+}

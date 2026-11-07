@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -174,7 +175,8 @@ func LoadPage(ctx context.Context, url string, opts LoadPageOptions) LoadPageRes
 			return *result
 		}
 	}
-
+	// Unreachable in practice (every final-attempt path returns above) but
+	// gc does not treat a bounded for as a terminating statement.
 	return LoadPageResult{Content: "", FinalURL: url, Error: lastError}
 }
 
@@ -283,8 +285,6 @@ func loadPageAttempt(
 
 var (
 	multiNewlineRe = regexp.MustCompile(`\n{3,}`)
-	scriptRe       = regexp.MustCompile(`(?i)<script[\s\S]*?</script>`)
-	styleRe        = regexp.MustCompile(`(?i)<style[\s\S]*?</style>`)
 )
 
 func FinalizeOutput(content string) (string, bool) {
@@ -334,12 +334,6 @@ func DecodeHTMLEntities(text string) string {
 	return text
 }
 
-func stripScriptsAndStyles(htmlStr string) string {
-	s := scriptRe.ReplaceAllString(htmlStr, "")
-	s = styleRe.ReplaceAllString(s, "")
-	return s
-}
-
 var markdownConverter *converter.Converter
 
 func init() {
@@ -380,39 +374,11 @@ func init() {
 }
 
 func HTMLToMarkdown(htmlStr string) (string, error) {
-	cleaned := stripScriptsAndStyles(htmlStr)
-	result, err := markdownConverter.ConvertString(cleaned)
+	result, err := markdownConverter.ConvertString(htmlStr)
 	if err != nil {
 		return "", fmt.Errorf("html→markdown: %w", err)
 	}
 	return strings.TrimSpace(result), nil
-}
-
-func FormatISODate(value any) string {
-	if value == nil {
-		return ""
-	}
-	switch v := value.(type) {
-	case string:
-		if len(v) >= 10 && v[4] == '-' && v[7] == '-' {
-			return v[:10]
-		}
-		for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02"} {
-			if t, err := time.Parse(layout, v); err == nil {
-				return t.Format("2006-01-02")
-			}
-		}
-	case float64:
-		sec := int64(v)
-		if sec > 1e9 {
-			return time.Unix(sec, 0).Format("2006-01-02")
-		}
-	case int:
-		return time.Unix(int64(v), 0).Format("2006-01-02")
-	case int64:
-		return time.Unix(v, 0).Format("2006-01-02")
-	}
-	return ""
 }
 
 func FormatMediaDuration(totalSeconds float64) string {
@@ -432,6 +398,7 @@ type FetchResultOptions struct {
 	FetchedAt   string
 	Notes       []string
 	ContentType string
+	Image       *FetchImage
 }
 
 func BuildResult(mdContent string, opts FetchResultOptions) FetchResult {
@@ -457,6 +424,7 @@ func BuildResult(mdContent string, opts FetchResultOptions) FetchResult {
 		FetchedAt:   opts.FetchedAt,
 		Truncated:   truncated,
 		Notes:       notes,
+		Image:       opts.Image,
 	}
 }
 
@@ -469,6 +437,119 @@ type FetchResult struct {
 	FetchedAt   string
 	Truncated   bool
 	Notes       []string
+	Image       *FetchImage
+}
+
+// FetchImage mirrors omp FetchRenderResult.image: the base64 payload that
+// rides alongside the text summary into the model's tool_result blocks.
+type FetchImage struct {
+	Base64   string
+	MimeType string
+}
+
+// imageMimeByExtension is the URL-extension half of the image decision
+// (omp IMAGE_MIME_BY_EXTENSION).
+var imageMimeByExtension = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// resolveImageMimeType decides whether a response is an image: an image/*
+// Content-Type wins; only generic binary labels (empty, octet-stream,
+// unknown) may trust the URL extension, so an explicit text/html or
+// application/pdf label is never overridden into the image path.
+// Source: omp fetch.ts resolveImageMimeType.
+func resolveImageMimeType(mime, extHint string) string {
+	if strings.HasPrefix(mime, "image/") {
+		return mime
+	}
+	switch mime {
+	case "", "application/octet-stream", "binary/octet-stream", "unknown":
+		return imageMimeByExtension[extHint]
+	}
+	return ""
+}
+
+// supportedInlineImageMime is the set the model serializes inline (omp
+// SUPPORTED_INLINE_IMAGE_MIME_TYPES); svg/bmp/tiff and friends degrade to
+// text metadata instead of an invalid image block.
+func supportedInlineImageMime(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	}
+	return false
+}
+
+// imageExtHint is the extension hint for the image decision, taken from the
+// final (post-redirect) URL path and lowercased like omp's
+// getFilenameExtensionHint.
+func imageExtHint(finalURL string) string {
+	parsed, err := neturl.Parse(finalURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(getExt(parsed.Path))
+}
+
+// sniffedInlineImageMime reports the byte-truthful image MIME for the inline
+// path: http.DetectContentType (which considers at most the first 512 bytes
+// itself), accepted only when the magic bytes are exactly one of the four
+// inline-serializable image types. A lying Content-Type header (HTML served
+// as image/png) or an empty body sniffs as text/* or application/* and fails
+// here, steering the fetch onto the text-metadata path before a bad block
+// can reach the API.
+func sniffedInlineImageMime(data []byte) string {
+	mime, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	if supportedInlineImageMime(mime) {
+		return mime
+	}
+	return ""
+}
+
+// textuallyDecodable reports whether an unsupported-image body is text (svg
+// is the common case) that can be served to the model verbatim. Binary
+// bodies would render as mojibake and stay on the metadata-only path. The
+// manual 512-byte cap bounds the string→[]byte copy; DetectContentType would
+// apply the same cap after a full-buffer conversion.
+func textuallyDecodable(content string) bool {
+	sniff := content
+	if len(sniff) > 512 {
+		sniff = sniff[:512]
+	}
+	mime, _, _ := strings.Cut(http.DetectContentType([]byte(sniff)), ";")
+	return strings.HasPrefix(mime, "text/")
+}
+
+// fetchImageBinary re-downloads the URL as raw bytes for the inline image
+// path (omp renderUrl re-fetches via fetchBinary instead of reusing the
+// page body). LoadPage's Content is not byte-truthful for binaries: a
+// charset label on the response would route the payload through a text
+// decoder before this code ever sees it.
+func fetchImageBinary(ctx context.Context, pageURL string, client *http.Client) ([]byte, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; TextBot/1.0)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	// MaxBytes, not the much smaller inline cap: the too-large note reports
+	// the real byte count, same as omp reading up to its MAX_BYTES before
+	// judging the size.
+	return io.ReadAll(io.LimitReader(resp.Body, MaxBytes+1))
 }
 
 // ExtractTextFromHTML skips full markdown conversion — used by scrapers

@@ -1030,9 +1030,9 @@ func TestNew_IsSearchOrRead(t *testing.T) {
 }
 
 func TestExecuteFetch_TruncationNote(t *testing.T) {
-	// Trigger result.Truncated via a > MaxBytes (50MB) response through executeFetch.
-	// Serve a body that exceeds MaxBytes so LoadPage marks Truncated=true and
-	// executeFetch appends the "output truncated" note to the FetchResult.
+	// Serve a body exceeding MaxBytes so LoadPage marks Truncated=true; the
+	// 50MB body also exceeds MaxOutputChars, so both truncation notes must
+	// lead the model-visible content.
 	big := strings.Repeat("x", 51*1024*1024+100)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -1048,18 +1048,23 @@ func TestExecuteFetch_TruncationNote(t *testing.T) {
 	if output.Mode != "fetch" {
 		t.Errorf("mode = %q, want fetch", output.Mode)
 	}
-	// The truncated content should be at most MaxBytes (50MB) and likely
-	// trimmed further by FinalizeOutput (MaxOutputChars). At minimum,
-	// the response should be well under the raw 51MB.
 	if len(output.Content) > 51*1024*1024 {
 		t.Errorf("content len = %d, should be truncated below 51MB", len(output.Content))
 	}
-	// Content must be non-empty and consist of 'x' chars (not garbled).
-	if len(output.Content) == 0 {
-		t.Fatal("content should be non-empty after truncation")
+	wantLead := fmt.Sprintf("[note] Response body exceeded %s and was cut mid-stream; content is incomplete", formatBytes(MaxBytes))
+	if !strings.HasPrefix(output.Content, wantLead) {
+		t.Errorf("byte-limit note must lead content, got: %q", truncateRunes(output.Content, 160))
 	}
-	if output.Content[0] != 'x' {
-		t.Errorf("first char = %q, want 'x'", output.Content[0])
+	if !strings.Contains(output.Content, "output trimmed to the render limit") {
+		t.Errorf("render-limit note missing, got: %q", truncateRunes(output.Content, 160))
+	}
+	note, body, _ := strings.Cut(output.Content, "\n\n")
+	if note == "" {
+		t.Fatalf("expected a note block before the body, got: %q", truncateRunes(output.Content, 160))
+	}
+	// The body is MaxOutputChars plain 'x' runes (ASCII, so bytes == runes).
+	if len(body) != MaxOutputChars || strings.Trim(body, "x") != "" {
+		t.Errorf("body should be %d x chars, got %d bytes with leftover %q", MaxOutputChars, len(body), truncateRunes(strings.Trim(body, "x"), 40))
 	}
 }
 

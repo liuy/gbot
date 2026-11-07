@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -410,29 +411,6 @@ func TestHTMLToMarkdown(t *testing.T) {
 	}
 }
 
-func TestFormatISODate(t *testing.T) {
-	tests := []struct {
-		input any
-		want  string
-	}{
-		{"2024-01-15", "2024-01-15"},
-		{"2024-01-15T10:30:00Z", "2024-01-15"},
-		{"2024-01-15 10:30:00", "2024-01-15"},
-		{nil, ""},
-		{float64(1705276800), "2024-01-15"},
-		{float64(100), ""}, // < 1e9
-		{int(1705276800), "2024-01-15"},
-		{int64(1705276800), "2024-01-15"},
-		{"invalid", ""},
-	}
-	for _, tt := range tests {
-		got := FormatISODate(tt.input)
-		if got != tt.want {
-			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestFormatMediaDuration(t *testing.T) {
 	tests := []struct {
 		input float64
@@ -681,24 +659,155 @@ func TestLoadPage_AllAttemptsErrorFallThrough(t *testing.T) {
 	}
 }
 
-func TestFormatISODate_NonStandardString(t *testing.T) {
-	// time.Parse branch is unreachable because any ISO-like date matches
-	// the len>=10 && v[4]=='-' && v[7]=='-' fast path. This documents that
-	// non-ISO strings fall through and return "".
-	tests := []struct {
-		input any
-		want  string
-	}{
-		{"Jan 2, 2006", ""},
-		{"2006/01/02", ""},
-		{"yesterday", ""},
-		{true, ""}, // unsupported type
-		{[]string{}, ""},
+func TestFetchImageBinary_SuccessAndUserAgent(t *testing.T) {
+	body := []byte("raw-image-bytes")
+	var gotUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	data, err := fetchImageBinary(context.Background(), server.URL, nil)
+	if err != nil {
+		t.Fatalf("fetchImageBinary: %v", err)
 	}
-	for _, tt := range tests {
-		got := FormatISODate(tt.input)
-		if got != tt.want {
-			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
+	if !bytes.Equal(data, body) {
+		t.Errorf("data = %q, want %q", data, body)
+	}
+	// omp fetchBinary pins the TextBot UA; a curl UA could get a different
+	// (bot-walled) response than the page fetch that preceded it.
+	if gotUA != "Mozilla/5.0 (compatible; TextBot/1.0)" {
+		t.Errorf("User-Agent = %q, want the TextBot UA", gotUA)
+	}
+}
+
+// The 2xx window is judged on the binary re-fetch itself; redirects are
+// already resolved by the client, so any non-2xx here fails the inline path.
+func TestFetchImageBinary_StatusWindow(t *testing.T) {
+	cases := []struct {
+		status  int
+		wantErr string
+	}{
+		{http.StatusOK, ""},
+		{204, ""},
+		{299, ""},
+		{300, "HTTP 300"},
+		{404, "HTTP 404"},
+		{500, "HTTP 500"},
+	}
+	for _, tc := range cases {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		_, err := fetchImageBinary(context.Background(), server.URL, nil)
+		server.Close()
+		if tc.wantErr == "" {
+			if err != nil {
+				t.Errorf("status %d: err = %v, want nil", tc.status, err)
+			}
+			continue
+		}
+		if err == nil || err.Error() != tc.wantErr {
+			t.Errorf("status %d: err = %v, want %q", tc.status, err, tc.wantErr)
+		}
+	}
+}
+
+func TestFetchImageBinary_BadURL(t *testing.T) {
+	if _, err := fetchImageBinary(context.Background(), "http://[::1]:namedport", nil); err == nil {
+		t.Fatal("fetchImageBinary must fail on an unparseable URL")
+	}
+}
+
+func TestFetchImageBinary_ConnectionRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := server.URL
+	server.Close()
+	if _, err := fetchImageBinary(context.Background(), url, nil); err == nil {
+		t.Fatal("fetchImageBinary must fail when the server is unreachable")
+	}
+}
+
+// The read cap must be exactly MaxBytes+1: a body one byte past the cap is
+// truncated to MaxBytes+1 (full-cap body still arrives byte-complete so the
+// too-large note can report its true size; anything beyond is cut).
+func TestFetchImageBinary_ReadsFullMaxBytesBody(t *testing.T) {
+	body := bytes.Repeat([]byte("p"), int(MaxBytes)+2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	data, err := fetchImageBinary(context.Background(), server.URL, nil)
+	if err != nil {
+		t.Fatalf("fetchImageBinary: %v", err)
+	}
+	if int64(len(data)) != MaxBytes+1 {
+		t.Errorf("len(data) = %d, want %d", len(data), MaxBytes+1)
+	}
+	if !bytes.Equal(data[:len(data)-1], body[:len(data)-1]) {
+		t.Error("truncated read must still carry the original prefix bytes")
+	}
+}
+
+func TestImageExtHint(t *testing.T) {
+	cases := []struct {
+		url, want string
+	}{
+		{"https://example.com/a/b.PNG", ".png"},
+		{"https://example.com/img.jpeg", ".jpeg"},
+		{"https://example.com/noext", ""},
+		{"https://example.com/dir/", ""},
+		{"://bad", ""},
+	}
+	for _, tc := range cases {
+		if got := imageExtHint(tc.url); got != tc.want {
+			t.Errorf("imageExtHint(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
+// Literal expectations, never computed via formatBytes itself: the old
+// truncation test derived its wanted string from the function under test, so
+// every arithmetic mutant changed both sides equally. 3198157/3198156 sit on
+// either side of the %.1f 3.05 rounding boundary, and the tier edges pin the
+// B/KB/MB/GB boundaries (pi-utils formatBytes tiers).
+func TestFormatBytes_Literals(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0B"},
+		{1023, "1023B"},
+		{1024, "1.0KB"},
+		// 1075/1076 straddle the %.1f 1.05 rounding boundary in the KB tier,
+		// where a ±1 in the /1024 denominator flips the rounded digit; the
+		// 1023*1024 value sits on the B/KB case boundary lowered by a
+		// 1024→1023 literal mutation.
+		{1075, "1.0KB"},
+		{1076, "1.1KB"},
+		{1023 * 1024, "1023.0KB"},
+		{1024 * 1024, "1.0MB"},
+		{3198157, "3.1MB"},
+		{3198156, "3.0MB"},
+		{MaxBytes, "50.0MB"},
+		// MB/GB case-boundary: decrementing any 1024 literal in
+		// `1024*1024*1024` lowers the boundary to 1023*1024*1024 (any single
+		// literal −1 reduces the product by the product of the other two);
+		// that value must stay in the MB tier. The 1127428915/16 pair
+		// straddles the GB tier's own 1.05 rounding boundary for a ±1 in the
+		// GB denominator.
+		{1023 * 1024 * 1024, "1023.0MB"},
+		{1024 * 1024 * 1024, "1.0GB"},
+		{1127428915, "1.0GB"},
+		{1127428916, "1.1GB"},
+		{3 * 1024 * 1024 * 1024, "3.0GB"},
+	}
+	for _, tc := range cases {
+		if got := formatBytes(tc.n); got != tc.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tc.n, got, tc.want)
 		}
 	}
 }

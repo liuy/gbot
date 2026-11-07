@@ -229,6 +229,30 @@ func TestMaybeResize_NoMetadataCatchOversizeError(t *testing.T) {
 	}
 }
 
+// Header-valid/body-broken and over cap: DecodeConfig parses, every decode
+// in the compress ladder fails, and the oversize passthrough is barred by the
+// 5MB base64 ceiling — the public API must surface ImageResizeError, never a
+// zero-length acceptance (a mutant dropping the jpeg loop's `ok` guard
+// returns the nil buffer of a failed decode because len(nil) ≤ cap).
+func TestMaybeResize_HeaderValidBodyBrokenOversizeError(t *testing.T) {
+	t.Parallel()
+	buf := make([]byte, IMAGE_TARGET_RAW_SIZE+1)
+	copy(buf, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
+	// IHDR length 13, "IHDR", 4x4, depth 8, RGBA — CRC left zero; Go's png
+	// header parser accepts it (or rejects it, and the catch path takes the
+	// same oversize error), while the full decode always fails on the zeroed
+	// body.
+	copy(buf[12:], "IHDR")
+	res, err := MaybeResizeAndDownsampleImageBuffer(buf, len(buf), "png")
+	if err == nil {
+		t.Fatalf("MaybeResize must error on an over-cap undecodable body, got %+v", res)
+	}
+	re := asImageResizeError(t, err)
+	if !strings.Contains(re.Msg, "5MB API limit") {
+		t.Errorf("err msg = %q, want substring '5MB API limit'", re.Msg)
+	}
+}
+
 // --- 7. DimensionOKSizeOverPngPalette ---
 //
 // A PNG whose dimensions are within the cap but whose raw bytes exceed
@@ -252,12 +276,11 @@ func TestMaybeResize_DimensionOKSizeOverPng(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MaybeResize: %v", err)
 	}
-	// Palette quantization may succeed (png) or fall through to jpeg — both
-	// are valid per TS branching.
-	switch res.MediaType {
-	case "png", "jpeg":
-	default:
-		t.Errorf("MediaType = %q, want png or jpeg", res.MediaType)
+	// The solid fixture always palettizes under the cap, so the palette arm
+	// — not the JPEG loop — must win (a mutant that skips either gate lands
+	// on jpeg).
+	if res.MediaType != "png" {
+		t.Errorf("MediaType = %q, want png (palette path)", res.MediaType)
 	}
 	reDecode(t, res.Buffer, "DimensionOKSizeOverPng")
 	if res.Dimensions.OriginalWidth != 100 || res.Dimensions.OriginalHeight != 100 {
@@ -526,9 +549,90 @@ func TestMaybeResize_SizeExactlyAtCap(t *testing.T) {
 	if !bytes.Equal(res.Buffer, buf) {
 		t.Errorf("Buffer mutated at-cap; got %d want %d (passthrough)", len(res.Buffer), len(buf))
 	}
+	// JPEG at-cap: a `<` mutant on the fast-path comparison would push this
+	// through the resize path, whose q80 re-encode of a q90 source is
+	// byte-different from the passthrough original.
+	jbuf := encodeJPEG(t, img, 90)
+	res, err = MaybeResizeAndDownsampleImageBuffer(jbuf, IMAGE_TARGET_RAW_SIZE, "jpeg")
+	if err != nil {
+		t.Fatalf("MaybeResize(jpeg at cap): %v", err)
+	}
+	if !bytes.Equal(res.Buffer, jbuf) {
+		t.Errorf("JPEG buffer mutated at-cap; got %d bytes, want the original %d", len(res.Buffer), len(jbuf))
+	}
+	if res.MediaType != "jpeg" {
+		t.Errorf("MediaType = %q, want jpeg", res.MediaType)
+	}
+}
+
+// Dimension-oversize AND size-oversize: the pre-resize compression branch is
+// gated to dimension-OK inputs, so the result must come off the resize path
+// (2000x2000) — never a full-resolution compress branch product ( mutants
+// that relax the `!needsDimensionResize` gate return 2001x2001 output).
+func TestMaybeResize_DimensionAndSizeOverSkipsCompressBranch(t *testing.T) {
+	t.Parallel()
+	img := solidRGBA(2001, 2001, color.RGBA{R: 40, G: 80, B: 120, A: 255})
+	buf := encodePNG(t, img)
+	padded := append([]byte{}, buf...)
+	padded = append(padded, make([]byte, IMAGE_TARGET_RAW_SIZE+1)...)
+	res, err := MaybeResizeAndDownsampleImageBuffer(padded, len(padded), "png")
+	if err != nil {
+		t.Fatalf("MaybeResize: %v", err)
+	}
+	w, h := reDecode(t, res.Buffer, "DimensionAndSizeOverSkipsCompressBranch")
+	if w != 2000 || h != 2000 {
+		t.Errorf("decoded dims = %dx%d, want 2000x2000 (resize path)", w, h)
+	}
+	if res.Dimensions.OriginalWidth != 2001 || res.Dimensions.OriginalHeight != 2001 {
+		t.Errorf("Original = %dx%d, want 2001x2001", res.Dimensions.OriginalWidth, res.Dimensions.OriginalHeight)
+	}
+	if res.Dimensions.DisplayWidth != 2000 || res.Dimensions.DisplayHeight != 2000 {
+		t.Errorf("Display = %dx%d, want 2000x2000", res.Dimensions.DisplayWidth, res.Dimensions.DisplayHeight)
+	}
 }
 
 // --- Concurrency: function must be pure w.r.t. inputs ---
+
+// --- Budget-parameterized variant (omp fetch 300KB output ceiling) ---
+
+func TestMaybeResizeWithBudget(t *testing.T) {
+	t.Parallel()
+	img := solidRGBA(200, 200, color.RGBA{R: 10, G: 200, B: 30, A: 255})
+	buf := encodePNG(t, img)
+
+	// Budget above the encoded size takes the same fast path as the default
+	// entry: original bytes returned untouched.
+	res, err := MaybeResizeAndDownsampleImageBufferWithBudget(buf, len(buf), "png", 10*1024*1024)
+	if err != nil {
+		t.Fatalf("WithBudget(large): %v", err)
+	}
+	if !bytes.Equal(res.Buffer, buf) {
+		t.Errorf("fast-path buffer mutated: got %d bytes, want the original %d", len(res.Buffer), len(buf))
+	}
+	if res.Dimensions == nil || res.Dimensions.OriginalWidth != 200 {
+		t.Errorf("fast-path Dimensions = %+v, want original 200x200", res.Dimensions)
+	}
+
+	// The ladder's 1000px+q20 terminator is NOT a budget guarantee: a small
+	// solid frame cannot compress below its own size, so an unachievable
+	// budget still returns a valid decode (the q20 fallback) that exceeds the
+	// budget — the caller must enforce the ceiling (omp's "exceeds inline
+	// output limit after resize" check).
+	res, err = MaybeResizeAndDownsampleImageBufferWithBudget(buf, len(buf), "png", 100)
+	if err != nil {
+		t.Fatalf("WithBudget(unachievable): %v", err)
+	}
+	if len(res.Buffer) <= 100 {
+		t.Errorf("solid 200x200 unexpectedly compressed to %d bytes under a 100-byte budget", len(res.Buffer))
+	}
+	reDecode(t, res.Buffer, "WithBudget_unachievable")
+	if res.MediaType != "jpeg" {
+		t.Errorf("unachievable-budget MediaType = %q, want jpeg (final fallback)", res.MediaType)
+	}
+	if res.Dimensions == nil {
+		t.Error("unachievable-budget Dimensions = nil, want the fallback's dims")
+	}
+}
 
 func TestMaybeResize_Concurrent(t *testing.T) {
 	t.Parallel()

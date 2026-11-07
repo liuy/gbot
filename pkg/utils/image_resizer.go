@@ -73,6 +73,19 @@ type ResizeResult struct {
 // error instead of zero dimensions for unknown formats, so the TS
 // "no metadata" branch funnels into the catch path).
 func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, ext string) (ResizeResult, error) {
+	return resizeImageBuffer(imageBuffer, originalSize, ext, IMAGE_TARGET_RAW_SIZE)
+}
+
+// MaybeResizeAndDownsampleImageBufferWithBudget runs the same ladder against a
+// caller-chosen raw-byte ceiling instead of IMAGE_TARGET_RAW_SIZE. omp's fetch
+// image path pairs a 20MB source cap with a 300KB output budget
+// (fetch.ts MAX_INLINE_IMAGE_OUTPUT_BYTES) — a ceiling the hard-wired default
+// cannot express.
+func MaybeResizeAndDownsampleImageBufferWithBudget(imageBuffer []byte, originalSize int, ext string, maxRawBytes int) (ResizeResult, error) {
+	return resizeImageBuffer(imageBuffer, originalSize, ext, maxRawBytes)
+}
+
+func resizeImageBuffer(imageBuffer []byte, originalSize int, ext string, maxRawBytes int) (ResizeResult, error) {
 	// TS line 174.
 	if len(imageBuffer) == 0 {
 		return ResizeResult{}, NewImageResizeError("Image file is empty (0 bytes)")
@@ -102,7 +115,7 @@ func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, e
 	width, height := originalWidth, originalHeight
 
 	// TS lines 212–228: original fits all three caps → return as-is.
-	if originalSize <= IMAGE_TARGET_RAW_SIZE &&
+	if originalSize <= maxRawBytes &&
 		width <= ImageMaxWidth && height <= ImageMaxHeight {
 		return ResizeResult{
 			Buffer:    imageBuffer,
@@ -122,9 +135,9 @@ func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, e
 	// TS lines 235–275: dimensions OK but bytes oversize → try lossless /
 	// lossy compression before resizing. Each attempt re-decodes
 	// imageBuffer (plan Assumption 3 — behavioral parity with sharp).
-	if !needsDimensionResize && originalSize > IMAGE_TARGET_RAW_SIZE {
+	if !needsDimensionResize && originalSize > maxRawBytes {
 		if isPng {
-			if buf, ok := tryEncodePngPalettizedFromBytes(imageBuffer); ok && len(buf) <= IMAGE_TARGET_RAW_SIZE {
+			if buf, ok := tryEncodePngPalettizedFromBytes(imageBuffer); ok && len(buf) <= maxRawBytes {
 				return ResizeResult{
 					Buffer:    buf,
 					MediaType: "png",
@@ -138,7 +151,7 @@ func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, e
 			}
 		}
 		for _, q := range jpegQualities {
-			if buf, ok := tryEncodeJpegFromBytes(imageBuffer, q); ok && len(buf) <= IMAGE_TARGET_RAW_SIZE {
+			if buf, ok := tryEncodeJpegFromBytes(imageBuffer, q); ok && len(buf) <= maxRawBytes {
 				return ResizeResult{
 					Buffer:    buf,
 					MediaType: "jpeg",
@@ -185,8 +198,8 @@ func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, e
 	// otherwise-unreachable-from-public-API branches (q-loop, 1000px
 	// fallback) can be exercised directly by unit tests. Always returns a
 	// valid result — the JPEG q20 fallback is a guaranteed terminator.
-	if len(resizedBytes) > IMAGE_TARGET_RAW_SIZE {
-		return compressAfterResize(resized, width, height, originalWidth, originalHeight, isPng), nil
+	if len(resizedBytes) > maxRawBytes {
+		return compressAfterResize(resized, width, height, originalWidth, originalHeight, isPng, maxRawBytes), nil
 	}
 
 	// TS lines 374–382: resized image fits — return resized buffer in the
@@ -205,9 +218,9 @@ func MaybeResizeAndDownsampleImageBuffer(imageBuffer []byte, originalSize int, e
 
 // compressAfterResize mirrors TS lines 301–371 (post-resize palettize / JPEG
 // loop / 1000px+q20 fallback). Always returns a valid ResizeResult — when
-// every upstream strategy fails to fit under IMAGE_TARGET_RAW_SIZE, the
-// 1000px+q20 fallback (applyFinalFallback) terminates the chain.
-func compressAfterResize(resized image.Image, width, height, originalWidth, originalHeight int, isPng bool) ResizeResult {
+// every upstream strategy fails to fit under maxRawBytes, the 1000px+q20
+// fallback (applyFinalFallback) terminates the chain.
+func compressAfterResize(resized image.Image, width, height, originalWidth, originalHeight int, isPng bool, maxRawBytes int) ResizeResult {
 	dims := &ImageDimensions{
 		OriginalWidth:  originalWidth,
 		OriginalHeight: originalHeight,
@@ -215,12 +228,12 @@ func compressAfterResize(resized image.Image, width, height, originalWidth, orig
 		DisplayHeight:  height,
 	}
 	if isPng {
-		if buf, ok := encodePngPalettizedImg(resized); ok && len(buf) <= IMAGE_TARGET_RAW_SIZE {
+		if buf, ok := encodePngPalettizedImg(resized); ok && len(buf) <= maxRawBytes {
 			return ResizeResult{Buffer: buf, MediaType: "png", Dimensions: dims}
 		}
 	}
 	for _, q := range jpegQualities {
-		if buf, ok := encodeJpegImg(resized, q); ok && len(buf) <= IMAGE_TARGET_RAW_SIZE {
+		if buf, ok := encodeJpegImg(resized, q); ok && len(buf) <= maxRawBytes {
 			return ResizeResult{Buffer: buf, MediaType: "jpeg", Dimensions: dims}
 		}
 	}

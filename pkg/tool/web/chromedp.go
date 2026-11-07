@@ -177,8 +177,9 @@ func realChromedpFetch(url string, timeout time.Duration, proxyURL string) (stri
 			}
 			ua = strings.Replace(ua, "HeadlessChrome/", "Chrome/", 1)
 			if strings.Contains(ua, "Linux") && !strings.Contains(ua, "Android") {
+				// Real Chrome UAs always carry the "X11; " prefix on Linux, so
+				// one replace covers them; no bare-token fallback needed.
 				ua = strings.Replace(ua, "X11; Linux x86_64", "Windows NT 10.0; Win64; x64", 1)
-				ua = strings.Replace(ua, "Linux x86_64", "Windows NT 10.0; Win64; x64", 1)
 			}
 			return emulation.SetUserAgentOverride(ua).
 				WithAcceptLanguage("en-US,en").
