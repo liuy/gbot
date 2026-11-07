@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createChat } from './chat'
+import { renderStreamBlock } from './components/stream_blocks'
+import { userEchoBlock } from './styles/recipes'
+import type { Block } from './types'
 
 class MockIntersectionObserver {
   observe() {}
@@ -165,6 +168,41 @@ describe('attachment streaming', () => {
     expect(document.body.textContent).toContain('[notes.md 2.0 KB]')
   })
 
+  it('document chip wrappers stay block-shaped while image wrappers go inline', () => {
+    mount()
+    setTextarea('q')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    dispatch(attachmentEvent({
+      content: [IMAGE_BLOCK, DOC_BLOCK],
+      prompt: '',
+    }))
+    const img = document.querySelector('img') as HTMLImageElement
+    const chip = [...document.querySelectorAll('span.font-mono')][0] as HTMLElement
+    expect(img.parentElement!.className).toContain('inline-block')
+    expect(chip.parentElement!.className).not.toContain('inline-block')
+    // The image element itself carries the inline flow class through the
+    // streaming path, same as the committed render.
+    expect(img.className).toContain('inline-block')
+  })
+  it('multiple streaming images sit in inline wrappers so they flow side by side', () => {
+    mount()
+    setTextarea('q')
+    pressEnter()
+    events([{ type: 'query_start' }])
+    dispatch(attachmentEvent({
+      content: [IMAGE_BLOCK, IMAGE_BLOCK],
+      prompt: '',
+    }))
+    const wraps = [...document.querySelectorAll('img')].map((i) => i.parentElement as HTMLElement)
+    expect(wraps).toHaveLength(2)
+    for (const w of wraps) {
+      // The echo wrapper keeps the block-boundary shape but lays the images
+      // out inline — matching the committed-history render.
+      expect(w.className).toContain('inline-block')
+    }
+  })
+
   it('non-streaming attachment renders image and document chip from content blocks', () => {
     mount()
     setTextarea('q')
@@ -200,5 +238,21 @@ describe('attachment streaming', () => {
     const srcs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'))
     expect(srcs).toContain('data:image/png;base64,aWNl')
     expect(document.body.textContent).toContain('[notes.md 2.0 KB]')
+  })
+})
+
+describe('attachment block rebuild (rewind/takeover path)', () => {
+  it('image blocks rebuild with inline wrappers, document chips with block wrappers', () => {
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    renderStreamBlock(parent, { kind: 'image', id: '', src: 'data:image/png;base64,Z' } as unknown as Block, null, null)
+    renderStreamBlock(parent, { kind: 'document', id: '', name: 'n.md', size: 2, mime: 'text/markdown' } as unknown as Block, null, null)
+    const img = parent.querySelector('img') as HTMLImageElement
+    const chip = parent.querySelector('span.font-mono') as HTMLElement
+    expect(img.parentElement!.className).toContain('inline-block')
+    expect(chip.parentElement!.className).not.toContain('inline-block')
+    // Exact pin: the block wrapper is the plain userEchoBlock recipe — no
+    // appended sentinel can hide in the else arm.
+    expect(chip.parentElement!.className).toBe(userEchoBlock())
   })
 })

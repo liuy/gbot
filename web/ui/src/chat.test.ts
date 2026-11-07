@@ -7865,7 +7865,7 @@ describe('chat mutation kills: residual wiring', () => {
       expect(sent.some((m) => (m as { type: string; attachments?: unknown[] }).type === 'message' && (m as { attachments?: unknown[] }).attachments)).toBe(true))
     const bubbleImg = document.querySelector('.space-y-7 .max-w-fit img') as HTMLImageElement
     expect(bubbleImg.alt).toBe('cam.png')
-    expect(bubbleImg.className).toBe('block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+    expect(bubbleImg.className).toBe('inline-block max-w-[200px] max-h-[200px] rounded-lg my-1 mr-1 align-top cursor-zoom-in')
     const chip = document.querySelector('.space-y-7 .max-w-fit span.font-mono') as HTMLElement
     expect(chip.textContent).toBe('[spec.md]')
     expect(chip.className).toContain('font-mono')

@@ -449,7 +449,7 @@ function renderCommittedMessageDOM(
     // [filename.ext] chip and the rest of the text becomes the text span.
     for (const b of m.blocks) {
       if (b.kind === 'image') {
-        const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+        const img = createElement('img', 'inline-block max-w-[200px] max-h-[200px] rounded-lg my-1 mr-1 align-top cursor-zoom-in')
         img.src = b.src
         img.addEventListener('click', () => showImageLightbox(b.src))
         content.appendChild(img)
@@ -2340,7 +2340,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           for (const src of imageSrcs) {
             pendingBlocks.push({ kind: 'image', id: '', src })
             if (streamContainer) {
-              appendUserAttachment(streamContainer, createAttachmentImage(src), progressAnchor())
+              appendUserAttachment(streamContainer, createAttachmentImage(src), progressAnchor(), true)
             }
           }
           for (const d of docs) {
@@ -2407,7 +2407,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       if (ref.kind === 'image') {
         // Blob URL is still alive (clearAttachments used keepSentBlobURLs).
         // The rendered DOM owns it now; browser GCs on page unload.
-        const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+        const img = createElement('img', 'inline-block max-w-[200px] max-h-[200px] rounded-lg my-1 mr-1 align-top cursor-zoom-in')
         img.src = ref.previewURL
         img.alt = ref.file.name
         img.addEventListener('click', () => showImageLightbox(ref.previewURL))

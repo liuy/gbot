@@ -115,7 +115,7 @@ export function buildDocumentChip(name: string, size: number | undefined): HTMLE
 // (class + lightbox click), so a drained queued attachment looks the same as
 // the same image replayed from history.
 export function createAttachmentImage(src: string): HTMLImageElement {
-  const img = createElement('img', 'block max-w-[200px] max-h-[200px] rounded-lg my-1 cursor-zoom-in')
+  const img = createElement('img', 'inline-block max-w-[200px] max-h-[200px] rounded-lg my-1 mr-1 align-top cursor-zoom-in')
   img.src = src
   img.addEventListener('click', () => showImageLightbox(src))
   return img
@@ -123,9 +123,11 @@ export function createAttachmentImage(src: string): HTMLImageElement {
 
 // Attachment echo nodes get their own userEchoBlock container as siblings of
 // the queued-text echo, matching what renderStreamBlock rebuilds from
-// pendingBlocks on rewind/takeover — same block, same DOM shape.
-export function appendUserAttachment(parent: HTMLElement, node: HTMLElement, before: Node | null): void {
-  const wrap = createElement('div', userEchoBlock())
+// pendingBlocks on rewind/takeover — same block, same DOM shape. Images pass
+// inline:true: the wrapper goes inline-block so multi-image echo lays out
+// side by side like the committed-history render instead of stacking.
+export function appendUserAttachment(parent: HTMLElement, node: HTMLElement, before: Node | null, inline = false): void {
+  const wrap = createElement('div', userEchoBlock() + (inline ? ' inline-block' : ''))
   wrap.appendChild(node)
   parent.insertBefore(wrap, before)
 }
@@ -165,7 +167,7 @@ export function renderStreamBlock(
     }
     appendQueuedMessageBlock(parent, block.text, before)
   } else if (block.kind === 'image') {
-    appendUserAttachment(parent, createAttachmentImage(block.src), before)
+    appendUserAttachment(parent, createAttachmentImage(block.src), before, true)
   } else if (block.kind === 'document') {
     appendUserAttachment(parent, buildDocumentChip(block.name, block.size), before)
   } else if (block.kind === 'text') {
