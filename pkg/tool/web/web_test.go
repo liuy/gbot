@@ -1198,7 +1198,7 @@ func TestDDGBrowserFallback_RealChrome(t *testing.T) {
 
 	d := &providers.DuckDuckGoProvider{
 		Browse: func(ctx context.Context, u string, timeout time.Duration) (string, error) {
-			return chromedpFetch(ctx, u, timeout, "")
+			return chromedpFetch(u, timeout, "")
 		},
 	}
 	resp, err := d.Search(context.Background(), providers.SearchParams{Query: "go generics", Limit: 3})

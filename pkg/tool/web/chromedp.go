@@ -71,7 +71,7 @@ func findChromeBin() (string, bool) {
 }
 
 // getWithProxy returns a chromedp context, restarting Chrome if proxy changed.
-func (p *ChromePool) getWithProxy(parentCtx context.Context, proxyURL string) (context.Context, context.CancelFunc, error) {
+func (p *ChromePool) getWithProxy(proxyURL string) (context.Context, context.CancelFunc, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -144,8 +144,8 @@ func (p *ChromePool) reset() {
 // chromedpFetch can be replaced in tests to avoid launching Chrome.
 var chromedpFetch = realChromedpFetch
 
-func realChromedpFetch(parentCtx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
-	ctx, cancel, err := defaultPool.getWithProxy(parentCtx, proxyURL)
+func realChromedpFetch(url string, timeout time.Duration, proxyURL string) (string, error) {
+	ctx, cancel, err := defaultPool.getWithProxy(proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("chrome not available: %w", err)
 	}

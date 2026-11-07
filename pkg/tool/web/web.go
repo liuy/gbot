@@ -264,7 +264,7 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 
 	// Try site-specific scrapers first.
 	jsFetcher := func(ctx context.Context, u string) (string, error) {
-		return chromedpFetch(ctx, u, 25*time.Second, extractProxyURL(client))
+		return chromedpFetch(u, 25*time.Second, extractProxyURL(client))
 	}
 	if reg != nil {
 		parsed, err := neturl.Parse(url)
@@ -352,7 +352,7 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 }
 
 func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*tool.ToolResult, error) {
-	html, err := chromedpFetch(ctx, url, 20*time.Second, extractProxyURL(client))
+	html, err := chromedpFetch(url, 20*time.Second, extractProxyURL(client))
 	if err != nil {
 		return nil, fmt.Errorf("JS fetch failed: %w", err)
 	}
@@ -497,7 +497,7 @@ func fetchAndConvertDocument(ctx context.Context, url string, client *http.Clien
 		}
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadBytes))
 	if err != nil {
 		return "", nil
 	}
@@ -570,7 +570,7 @@ func searchChain(client *http.Client, keys map[string]string) *providers.SearchC
 		Client: client,
 		Browse: func(ctx context.Context, u string, timeout time.Duration) (string, error) {
 			slog.Info("web: ddg browser fallback", "url", u)
-			return chromedpFetch(ctx, u, timeout, extractProxyURL(client))
+			return chromedpFetch(u, timeout, extractProxyURL(client))
 		},
 	})
 	return &providers.SearchChain{Providers: ps}
@@ -592,3 +592,7 @@ func scraperRegistry() *scrapers.Registry {
 	r.Register(scrapers.HandleHuggingFace)
 	return r
 }
+
+// A var, not a const, so boundary tests can shrink it instead of pushing a
+// real 50 MiB body through markitdown under the race detector.
+var maxDownloadBytes int64 = 50 * 1024 * 1024

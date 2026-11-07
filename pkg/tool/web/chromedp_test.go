@@ -149,7 +149,7 @@ func TestChromePool_StartupProbeDeadline(t *testing.T) {
 
 	// REAL-TIME: bounds a real wedged subprocess, wall-clock is the subject.
 	start := time.Now()
-	_, _, err := pool.getWithProxy(context.Background(), "")
+	_, _, err := pool.getWithProxy("")
 	if err == nil {
 		t.Fatal("expected startup error from hung binary")
 	}
@@ -184,15 +184,14 @@ func TestChromePool_ResetAllowsNewInstance(t *testing.T) {
 }
 
 func TestChromePool_GetWithCanceledContext(t *testing.T) {
-	// allocator uses context.Background() so canceling parent ctx still works.
-	// Verify by inspecting the implementation directly.
+	// The allocator decouples from any request context (a734317d): the pool
+	// must survive per-request cancellation, so no caller ctx exists here —
+	// the test name records that historical decoupling.
 	pool := &ChromePool{}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
 	// Without a real Chrome, this will fail with "no Chrome binary found",
 	// but the key invariant is that the error is NOT "context canceled".
-	_, _, err := pool.getWithProxy(ctx, "")
+	_, _, err := pool.getWithProxy("")
 	if err != nil {
 		if strings.Contains(err.Error(), "context canceled") {
 			t.Fatalf("getWithProxy should not propagate context cancellation, got: %v", err)
@@ -208,12 +207,12 @@ func TestChromePool_GetWithCanceledContext(t *testing.T) {
 
 func TestChromedpFetch_InvalidURL_Mock(t *testing.T) {
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		return "", fmt.Errorf("connection refused")
 	}
 	defer func() { chromedpFetch = orig }()
 
-	_, err := chromedpFetch(context.Background(), "http://127.0.0.1:1", 5*time.Second, "")
+	_, err := chromedpFetch("http://127.0.0.1:1", 5*time.Second, "")
 	if err == nil {
 		t.Fatal("should error for unreachable URL")
 	}
@@ -226,7 +225,7 @@ func TestChromedpFetch_ConcurrentAccess_Mock(t *testing.T) {
 	orig := chromedpFetch
 	var mu sync.Mutex
 	seen := map[string]bool{}
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		mu.Lock()
 		seen[url] = true
 		mu.Unlock()
@@ -238,7 +237,7 @@ func TestChromedpFetch_ConcurrentAccess_Mock(t *testing.T) {
 	errs := make(chan error, n)
 	for i := range n {
 		go func(i int) {
-			_, err := chromedpFetch(context.Background(), fmt.Sprintf("http://example.com/%d", i), 10*time.Second, "")
+			_, err := chromedpFetch(fmt.Sprintf("http://example.com/%d", i), 10*time.Second, "")
 			errs <- err
 		}(i)
 	}
@@ -259,7 +258,7 @@ func TestChromedpFetch_ConcurrentAccess_Mock(t *testing.T) {
 
 func TestFetchWithChrome_Error_Mock(t *testing.T) {
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		return "", fmt.Errorf("chrome failed")
 	}
 	defer func() { chromedpFetch = orig }()
@@ -280,7 +279,7 @@ func TestFetchWithChrome_Error_Mock(t *testing.T) {
 
 func TestFetchWithChrome_MockSuccess(t *testing.T) {
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		return "<html><body><h1>Mock Page</h1></body></html>", nil
 	}
 	defer func() { chromedpFetch = orig }()
@@ -300,7 +299,7 @@ func TestFetchWithChrome_MockSuccess(t *testing.T) {
 
 func TestFetchWithChrome_MockError(t *testing.T) {
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		return "", fmt.Errorf("mock chrome failure")
 	}
 	defer func() { chromedpFetch = orig }()
@@ -316,7 +315,7 @@ func TestFetchWithChrome_MockError(t *testing.T) {
 
 func TestExecuteFetch_JSMode_Mock(t *testing.T) {
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		return "<html><body><div>JS Rendered</div></body></html>", nil
 	}
 	defer func() { chromedpFetch = orig }()
@@ -334,7 +333,7 @@ func TestExecuteFetch_JSMode_Mock(t *testing.T) {
 func TestExecuteFetch_ScraperJSFetcher_Mock(t *testing.T) {
 	jsCalled := false
 	orig := chromedpFetch
-	chromedpFetch = func(ctx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+	chromedpFetch = func(url string, timeout time.Duration, proxyURL string) (string, error) {
 		jsCalled = true
 		return "<html><body>JS content</body></html>", nil
 	}
@@ -389,7 +388,7 @@ func TestRealChromedpFetch_AboutBlank(t *testing.T) {
 	}))
 	defer server.Close()
 
-	html, err := realChromedpFetch(context.Background(), server.URL, 30*time.Second, "")
+	html, err := realChromedpFetch(server.URL, 30*time.Second, "")
 	if err != nil {
 		t.Fatalf("realChromedpFetch() error = %v", err)
 	}
@@ -414,7 +413,7 @@ func TestRealChromedpFetch_EmptyContent(t *testing.T) {
 	// Serve a page with an empty body so OuterHTML returns empty/whitespace.
 	// In practice this is hard to achieve — about:blank has <html></html>.
 	// Instead test the error path: unreachable URL causes chromedp.Run to fail.
-	_, err := realChromedpFetch(context.Background(), "http://127.0.0.1:1/unreachable", 5*time.Second, "")
+	_, err := realChromedpFetch("http://127.0.0.1:1/unreachable", 5*time.Second, "")
 	if err == nil {
 		t.Fatal("expected error for unreachable URL via Chrome")
 	}
@@ -434,7 +433,7 @@ func TestChromePool_GetWithProxy_ReadyReuse(t *testing.T) {
 	t.Cleanup(func() { defaultPool.reset() })
 
 	// First call creates Chrome and marks pool ready.
-	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
+	_, cancel1, err := defaultPool.getWithProxy("")
 	if err != nil {
 		t.Fatalf("first getWithProxy() error = %v", err)
 	}
@@ -442,7 +441,7 @@ func TestChromePool_GetWithProxy_ReadyReuse(t *testing.T) {
 
 	// Second call with same proxyURL should reuse the ready pool
 	// (the `p.ready && p.proxyURL == proxyURL` branch).
-	_, cancel2, err := defaultPool.getWithProxy(context.Background(), "")
+	_, cancel2, err := defaultPool.getWithProxy("")
 	if err != nil {
 		t.Fatalf("second getWithProxy() error = %v", err)
 	}
@@ -467,7 +466,7 @@ func TestChromePool_GetWithProxy_ProxyChangeResets(t *testing.T) {
 	t.Cleanup(func() { defaultPool.reset() })
 
 	// Bootstrap with no proxy.
-	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
+	_, cancel1, err := defaultPool.getWithProxy("")
 	if err != nil {
 		t.Fatalf("first getWithProxy() error = %v", err)
 	}
@@ -478,7 +477,7 @@ func TestChromePool_GetWithProxy_ProxyChangeResets(t *testing.T) {
 	// Chrome with the new proxy flag. Chrome accepts --proxy-server even
 	// for unreachable proxies, so the pool should end up ready with the
 	// new proxyURL stored.
-	_, cancel2, err := defaultPool.getWithProxy(context.Background(), "http://127.0.0.1:9")
+	_, cancel2, err := defaultPool.getWithProxy("http://127.0.0.1:9")
 	if err != nil {
 		t.Fatalf("second getWithProxy() with new proxy error = %v", err)
 	}
@@ -524,7 +523,7 @@ setInterval(() => {
 	defer server.Close()
 
 	// Short timeout so the test doesn't wait the full default maxWait (5s).
-	html, err := realChromedpFetch(context.Background(), server.URL, 10*time.Second, "")
+	html, err := realChromedpFetch(server.URL, 10*time.Second, "")
 	if err != nil {
 		// Two acceptable outcomes: success with rendered content, or timeout
 		// error from the outer context.WithTimeout. Either way the deadline
