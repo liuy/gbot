@@ -227,11 +227,6 @@ func RenderDiff(hunks []DiffHunk) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// MaxDiffLinesToRender is the maximum number of diff lines to show before truncating.
-// Source: FileWriteTool/UI.tsx — MAX_LINES_TO_RENDER = 10; we use 15 for diffs
-// since diffs have line-number gutters that take more space.
-const MaxDiffLinesToRender = 15
-
 // FormatMoreLines returns a dim "… +N lines" indicator for truncated output.
 // Source: FileWriteTool/UI.tsx — "… +{plusLines} {line|lines} {CtrlOToExpand}"
 func FormatMoreLines(n int) string {

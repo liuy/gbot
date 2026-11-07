@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -123,5 +124,84 @@ func TestHighlightCode_CacheKeySeparatesByLanguage(t *testing.T) {
 	HighlightCode(code, "python")
 	if n := highlightCache.Len(); n != 2 {
 		t.Errorf("cache Len = %d, want 2 (same code, different lang should be distinct)", n)
+	}
+}
+
+// TestHighlightCode_CacheCapacityEvictsAt512 pins the LRU capacity: filling
+// with 513 distinct keys must leave exactly 512 (the oldest evicted). Drives
+// the cache directly — re-tokenizing 513 codes through HighlightCode costs
+// seconds, while the capacity contract only involves the LRU itself.
+func TestHighlightCode_CacheCapacityEvictsAt512(t *testing.T) {
+	highlightCache.Purge()
+	for i := range 513 {
+		highlightCache.Add(fmt.Sprintf("k%d", i), "v")
+	}
+	if n := highlightCache.Len(); n != 512 {
+		t.Errorf("cache Len = %d after 513 distinct keys, want 512 (LRU capacity)", n)
+	}
+}
+
+// TestHighlightCode_LexerSelection drives the three-way lexer choice: a known
+// language name must pick the real lexer, not the plain-text fallback; a file
+// path must be matched by extension. With the fallback in play both results
+// would be identical, so inequality is the discriminator.
+func TestHighlightCode_LexerSelection(t *testing.T) {
+	t.Parallel()
+	const code = `if x == 1 {}`
+	fallback := HighlightCode(code, "zz-not-a-language")
+	if got := HighlightCode(code, "go"); got == fallback {
+		t.Errorf(`HighlightCode(code, "go") matched plain-text fallback output`)
+	}
+	if got := HighlightCode(code, "snippet.go"); got == fallback {
+		t.Errorf(`HighlightCode(code, "snippet.go") matched plain-text fallback output`)
+	}
+}
+
+// TestHighlightCode_CoalesceMergesAdjacentTokens pins the exact terminal bytes
+// for adjacent same-type tokens: without chroma.Coalesce each punctuation
+// character gets its own color span, so the golden only holds with coalescing.
+func TestHighlightCode_CoalesceMergesAdjacentTokens(t *testing.T) {
+	t.Parallel()
+	got := HighlightCode("()", "go")
+	const want = "\x1b[38;5;231m()\x1b[0m"
+	if got != want {
+		t.Errorf("HighlightCode(\"()\", \"go\") = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stripLeadingANSI — the ANSI/whitespace prefix scanner
+// ---------------------------------------------------------------------------
+
+func TestStripLeadingANSI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Trailing bare ESC: both prefix scanners must bound-check j == len
+		// (comparison/logical/remove mutants index past the line here).
+		{name: "bare ESC at end", in: "\x1b", want: "\x1b"},
+		// Unterminated CSI: scan must stop at len without reading line[j]
+		// or slicing past the end when collecting codes.
+		{name: "CSI without final m", in: "\x1b[31", want: "\x1b[31"},
+		// ESC not followed by '[' must not be treated as CSI start.
+		{name: "ESC before plain char stays put", in: "\x1bX m rest", want: "\x1bX m rest"},
+		// Complete CSI followed by whitespace is reordered verbatim.
+		{name: "CSI then space then text", in: "\x1b[31m x", want: " \x1b[31mx"},
+		{name: "two SGR codes then tab", in: "\x1b[31m\x1b[1m\tx", want: "\t\x1b[31m\x1b[1mx"},
+		{name: "spaces only", in: "   ", want: "   "},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripLeadingANSI(tc.in)
+			if got != tc.want {
+				t.Errorf("stripLeadingANSI(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

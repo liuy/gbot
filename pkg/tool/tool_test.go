@@ -3,6 +3,8 @@ package tool_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -702,5 +704,224 @@ func TestSearchReadKind_IsCollapsible(t *testing.T) {
 		if got := tc.srk.IsCollapsible(); got != tc.want {
 			t.Errorf("IsCollapsible(%+v) = %v, want %v", tc.srk, got, tc.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildTool — wrapper selection and default DecodeResult
+// ---------------------------------------------------------------------------
+
+func minimalDef(name string) tool.ToolDef {
+	return tool.ToolDef{
+		Name_: name,
+		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(json.RawMessage) (string, error) { return "", nil },
+	}
+}
+
+// Which optional interfaces the built tool implements is dictated exactly by
+// which optional funcs the def set — and the wrapper must forward to them.
+func TestBuildTool_WrapperSelection(t *testing.T) {
+	t.Parallel()
+
+	fwb := func(data any) []types.ContentBlock {
+		return []types.ContentBlock{{Type: "text", Text: "wire"}}
+	}
+	sr := func(json.RawMessage) tool.SearchReadKind {
+		return tool.SearchReadKind{IsRead: true}
+	}
+
+	t.Run("neither optional func", func(t *testing.T) {
+		t.Parallel()
+		tt := tool.BuildTool(minimalDef("plain"))
+		if _, ok := tt.(tool.ToolWithWireBlocks); ok {
+			t.Error("plain tool must not implement ToolWithWireBlocks")
+		}
+		if _, ok := tt.(tool.ToolWithSearchOrRead); ok {
+			t.Error("plain tool must not implement ToolWithSearchOrRead")
+		}
+	})
+
+	t.Run("wire blocks only", func(t *testing.T) {
+		t.Parallel()
+		def := minimalDef("wire")
+		def.FormatWireBlocks_ = fwb
+		tt := tool.BuildTool(def)
+		w, ok := tt.(tool.ToolWithWireBlocks)
+		if !ok {
+			t.Fatal("wire-only tool must implement ToolWithWireBlocks")
+		}
+		blocks := w.FormatWireBlocks("x")
+		if len(blocks) != 1 || blocks[0].Text != "wire" {
+			t.Errorf("FormatWireBlocks forwarded wrong blocks: %+v", blocks)
+		}
+		if _, ok := tt.(tool.ToolWithSearchOrRead); ok {
+			t.Error("wire-only tool must not implement ToolWithSearchOrRead")
+		}
+	})
+
+	t.Run("search-or-read only", func(t *testing.T) {
+		t.Parallel()
+		def := minimalDef("sr")
+		def.IsSearchOrRead_ = sr
+		tt := tool.BuildTool(def)
+		s, ok := tt.(tool.ToolWithSearchOrRead)
+		if !ok {
+			t.Fatal("search-read tool must implement ToolWithSearchOrRead")
+		}
+		if kind := s.IsSearchOrRead(nil); !kind.IsRead {
+			t.Errorf("IsSearchOrRead forwarded wrong kind: %+v", kind)
+		}
+		if _, ok := tt.(tool.ToolWithWireBlocks); ok {
+			t.Error("search-read-only tool must not implement ToolWithWireBlocks")
+		}
+	})
+
+	t.Run("both optional funcs", func(t *testing.T) {
+		t.Parallel()
+		def := minimalDef("full")
+		def.FormatWireBlocks_ = fwb
+		def.IsSearchOrRead_ = sr
+		tt := tool.BuildTool(def)
+		w, ok := tt.(tool.ToolWithWireBlocks)
+		if !ok {
+			t.Fatal("full tool must implement ToolWithWireBlocks")
+		}
+		if blocks := w.FormatWireBlocks("x"); len(blocks) != 1 || blocks[0].Text != "wire" {
+			t.Errorf("FormatWireBlocks forwarded wrong blocks: %+v", blocks)
+		}
+		s, ok := tt.(tool.ToolWithSearchOrRead)
+		if !ok {
+			t.Fatal("full tool must implement ToolWithSearchOrRead")
+		}
+		if kind := s.IsSearchOrRead(nil); !kind.IsRead {
+			t.Errorf("IsSearchOrRead forwarded wrong kind: %+v", kind)
+		}
+		if tt.Name() != "full" {
+			t.Errorf("wrapper lost the def: Name() = %q", tt.Name())
+		}
+	})
+}
+
+// A custom DecodeResult_ must survive BuildTool; the default must decode
+// values and fall back to raw bytes on malformed JSON.
+func TestBuildTool_DecodeResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custom preserved", func(t *testing.T) {
+		t.Parallel()
+		def := minimalDef("custom-decode")
+		def.DecodeResult_ = func(raw json.RawMessage) (any, error) {
+			return "sentinel", nil
+		}
+		tt := tool.BuildTool(def).(tool.ToolWithDecodeResult)
+		got, err := tt.DecodeResult(json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("DecodeResult: %v", err)
+		}
+		if got != "sentinel" {
+			t.Errorf("DecodeResult = %#v, want sentinel (default overrode custom)", got)
+		}
+	})
+
+	t.Run("default decodes valid JSON", func(t *testing.T) {
+		t.Parallel()
+		tt := tool.BuildTool(minimalDef("default-decode")).(tool.ToolWithDecodeResult)
+		got, err := tt.DecodeResult(json.RawMessage(`{"a":1}`))
+		if err != nil {
+			t.Fatalf("DecodeResult: %v", err)
+		}
+		m, ok := got.(map[string]any)
+		if !ok {
+			t.Fatalf("DecodeResult = %#v, want decoded map (not raw bytes)", got)
+		}
+		if m["a"] != float64(1) {
+			t.Errorf("decoded map = %#v, want a=1", m)
+		}
+	})
+
+	t.Run("default falls back to raw on invalid JSON", func(t *testing.T) {
+		t.Parallel()
+		tt := tool.BuildTool(minimalDef("default-decode-bad")).(tool.ToolWithDecodeResult)
+		got, err := tt.DecodeResult(json.RawMessage(`{bad`))
+		if err != nil {
+			t.Fatalf("DecodeResult: %v", err)
+		}
+		raw, ok := got.(json.RawMessage)
+		if !ok || string(raw) != "{bad" {
+			t.Errorf("DecodeResult = %#v, want the raw bytes back with nil error", got)
+		}
+	})
+}
+
+// BuildTool panics on an invalid schema; the panic message embeds exactly the
+// first 200 schema bytes.
+func TestBuildTool_InvalidSchemaPanics(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for invalid schema")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %#v, want string", r)
+		}
+		want := `tool "badschema" has invalid JSON schema: ` + strings.Repeat("x", 200)
+		if msg != want {
+			t.Errorf("panic message = %.260q\nwant %.260q", msg, want)
+		}
+	}()
+
+	def := minimalDef("badschema")
+	def.InputSchema_ = func() json.RawMessage { return json.RawMessage(strings.Repeat("x", 250)) }
+	tool.BuildTool(def)
+}
+
+// Even a one-byte invalid schema trips the validity check.
+func TestBuildTool_InvalidSchemaSingleByte(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for single-byte invalid schema")
+		}
+	}()
+	def := minimalDef("onebyte")
+	def.InputSchema_ = func() json.RawMessage { return json.RawMessage("x") }
+	tool.BuildTool(def)
+}
+
+// The context passed to Call_ must be the caller's context, not nil.
+func TestBuildTool_CallReceivesContext(t *testing.T) {
+	t.Parallel()
+	def := minimalDef("ctxcheck")
+	def.Call_ = func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+		if ctx == nil {
+			return nil, fmt.Errorf("Call_ received nil context")
+		}
+		if ctx.Value(ctxKey{}) != "carried" {
+			return nil, fmt.Errorf("context value lost")
+		}
+		return &tool.ToolResult{Data: "ok"}, nil
+	}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "carried")
+	if _, err := tool.BuildTool(def).Call(ctx, nil, nil); err != nil {
+		t.Errorf("Call: %v", err)
+	}
+}
+
+type ctxKey struct{}
+
+// A non-zero InterruptBehavior_ must reach the built tool unchanged.
+func TestBuildTool_InterruptBehaviorOverride(t *testing.T) {
+	t.Parallel()
+	def := minimalDef("interrupt")
+	def.InterruptBehavior_ = tool.InterruptBlock
+	if got := tool.BuildTool(def).InterruptBehavior(); got != tool.InterruptBlock {
+		t.Errorf("InterruptBehavior() = %v, want %v", got, tool.InterruptBlock)
 	}
 }

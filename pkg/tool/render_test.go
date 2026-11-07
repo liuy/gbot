@@ -1154,3 +1154,120 @@ func TestComputePatch_SingleLineFile_Changed(t *testing.T) {
 		t.Errorf("NewStart=%d NewLines=%d, want 1/1", h.NewStart, h.NewLines)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mutation-kill pinning tests: exact-output assertions on gutter width,
+// separator placement, and line-number advancement.
+// ---------------------------------------------------------------------------
+
+// One-char and empty diff lines: the empty guard must skip "" (indexing
+// line[0] on "" panics), while "+" and "-" still count as changes.
+func TestCountPatchChanges_ShortAndEmptyLines(t *testing.T) {
+	t.Parallel()
+	hunks := []DiffHunk{{Lines: []string{"+", "-", ""}}}
+	added, removed := CountPatchChanges(hunks)
+	if added != 1 || removed != 1 {
+		t.Errorf("CountPatchChanges = %d, %d, want 1, 1", added, removed)
+	}
+}
+
+// The gutter width comes from the largest old/new line number implied by the
+// hunk extents (start + count - 1), so each boundary below pins one term of
+// that arithmetic on each side.
+func TestRenderDiff_GutterWidthFromHunkExtents(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		hunk DiffHunk
+		line string // single line in hunk
+		want string
+	}{
+		// oldEnd = 9 (one digit): +1 off-by-arithmetic would reach 11 (two digits)
+		{"old end 9", DiffHunk{OldStart: 8, OldLines: 2, NewStart: 1, NewLines: 1}, " x", " 1  x"},
+		// oldEnd = 14 (two digits): flipping + to - collapses to 8 (one digit)
+		{"old end 14", DiffHunk{OldStart: 12, OldLines: 3, NewStart: 1, NewLines: 1}, " x", "  1  x"},
+		// oldEnd = 10 (two digits): shrinking -1 to -2 collapses to 9 (one digit)
+		{"old end 10", DiffHunk{OldStart: 9, OldLines: 2, NewStart: 1, NewLines: 1}, " x", "  1  x"},
+		// same three boundaries driven by the new-side extents, via a + line
+		{"new end 9", DiffHunk{OldStart: 1, OldLines: 1, NewStart: 8, NewLines: 2}, "+x", " 8 +x"},
+		{"new end 14", DiffHunk{OldStart: 1, OldLines: 1, NewStart: 12, NewLines: 3}, "+x", " 12 +x"},
+		{"new end 10", DiffHunk{OldStart: 1, OldLines: 1, NewStart: 9, NewLines: 2}, "+x", "  9 +x"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.hunk.Lines = []string{tc.line}
+			got := RenderDiff([]DiffHunk{tc.hunk})
+			if got != tc.want {
+				t.Errorf("RenderDiff = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The widest line number must be computed across ALL hunks: an earlier hunk's
+// gutter pads to a width set by a later hunk's extents.
+func TestRenderDiff_GutterWidthSpansHunks(t *testing.T) {
+	t.Parallel()
+	hunks := []DiffHunk{
+		{OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 2, Lines: []string{" a"}},
+		{OldStart: 10, OldLines: 1, NewStart: 10, NewLines: 1, Lines: []string{" b"}},
+	}
+	got := RenderDiff(hunks)
+	want := "  1  a\n...\n 10  b"
+	if got != want {
+		t.Errorf("RenderDiff = %q, want %q", got, want)
+	}
+}
+
+// The "..." separator goes strictly between hunks — never before the first.
+func TestRenderDiff_SeparatorOnlyBetweenHunks(t *testing.T) {
+	t.Parallel()
+	single := RenderDiff([]DiffHunk{{OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Lines: []string{" a"}}})
+	if strings.Contains(single, "...") {
+		t.Errorf("single hunk must not have a separator, got %q", single)
+	}
+	got := RenderDiff([]DiffHunk{
+		{OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Lines: []string{" a"}},
+		{OldStart: 2, OldLines: 1, NewStart: 2, NewLines: 1, Lines: []string{" b"}},
+	})
+	want := " 1  a\n...\n 2  b"
+	if got != want {
+		t.Errorf("RenderDiff = %q, want %q", got, want)
+	}
+}
+
+// Added lines consume new-file numbers and removed lines old-file numbers,
+// independently, one per line.
+func TestRenderDiff_LineNumberAdvances(t *testing.T) {
+	t.Parallel()
+	hunks := []DiffHunk{{
+		OldStart: 3, OldLines: 4, NewStart: 5, NewLines: 4,
+		Lines: []string{"+a", "+b", "-c", "-d"},
+	}}
+	got := RenderDiff(hunks)
+	want := " 5 +a\n 6 +b\n 3 -c\n 4 -d"
+	if got != want {
+		t.Errorf("RenderDiff = %q, want %q", got, want)
+	}
+}
+
+// maxLines == 1 keeps exactly one line and reports the rest via the indicator.
+func TestTruncateStringLines_MaxOne(t *testing.T) {
+	t.Parallel()
+	got := TruncateStringLines("a\nb", 1)
+	want := "a\n" + FormatMoreLines(1)
+	if got != want {
+		t.Errorf("TruncateStringLines(\"a\\nb\", 1) = %q, want %q", got, want)
+	}
+}
+
+// The line-number gutter is dim-on / reset-off around the " N +" prefix.
+func TestRenderContentWithLineNumbers_ANSIWrapping(t *testing.T) {
+	t.Parallel()
+	got := RenderContentWithLineNumbers("hi")
+	want := diffDimFg + " 1 +" + diffReset + "hi"
+	if got != want {
+		t.Errorf("RenderContentWithLineNumbers(\"hi\") = %q, want %q", got, want)
+	}
+}

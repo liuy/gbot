@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -246,6 +247,175 @@ func TestRegistry_NamesEmpty(t *testing.T) {
 	if len(names) != 0 {
 		t.Errorf("expected 0 names, got %d", len(names))
 	}
+}
+
+// Map iteration order is random per range, so dedup/sort/skip assertions that
+// a mutation can satisfy by luck are repeated until a fluke would require a
+// 1-in-several-e100 map ordering streak.
+
+func TestRegistry_ListDedupCompletes(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "bash", aliases: []string{"sh"}, enabled: true})
+	r.Register(&mockTool{name: "read", enabled: true})
+	for range 200 {
+		if list := r.List(); len(list) != 2 {
+			t.Fatalf("List() = %d tools, want 2 (alias duplicate leaked or iteration truncated)", len(list))
+		}
+	}
+}
+
+func TestRegistry_ListSortedDeterministically(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "zeta", enabled: true})
+	r.Register(&mockTool{name: "alpha", enabled: true})
+	r.Register(&mockTool{name: "mid", enabled: true})
+	for range 200 {
+		list := r.List()
+		if len(list) != 3 || list[0].Name() != "alpha" || list[1].Name() != "mid" || list[2].Name() != "zeta" {
+			t.Fatalf("List() order = %v, want [alpha mid zeta]", toolNames(list))
+		}
+	}
+}
+
+func TestRegistry_EnabledToolsDedupAndFilter(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "bash", aliases: []string{"sh"}, enabled: true})
+	r.Register(&mockTool{name: "dead", enabled: false})
+
+	enabled := r.EnabledTools()
+	if len(enabled) != 1 {
+		t.Fatalf("EnabledTools() = %d tools, want 1 (alias dup or disabled tool leaked)", len(enabled))
+	}
+	if enabled[0].Name() != "bash" {
+		t.Errorf("EnabledTools()[0] = %s, want bash", enabled[0].Name())
+	}
+}
+
+func TestRegistry_EnabledToolsSortedDeterministically(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "zeta", enabled: true})
+	r.Register(&mockTool{name: "alpha", enabled: true})
+	for range 200 {
+		enabled := r.EnabledTools()
+		if len(enabled) != 2 || enabled[0].Name() != "alpha" || enabled[1].Name() != "zeta" {
+			t.Fatalf("EnabledTools() order = %v, want [alpha zeta]", toolNames(enabled))
+		}
+	}
+}
+
+func TestRegistry_ToolMapKeepsToolsAfterDisabled(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "aaa", enabled: true})
+	r.Register(&mockTool{name: "mmm", enabled: false})
+	r.Register(&mockTool{name: "zzz", enabled: true})
+	for range 200 {
+		m := r.ToolMap()
+		if len(m) != 2 {
+			t.Fatalf("ToolMap() = %d tools, want 2 (disabled tool or truncated iteration)", len(m))
+		}
+		if _, ok := m["aaa"]; !ok {
+			t.Fatal("ToolMap() lost aaa after disabled tool")
+		}
+		if _, ok := m["zzz"]; !ok {
+			t.Fatal("ToolMap() lost zzz after disabled tool")
+		}
+	}
+}
+
+// TestRegistry_ReadersExcludeConcurrentWrites exercises the bulk read methods
+// against a concurrent registrar. Each of these methods touches the tools map
+// across a whole iteration, so releasing the read lock early exposes an
+// unsynchronized map range that the Go runtime reports as a fatal concurrent
+// map access (or the race detector flags under -race).
+func TestRegistry_ReadersExcludeConcurrentWrites(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "seed", enabled: true})
+
+	const writers = 2
+	const inserts = 300
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r.List()
+				r.EnabledTools()
+				r.ToolMap()
+				r.Names()
+				r.Size()
+			}
+		})
+	}
+	for w := range writers {
+		for i := range inserts {
+			r.Register(&mockTool{name: fmt.Sprintf("w%d-tool-%04d", w, i), enabled: i%2 == 0})
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	if s := r.Size(); s != writers*inserts+1 {
+		t.Fatalf("Size() = %d, want %d", s, writers*inserts+1)
+	}
+}
+
+// TestRegistry_LookupExcludesConcurrentWrites targets Lookup specifically:
+// its unprotected window under a dropped RUnlock is a single map access, so
+// the bulk-method hammer above rarely overlaps it. Lookup spins in a tight
+// loop instead, and every miss of an existing key is itself a failure.
+func TestRegistry_LookupExcludesConcurrentWrites(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "seed", enabled: true})
+
+	const writers = 4
+	const inserts = 1000
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, ok := r.Lookup("seed"); !ok {
+					t.Error("Lookup(seed) missed while registrars were running")
+					return
+				}
+			}
+		})
+	}
+	var writersWG sync.WaitGroup
+	for w := range writers {
+		writersWG.Add(1)
+		go func(w int) {
+			defer writersWG.Done()
+			for i := range inserts {
+				r.Register(&mockTool{name: fmt.Sprintf("w%d-tool-%05d", w, i), enabled: true})
+			}
+		}(w)
+	}
+	writersWG.Wait()
+	close(stop)
+	readers.Wait()
+
+	if s := r.Size(); s != writers*inserts+1 {
+		t.Fatalf("Size() = %d, want %d", s, writers*inserts+1)
+	}
+}
+
+func toolNames(ts []tool.Tool) []string {
+	names := make([]string, len(ts))
+	for i, tm := range ts {
+		names[i] = tm.Name()
+	}
+	return names
 }
 
 func TestRegistry_ConcurrentAccess(t *testing.T) {

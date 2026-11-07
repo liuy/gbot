@@ -2,6 +2,7 @@ package tool_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -376,5 +377,104 @@ func TestValidateInput_EmptyRequired(t *testing.T) {
 	input := json.RawMessage(`{"anything":"goes"}`)
 	if err := tool.ValidateInput(schema, input); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateInput_EmptyRequiredSkipsInputParsing pins the early return for
+// schemas without required fields: the input is never parsed, so even
+// malformed input JSON is accepted.
+func TestValidateInput_EmptyRequiredSkipsInputParsing(t *testing.T) {
+	schema := tool.NewSchemaBuilder().
+		AddStringProp("name", "Name", false).
+		Build()
+	input := json.RawMessage(`not json at all`)
+	if err := tool.ValidateInput(schema, input); err != nil {
+		t.Errorf("no required fields means input is not parsed; got error: %v", err)
+	}
+}
+
+// TestValidateInput_ErrorWrapping verifies both error paths wrap the
+// underlying json error so callers can errors.As/Unwrap into it.
+func TestValidateInput_ErrorWrapping(t *testing.T) {
+	var syntax *json.SyntaxError
+	err := tool.ValidateInput(json.RawMessage(`not json`), json.RawMessage(`{}`))
+	if !errors.As(err, &syntax) {
+		t.Errorf("invalid-schema error should wrap *json.SyntaxError, got: %v", err)
+	}
+	err = tool.ValidateInput(tool.NewSchemaBuilder().AddStringProp("a", "A", true).Build(), json.RawMessage(`{bad`))
+	if !errors.As(err, &syntax) {
+		t.Errorf("invalid-input error should wrap *json.SyntaxError, got: %v", err)
+	}
+}
+
+// TestSchemaBuilder_EmptyHasRequiredAndPropertiesKeys pins the shape of a
+// fresh builder: the "required" and "properties" keys must exist (as an empty
+// array / object), not be omitted.
+func TestSchemaBuilder_EmptyHasRequiredAndPropertiesKeys(t *testing.T) {
+	schema := tool.NewSchemaBuilder().Build()
+
+	var parsed map[string]any
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	req, ok := parsed["required"]
+	if !ok {
+		t.Fatalf("fresh schema must carry a \"required\" key, got %s", schema)
+	}
+	reqList, ok := req.([]any)
+	if !ok || len(reqList) != 0 {
+		t.Errorf("\"required\" = %#v, want empty array", req)
+	}
+	props, ok := parsed["properties"]
+	if !ok {
+		t.Fatalf("fresh schema must carry a \"properties\" key, got %s", schema)
+	}
+	if propsMap, ok := props.(map[string]any); !ok || len(propsMap) != 0 {
+		t.Errorf("\"properties\" = %#v, want empty object", props)
+	}
+}
+
+// TestSchemaBuilder_PropMetadataPinned asserts each Add*Prop helper emits both
+// the type and the description verbatim, and that nested object properties /
+// array items survive into the built JSON.
+func TestSchemaBuilder_PropMetadataPinned(t *testing.T) {
+	schema := tool.NewSchemaBuilder().
+		AddStringProp("s", "string desc", false).
+		AddNumberProp("n", "number desc", false).
+		AddBooleanProp("b", "bool desc", false).
+		AddStringEnumProp("e", "enum desc", []string{"x"}, false).
+		AddObjectProp("o", "object desc", map[string]any{
+			"key": map[string]any{"type": "string"},
+		}, false).
+		AddArrayProp("a", "array desc", map[string]any{"type": "number"}, false).
+		Build()
+
+	var parsed struct {
+		Properties map[string]struct {
+			Type        string         `json:"type"`
+			Description string         `json:"description"`
+			Properties  map[string]any `json:"properties"`
+			Items       map[string]any `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	for name, wantDesc := range map[string]string{
+		"s": "string desc", "n": "number desc", "b": "bool desc",
+		"e": "enum desc", "o": "object desc", "a": "array desc",
+	} {
+		if got := parsed.Properties[name].Description; got != wantDesc {
+			t.Errorf("property %q description = %q, want %q", name, got, wantDesc)
+		}
+	}
+
+	nested, ok := parsed.Properties["o"].Properties["key"].(map[string]any)
+	if !ok || nested["type"] != "string" {
+		t.Errorf("object prop nested properties lost: %#v", parsed.Properties["o"].Properties)
+	}
+	if items := parsed.Properties["a"].Items; items["type"] != "number" {
+		t.Errorf("array prop items lost: %#v", parsed.Properties["a"].Items)
 	}
 }

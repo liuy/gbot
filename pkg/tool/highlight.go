@@ -2,7 +2,6 @@ package tool
 
 import (
 	"bytes"
-	"path/filepath"
 	"strings"
 
 	"github.com/alecthomas/chroma/v2"
@@ -31,12 +30,9 @@ func HighlightCode(code, language string) string {
 }
 
 func highlightUncached(code, language string) string {
-	// Try as language name first (e.g. "go", "python" from markdown fences)
+	// lexers.Get covers both language names ("go") and file paths
+	// ("main.go" — it runs Match(Base(name)) internally in chroma v2).
 	lexer := lexers.Get(language)
-	if lexer == nil {
-		// Try as file path (e.g. "main.go" from Write tool)
-		lexer = lexers.Match(filepath.Base(language))
-	}
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}

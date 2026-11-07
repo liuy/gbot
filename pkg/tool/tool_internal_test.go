@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -246,5 +247,67 @@ func TestWrapSingleBlock_Escapes(t *testing.T) {
 	}
 	if len(blocks) != 1 || blocks[0].Text != `"quoted"` {
 		t.Errorf("expected single block with quoted text, got %+v", blocks)
+	}
+}
+
+// A non-array input longer than 80 runes previews exactly the first 80.
+func TestUnmarshalSingleBlock_PreviewTruncatedAt80Runes(t *testing.T) {
+	t.Parallel()
+	in := strings.Repeat("a", 80) + "Z"
+	_, err := UnmarshalSingleBlock(json.RawMessage(in))
+	if err == nil {
+		t.Fatal("expected error for non-array input")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, strings.Repeat("a", 80)) {
+		t.Errorf("error must preview first 80 runes, got: %.120s...", msg)
+	}
+	if strings.Contains(msg, "Z") {
+		t.Errorf("error must not include rune 81, got: %.160s...", msg)
+	}
+}
+
+// Malformed array JSON must surface the json error, not the generic
+// "no text block" fallback, and must not return a nil error.
+func TestUnmarshalSingleBlock_InvalidArrayJSON(t *testing.T) {
+	t.Parallel()
+	_, err := UnmarshalSingleBlock(json.RawMessage(`[{bad`))
+	if err == nil {
+		t.Fatal("expected error for malformed array JSON, got nil")
+	}
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("error should wrap *json.SyntaxError, got: %v", err)
+	}
+}
+
+// Blocks whose type is not "text" are skipped even when they carry text.
+func TestUnmarshalSingleBlock_NonTextBlockWithTextIgnored(t *testing.T) {
+	t.Parallel()
+	text, err := UnmarshalSingleBlock(json.RawMessage(`[{"type":"image","text":"pixeldata"},{"type":"text","text":"ok"}]`))
+	if err != nil {
+		t.Fatalf("UnmarshalSingleBlock: %v", err)
+	}
+	if text != "ok" {
+		t.Errorf("text = %q, want %q", text, "ok")
+	}
+	_, err = UnmarshalSingleBlock(json.RawMessage(`[{"type":"image","text":"pixeldata"}]`))
+	if err == nil || !strings.Contains(err.Error(), "no text") {
+		t.Errorf("image-only array must error with no-text, got: %v", err)
+	}
+}
+
+// A text block with empty text is not a payload: the search continues past it.
+func TestUnmarshalSingleBlock_EmptyTextBlockSkipped(t *testing.T) {
+	t.Parallel()
+	text, err := UnmarshalSingleBlock(json.RawMessage(`[{"type":"text","text":""},{"type":"text","text":"real"}]`))
+	if err != nil {
+		t.Fatalf("UnmarshalSingleBlock: %v", err)
+	}
+	if text != "real" {
+		t.Errorf("text = %q, want %q", text, "real")
+	}
+	_, err = UnmarshalSingleBlock(json.RawMessage(`[{"type":"text","text":""}]`))
+	if err == nil || !strings.Contains(err.Error(), "no text") {
+		t.Errorf("empty-text-only array must error with no-text, got: %v", err)
 	}
 }

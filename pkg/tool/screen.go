@@ -163,24 +163,28 @@ func (s *Screen) emit(kind ScreenEventKind, content string) {
 	}
 }
 
+// seqIncomplete is the shared not-enough-bytes sentinel for the escape
+// parsers; one definition point instead of five literal -1s.
+const seqIncomplete = -1
+
 // parseEscape processes bytes after an ESC character.
-// Returns bytes consumed (not including ESC), or -1 if the sequence is incomplete.
+// Returns bytes consumed (not including ESC), or seqIncomplete if the sequence is incomplete.
 func (s *Screen) parseEscape(p []byte) int {
 	if len(p) == 0 {
-		return -1 // incomplete: just ESC
+		return seqIncomplete // incomplete: just ESC
 	}
 
 	switch p[0] {
 	case '[':
 		n := s.parseCSI(p[1:])
 		if n < 0 {
-			return -1
+			return seqIncomplete
 		}
 		return 1 + n
 	case ']':
 		n := s.parseOSC(p[1:])
 		if n < 0 {
-			return -1
+			return seqIncomplete
 		}
 		return 1 + n
 	default:
@@ -204,7 +208,7 @@ func (s *Screen) parseCSI(p []byte) int {
 	}
 	// Final byte: 0x40–0x7E
 	if start >= len(p) {
-		return -1 // incomplete: no final byte
+		return seqIncomplete // incomplete: no final byte
 	}
 	if p[start] < 0x40 || p[start] > 0x7E {
 		return start // not a valid final byte — consume what we have
@@ -263,7 +267,7 @@ func (s *Screen) parseOSC(p []byte) int {
 			return i + 2
 		}
 	}
-	return -1 // incomplete — sequence not terminated
+	return seqIncomplete // incomplete — sequence not terminated
 }
 
 // Flush emits any remaining line content as an Append event.

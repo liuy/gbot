@@ -525,3 +525,194 @@ func assertEvent(t *testing.T, ev ScreenEvent, wantKind ScreenEventKind, wantCon
 		t.Errorf("content = %q, want %q", ev.Content, wantContent)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Event-sequence pinning table: each case drives one Write and asserts the
+// exact (kind, content) event stream, exercising the CR/LF/CSI/OSC state
+// machine boundaries — erased-line tracking, cursor-home equivalence classes,
+// final-byte ranges, and OSC terminator scanning.
+// ---------------------------------------------------------------------------
+
+func TestScreen_EventSequences(t *testing.T) {
+	t.Parallel()
+	appendEvent := func(c string) ScreenEvent { return ScreenEvent{ScreenAppend, c} }
+	replaceEvent := func(c string) ScreenEvent { return ScreenEvent{ScreenReplace, c} }
+
+	tests := []struct {
+		name  string
+		input string
+		want  []ScreenEvent
+	}{
+		// Invalid-UTF-8 skip must not swallow a literal U+FFFD rune.
+		{"literal replacement char preserved", "\uFFFD\n", []ScreenEvent{appendEvent("\uFFFD")}},
+		// 0x1F is below the printable threshold and must be dropped.
+		{"US control byte skipped", "\x1fa\n", []ScreenEvent{appendEvent("a")}},
+		// Emit guards: SGR-only lines are invisible, 1-char lines still emit.
+		{"SGR-only line then CR emits nothing", "\x1b[31m\r", nil},
+		{"SGR-only line then LF emits nothing", "\x1b[31m\n", nil},
+		{"single-char line emits on CR", "a\r", []ScreenEvent{appendEvent("a")}},
+		{"single-char line emits on LF", "a\n", []ScreenEvent{appendEvent("a")}},
+		// Erased-line bookkeeping around ESC[1G + ESC[0K.
+		{"erased empty line emits on LF", "x\x1b[1G\x1b[0K\n", []ScreenEvent{appendEvent("x"), replaceEvent(""), appendEvent("")}},
+		{"printable clears lineErased", "f\x1b[1G\x1b[0Kx\x1b[1G\n", []ScreenEvent{appendEvent("f"), replaceEvent(""), appendEvent("x")}},
+		{"content after erase is Append", "x\x1b[1G\x1b[0Ky\n", []ScreenEvent{appendEvent("x"), replaceEvent(""), appendEvent("y")}},
+		{"LF clears crPending", "a\n\x1b[0K\n", []ScreenEvent{appendEvent("a")}},
+		// Same resets, but with the flag actually set beforehand — removing
+		// the assignment only diverges when the stale value is true.
+		{"LF clears crPending set by 1G", "x\x1b[1Ga\n\x1b[0K\n", []ScreenEvent{appendEvent("x"), replaceEvent("a")}},
+		{"LF clears lineErased", "a\x1b[1G\x1b[0Kb\n\n", []ScreenEvent{appendEvent("a"), replaceEvent(""), appendEvent("b")}},
+		{"LF clears lineErased set by 0K", "a\x1b[1G\x1b[0K\n\n", []ScreenEvent{appendEvent("a"), replaceEvent(""), appendEvent("")}},
+		// OSC bodies: backslash is data, only ESC-\ or BEL terminate, and a
+		// trailing lone ESC at the buffer end must not index past the slice.
+		{"OSC with backslash in body", "\x1b]0;ti\\tle\x07ok\n", []ScreenEvent{appendEvent("ok")}},
+		{"OSC terminated by ST", "\x1b]0;t\x1b\\ok\n", []ScreenEvent{appendEvent("ok")}},
+		{"OSC ends without terminator", "\x1b]0;end", nil},
+		{"OSC ends with lone ESC", "\x1b]0;x\x1b", nil},
+		{"ESC inside OSC body is not ST", "\x1b]0;a\x1b[31mred\n", nil},
+		// Cursor movement equivalents of \r.
+		{"ESC[1G acts as CR", "x\x1b[1Gy\n", []ScreenEvent{appendEvent("x"), replaceEvent("y")}},
+		{"ESC[d acts as CR", "x\x1b[1dy\n", []ScreenEvent{appendEvent("x"), replaceEvent("y")}},
+		{"ESC[H acts as CR", "x\x1b[Hy\n", []ScreenEvent{appendEvent("x"), replaceEvent("y")}},
+		{"ESC[1;1H acts as CR", "x\x1b[1;1Hy\n", []ScreenEvent{appendEvent("x"), replaceEvent("y")}},
+		{"ESC[2;1H not home", "x\x1b[2;1Hy\n", []ScreenEvent{appendEvent("xy")}},
+		{"ESC[1:1H not home", "x\x1b[1:1Hy\n", []ScreenEvent{appendEvent("xy")}},
+		{"ESC[1;2H not home", "x\x1b[1;2Hy\n", []ScreenEvent{appendEvent("xy")}},
+		{"ESC[1;12H not home", "x\x1b[1;12Hy\n", []ScreenEvent{appendEvent("xy")}},
+		{"erase after ESC[H", "x\x1b[H\x1b[0K\n", []ScreenEvent{appendEvent("x"), replaceEvent(""), appendEvent("")}},
+		// ESC[0K erase only fires when a cursor-to-column preceded it.
+		{"ESC[0K without pending CR ignored", "a\n\x1b[0K\n", []ScreenEvent{appendEvent("a")}},
+		{"non-K final after ESC[1G ignored", "x\x1b[1G\x1b[2J\n", []ScreenEvent{appendEvent("x")}},
+		// CSI byte classification boundaries.
+		{"digit-zero stays a parameter", "\x1b[0mred\n", []ScreenEvent{appendEvent("\x1b[0mred")}},
+		{"at-sign is a final byte", "\x1b[@x\n", []ScreenEvent{appendEvent("x")}},
+		{"tilde is a final byte", "\x1b[~x\n", []ScreenEvent{appendEvent("x")}},
+		{"DEL after ESC[ stays content", "\x1b[\x7fX\n", []ScreenEvent{appendEvent("\x7fX")}},
+		{"multibyte rune after invalid final", "a\x1b[\xc3\xa9b\n", []ScreenEvent{appendEvent("aéb")}},
+		{"CR after invalid final still a CR", "a\x1b[\rX\n", []ScreenEvent{appendEvent("a"), replaceEvent("X")}},
+		{"params then invalid final byte", "\x1b[12\x10ok\n", []ScreenEvent{appendEvent("ok")}},
+		{"space is an intermediate byte", "\x1b[\x20mX\n", []ScreenEvent{appendEvent("\x1b[ mX")}},
+		{"slash is an intermediate byte", "\x1b[/mX\n", []ScreenEvent{appendEvent("\x1b[/mX")}},
+		{"0x1F is not an intermediate byte", "\x1b[\x1fmX\n", []ScreenEvent{appendEvent("mX")}},
+		// The classification loops stop at the first intermediate byte, so a
+		// digit or '?' after '/' is an invalid final, not a parameter.
+		{"digit after intermediate is an invalid final", "\x1b[/0hello\n", []ScreenEvent{appendEvent("0hello")}},
+		{"digit after intermediate is not SGR body", "\x1b[/0mX\n", []ScreenEvent{appendEvent("0mX")}},
+		{"? after intermediate is not a final", "\x1b[/?X\n", []ScreenEvent{appendEvent("?X")}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var events []ScreenEvent
+			s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+			s.Write([]byte(tc.input))
+			if len(events) != len(tc.want) {
+				t.Fatalf("got %d events, want %d: %+v", len(events), len(tc.want), events)
+			}
+			for i, ev := range events {
+				if ev != tc.want[i] {
+					t.Errorf("event %d = {%d, %q}, want {%d, %q}", i, ev.Kind, ev.Content, tc.want[i].Kind, tc.want[i].Content)
+				}
+			}
+		})
+	}
+}
+
+// Flush-boundary battery: partial-escape recovery, idempotence, and the
+// state resets that keep subsequent writes starting clean.
+func TestScreen_FlushBoundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bare ESC flush emits nothing", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte{'\x1b'})
+		s.Flush()
+		if len(events) != 0 {
+			t.Fatalf("want 0 events, got %+v", events)
+		}
+	})
+
+	t.Run("bare ESC flush then write starts clean", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte{'\x1b'})
+		s.Flush()
+		s.Write([]byte("ok\n"))
+		if len(events) != 1 || events[0].Content != "ok" {
+			t.Fatalf("want [Append ok], got %+v", events)
+		}
+	})
+
+	t.Run("partial CSI header recovered by flush", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte("\x1b["))
+		s.Flush()
+		s.Write([]byte("hi\n"))
+		want := []ScreenEvent{{ScreenAppend, "\x1b["}, {ScreenReplace, "hi"}}
+		if len(events) != len(want) {
+			t.Fatalf("got %d events, want %d: %+v", len(events), len(want), events)
+		}
+		for i := range want {
+			if events[i] != want[i] {
+				t.Errorf("event %d = %+v, want %+v", i, events[i], want[i])
+			}
+		}
+	})
+
+	t.Run("flush empty line emits nothing", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte("\n"))
+		s.Flush()
+		if len(events) != 0 {
+			t.Fatalf("want 0 events, got %+v", events)
+		}
+	})
+
+	t.Run("flush single-char line emits", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte("a"))
+		s.Flush()
+		if len(events) != 1 || events[0] != (ScreenEvent{ScreenAppend, "a"}) {
+			t.Fatalf("want [Append a], got %+v", events)
+		}
+	})
+
+	t.Run("double flush emits once", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte("a"))
+		s.Flush()
+		s.Flush()
+		if len(events) != 1 || events[0] != (ScreenEvent{ScreenAppend, "a"}) {
+			t.Fatalf("want [Append a], got %+v", events)
+		}
+	})
+
+	t.Run("flush clears line for next write", func(t *testing.T) {
+		t.Parallel()
+		var events []ScreenEvent
+		s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+		s.Write([]byte("a"))
+		s.Flush()
+		s.Write([]byte("b\n"))
+		want := []ScreenEvent{{ScreenAppend, "a"}, {ScreenReplace, "b"}}
+		if len(events) != len(want) {
+			t.Fatalf("got %d events, want %d: %+v", len(events), len(want), events)
+		}
+		for i := range want {
+			if events[i] != want[i] {
+				t.Errorf("event %d = %+v, want %+v", i, events[i], want[i])
+			}
+		}
+	})
+}
