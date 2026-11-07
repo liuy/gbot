@@ -66,7 +66,6 @@ interface DirtyRecord {
   tools: Set<string>
   containers: Set<string | null>
   dropped: Block[]
-  tail: boolean
   reset: boolean
 }
 
@@ -84,7 +83,7 @@ export function createJobsSection(): JobsSectionHandles {
   const ensureDirty = (jobID: string): DirtyRecord => {
     let rec = dirty.get(jobID)
     if (!rec) {
-      rec = { tools: new Set(), containers: new Set(), dropped: [], tail: false, reset: false }
+      rec = { tools: new Set(), containers: new Set(), dropped: [], reset: false }
       dirty.set(jobID, rec)
     }
     return rec
@@ -111,14 +110,10 @@ export function createJobsSection(): JobsSectionHandles {
       case 'truncated':
         rec.dropped.push(...c.dropped)
         break
-      case 'tail':
-        rec.tail = true
-        break
       case 'reset':
         rec.reset = true
         break
     }
-    scheduleRender()
   }
 
   const createFeedView = (job: JobWireItem): FeedView => {
@@ -201,8 +196,6 @@ export function createJobsSection(): JobsSectionHandles {
           view.sink.dispose()
           view.lastVersion = curStore.feedVersion(id)
           view.sink.hydrate(scheduleRender)
-        } else {
-          view.lastVersion = curStore.feedVersion(id)
         }
         dirty.delete(id)
       } else if (view.sink !== null && view.sink.pending()) {
@@ -213,7 +206,7 @@ export function createJobsSection(): JobsSectionHandles {
         view.sink?.dropLeading(rec.dropped)
         for (const key of rec.containers) view.sink?.syncTail(key)
         for (const toolID of rec.tools) view.sink?.patchTool(toolID)
-        view.lastVersion = curStore.feedVersion(id)
+        if (view.sink !== null) view.lastVersion = curStore.feedVersion(id)
         dirty.delete(id)
       }
       // Bash tail path (runs in every consuming branch, string-guarded —
@@ -419,7 +412,7 @@ export function createJobsSection(): JobsSectionHandles {
     // deltas landing during the new hydration bump the store version past
     // the watermark and the NEXT rebuild re-renders them.
     for (const j of jobs) {
-      if (!opts.expanded.has(j.id) || j.kind === 'bash') continue
+      if (!opts.expanded.has(j.id)) continue
       const view = feedEls.get(j.id)
       if (!view?.sink) continue
       if (view.lastVersion !== store.feedVersion(j.id)) {
