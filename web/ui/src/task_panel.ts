@@ -68,12 +68,12 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     const jobs = jobsStore.jobs()
     const runningJobs = jobs.filter(j => j.status === 'running').length
     const parts: string[] = []
-    if (currentTasks.length > 0) parts.push(`${done}/${currentTasks.length} Done`)
-    if (running > 0) parts.push(`${running} Running`)
-    if (pending > 0) parts.push(`${pending} Pending`)
+    if (currentTasks.length > 0) parts.push(t('tasksDone')(done, currentTasks.length))
+    if (running > 0) parts.push(t('tasksRunningCount')(running))
+    if (pending > 0) parts.push(t('tasksPendingCount')(pending))
     // The background aggregate speaks only while work is live: zero running
     // jobs means no background mention at all (no idle line).
-    if (runningJobs > 0) parts.push(`${t('jobsSectionTitle')} ${runningJobs} Running`)
+    if (runningJobs > 0) parts.push(`${t('jobsSectionTitle')} ${t('tasksRunningCount')(runningJobs)}`)
 
     if (parts.length > 0) {
       const title = createElement('div', 'px-3 pt-2.5 pb-1 text-[11px] text-t3 font-medium')
@@ -105,36 +105,36 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
 
   root.addEventListener('click', () => host.toggle())
 
-  function renderRow(t: TaskWireItem): HTMLElement {
+  function renderRow(task: TaskWireItem): HTMLElement {
     const row = createElement('div', 'flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px]')
 
     const icon = createElement('span', 'flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center')
 
     const subject = createElement('span', 'flex-1')
 
-    if (t.status === 'completed') {
+    if (task.status === 'completed') {
       icon.className += ' bg-green/20 text-green'
       // 'check' is not in IconName; inline SVG preserved so task_panel.test.ts
       // path-substring assertion stays byte-stable.
       icon.innerHTML = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>'
       subject.className += ' text-t3 line-through'
-      subject.textContent = t.subject
+      subject.textContent = task.subject
       row.append(icon, subject)
-    } else if (t.status === 'in_progress') {
+    } else if (task.status === 'in_progress') {
       icon.className += ' bg-blue/20 text-blue'
       icon.replaceChildren(renderIcon('refresh', { size: 10, strokeWidth: 2.5, className: 'spin' }))
       subject.className += ' text-t1 font-medium'
-      subject.textContent = t.subject
+      subject.textContent = task.subject
       const run = createElement('span', 'mono text-[10px] text-blue pulse')
-      run.textContent = 'Running'
+      run.textContent = t('taskRunning')
       row.append(icon, subject, run)
     } else {
       icon.className += ' border border-t3/40'
       subject.className += ' text-t2/70'
-      subject.textContent = t.subject
-      if (t.blockedBy && t.blockedBy.length > 0) {
+      subject.textContent = task.subject
+      if (task.blockedBy && task.blockedBy.length > 0) {
         const bl = createElement('span', 'mono text-[9px] text-t3')
-        bl.textContent = 'Blocked by ' + t.blockedBy.join(', ')
+        bl.textContent = t('taskBlockedBy')(task.blockedBy.join(', '))
         row.append(icon, subject, bl)
       } else {
         row.append(icon, subject)

@@ -465,3 +465,22 @@ describe('pluralCat — unregistered locales follow en rules exactly', () => {
     spy.mockRestore()
   })
 })
+
+describe('locale template pins — task panel entries', () => {
+  it('zh renders the task panel templates verbatim', () => {
+    setLocale('zh')
+    expect(t('tasksDone')(2, 5)).toBe('2/5 完成')
+    expect(t('tasksRunningCount')(3)).toBe('3 运行中')
+    expect(t('tasksPendingCount')(1)).toBe('1 待办')
+    expect(t('taskBlockedBy')('A, B')).toBe('等待 A, B')
+    expect(t('taskRunning')).toBe('运行中')
+  })
+  it('zh-TW renders the task panel templates verbatim', () => {
+    setLocale('zh-TW')
+    expect(t('tasksDone')(2, 5)).toBe('2/5 完成')
+    expect(t('tasksRunningCount')(3)).toBe('3 執行中')
+    expect(t('tasksPendingCount')(1)).toBe('1 待處理')
+    expect(t('taskBlockedBy')('A, B')).toBe('等待 A, B')
+    expect(t('taskRunning')).toBe('執行中')
+  })
+})

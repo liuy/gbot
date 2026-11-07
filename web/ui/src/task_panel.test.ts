@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createTaskPanel } from './task_panel'
+import { initLocale } from './i18n'
 import type { TaskWireItem, JobWireItem } from './types'
 
 function mount() {
@@ -544,5 +545,59 @@ describe('taskPanel — job feed catch-up (DOM sink)', () => {
     const feed2 = reopened.querySelector('.jobs-feed') as HTMLElement
     expect(feed2.textContent).toContain('ran while closed')
     expect(feed2.querySelectorAll('[data-tool-root]')).toHaveLength(1)
+  })
+})
+
+describe('taskPanel zh locale', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    localStorage.setItem('gbot-language', 'zh')
+    initLocale()
+  })
+  afterEach(() => {
+    localStorage.removeItem('gbot-language')
+    initLocale()
+    document.body.innerHTML = ''
+  })
+  const tasks: TaskWireItem[] = [
+    { id: '1', subject: 'A', status: 'completed' },
+    { id: '2', subject: 'B', status: 'in_progress' },
+    { id: '3', subject: 'C', status: 'pending', blockedBy: ['A', 'B'] },
+  ]
+  it('popover summary line is Chinese', () => {
+    const panel = mount()
+    panel.setTasks(tasks)
+    panel.setJobs([{ id: 'bg-1', kind: 'bash', status: 'running', command: 'a', startedMs: 1000 }])
+    ;(panel.root as HTMLButtonElement).click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    const text = popover.textContent ?? ''
+    expect(text).toContain('1/3 完成')
+    expect(text).toContain('1 运行中')
+    expect(text).toContain('1 待办')
+    // Title-element pin: job rows keep English chips by design, so the
+    // aggregate line must be asserted on its own element.
+    const title = popover.querySelector('.px-3.pt-2\\.5') as HTMLElement
+    expect(title.textContent).toBe('1/3 完成 · 1 运行中 · 1 待办 · 后台 1 运行中')
+  })
+  it('empty blockedBy array renders no blocked note', () => {
+    const panel = mount()
+    panel.setTasks([
+      { id: '1', subject: 'A', status: 'pending', blockedBy: [] },
+    ])
+    ;(panel.root as HTMLButtonElement).click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    expect(popover.textContent).not.toContain('等待')
+    expect(popover.textContent).not.toContain('Blocked')
+  })
+  it('in-progress chip and blocked-by note are Chinese', () => {
+    const panel = mount()
+    panel.setTasks(tasks)
+    ;(panel.root as HTMLButtonElement).click()
+    const popover = document.getElementById('task-popover') as HTMLElement
+    const text = popover.textContent ?? ''
+    expect(text).toContain('运行中')
+    expect(text).not.toContain('Running')
+    expect(text).toContain('等待 A, B')
+    expect(text).not.toContain('Blocked by')
   })
 })
