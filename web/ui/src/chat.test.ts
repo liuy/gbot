@@ -6428,7 +6428,7 @@ describe('chat mutation kills: attachment events', () => {
     })
     const span = document.querySelector('.max-w-fit span.whitespace-pre-wrap') as HTMLElement
     expect(span.textContent).toBe('plain idle echo')
-    expect(span.className).toBe('whitespace-pre-wrap break-words')
+    expect(span.className).toBe('block whitespace-pre-wrap break-words')
   })
 
   it('drained queued message with a backfilled uuid removes its pill', async () => {

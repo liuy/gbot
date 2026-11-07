@@ -40,11 +40,16 @@ export const thinkingLabel = tv({ base: 'text-amber text-sm' })
 
 export const textBlock = tv({ base: 'md-body md-text text-t1 text-[15px] break-words' })
 export const userEchoBlock = tv({ base: 'text-[13px] text-t2 italic ml-2 my-1' })
-export const userTextSpan = tv({ base: 'whitespace-pre-wrap break-words' })
+// block: committed user messages append this span straight into the
+// content area with no wrapper — it must own its line so inline-block
+// attachment thumbnails start on the next row instead of trailing the text.
+export const userTextSpan = tv({ base: 'block whitespace-pre-wrap break-words' })
 // Mid-turn queued messages render gray forever (the model sees them as special
 // reminders permanently, so the UI matches) — echo block + history variants.
 export const queuedEchoBlock = tv({ base: 'text-[13px] text-t3 italic ml-2 my-1' })
-export const queuedTextSpan = tv({ base: 'whitespace-pre-wrap break-words text-t3 italic' })
+// Same block contract as userTextSpan: bare-append paths must own the line
+// so inline-block thumbnails start on the next row.
+export const queuedTextSpan = tv({ base: 'block whitespace-pre-wrap break-words text-t3 italic' })
 export const thinkingText = tv({ base: 'md-body md-text ml-6 text-t2 text-sm break-words' })
 
 export const toolName = tv({ base: 'font-mono text-sm text-blue break-all' })

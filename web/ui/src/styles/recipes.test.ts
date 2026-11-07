@@ -10,6 +10,7 @@ import {
 } from '../components/stream_dom'
 import { createPopupPanel, createAnchoredPopup } from '../utils'
 import { createChat } from '../chat'
+import { createQueuedMessageTextSpan } from '../components/stream_dom'
 import { avatarBase, avatarG, avatarU } from './recipes'
 
 type Listener = (msg: unknown) => void
@@ -57,14 +58,14 @@ describe('stream_dom className snapshot guards', () => {
       const div = appendUserBlock(parent, 'hi')
       const span = div.querySelector('span')!
       expect(div.className).toBe('text-[13px] text-t2 italic ml-2 my-1')
-      expect(span.className).toBe('whitespace-pre-wrap break-words')
+      expect(span.className).toBe('block whitespace-pre-wrap break-words')
     })
   })
 
   describe('createUserTextSpan', () => {
     it('span.className matches current literal', () => {
       const span = createUserTextSpan('hi')
-      expect(span.className).toBe('whitespace-pre-wrap break-words')
+      expect(span.className).toBe('block whitespace-pre-wrap break-words')
     })
   })
 
@@ -320,5 +321,14 @@ describe('utils.ts className snapshot guards', () => {
   it('createAnchoredPopup (with class) matches current literal', () => {
     const panel = createAnchoredPopup('extra-class')
     expect(panel.className).toBe('fixed hidden z-40 bg-ink2/75 backdrop-blur-[20px] backdrop-saturate-[1.5] border border-hairline rounded-xl shadow-2xl extra-class')
+  })
+})
+
+describe('queuedTextSpan className guard', () => {
+  it('queued gray text span owns its line like the default user span', () => {
+    const span = createQueuedMessageTextSpan('x')
+    // Same block contract as userTextSpan: bare-append paths must own the
+    // line so inline-block thumbnails start on the next row.
+    expect(span.className).toContain('block')
   })
 })
