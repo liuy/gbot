@@ -2,6 +2,8 @@ package lsptool
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,5 +179,151 @@ func TestIsProjectAwareLspServer(t *testing.T) {
 	}
 	if isProjectAwareLspServer(lsp.ServerSpec{Name: "biome", IsLinter: true}) {
 		t.Error("linter should NOT be project-aware")
+	}
+}
+
+// TestParseSymbolOccurrence_Edges pins the #N splitting rules.
+func TestParseSymbolOccurrence_Edges(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOcc  int
+	}{
+		{"foo#2", "foo", 2},
+		{"a#2", "a", 2},
+		{"#2", "#2", 1},       // separator at index 0 is not an occurrence marker
+		{"foo#0", "foo#0", 1}, // zero is not a valid occurrence
+		{"foo#x", "foo#x", 1}, // non-numeric suffix is part of the name
+		{"foo", "foo", 1},
+	}
+	for _, c := range cases {
+		name, occ := parseSymbolOccurrence(c.in)
+		if name != c.wantName || occ != c.wantOcc {
+			t.Errorf("parseSymbolOccurrence(%q) = (%q, %d), want (%q, %d)",
+				c.in, name, occ, c.wantName, c.wantOcc)
+		}
+	}
+}
+
+func TestSymbolNameMatches_Qualified(t *testing.T) {
+	if !symbolNameMatches("Store.Load", "Load") {
+		t.Error("qualified last component must match")
+	}
+	if !symbolNameMatches("(*mockEngine).Messages", "Messages") {
+		t.Error("method-receiver form must match")
+	}
+	if symbolNameMatches("Store.Load", "Store") {
+		t.Error("only the last component matches")
+	}
+	if !symbolNameMatches("Load", "Load") {
+		t.Error("exact match must match")
+	}
+	if symbolNameMatches("Store.Load", "Other") {
+		t.Error("different name must not match")
+	}
+}
+
+// TestReferencesRetryCount pins the configured retry budget: two extra
+// attempts are enough to ride out two declaration-only answers.
+func TestReferencesRetryCount(t *testing.T) {
+	// Pattern of server answers: declaration-only twice, then real refs.
+	// With referencesRetryCount=2 (3 attempts) the real refs surface.
+	calls := 0
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/references" {
+				calls++
+				a := lsp.FileToURI(filepath.Join(d, "a.go"))
+				if calls <= 2 {
+					// Declaration-only answer: the range must actually contain
+					// the queried position for the retry logic to classify it.
+					return []any{map[string]any{
+						"uri": a,
+						"range": map[string]any{
+							"start": map[string]any{"line": 0, "character": 4},
+							"end":   map[string]any{"line": 0, "character": 7},
+						},
+					}}, true
+				}
+				return []any{
+					map[string]any{"uri": a, "range": map[string]any{
+						"start": map[string]any{"line": 1, "character": 0},
+						"end":   map[string]any{"line": 1, "character": 3},
+					}},
+					map[string]any{"uri": a, "range": map[string]any{
+						"start": map[string]any{"line": 2, "character": 0},
+						"end":   map[string]any{"line": 2, "character": 3},
+					}},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc a() {}\nfunc b() {}\nfunc c() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := fakeClient(t, reg)
+	res, err := references(context.Background(), c,
+		lsp.FileToURI(filepath.Join(dir, "a.go")), lsp.Position{Line: 0, Character: 4},
+		dir, lsp.ServerSpec{Name: "fakels"})
+	if err != nil {
+		t.Fatalf("references: %v", err)
+	}
+	got := fmt.Sprintf("%v", res.Data)
+	if !strings.HasPrefix(got, "Found 2 reference(s):") {
+		t.Errorf("expected the 3rd attempt's real refs, got:\n%s", got)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+// TestReferencesRetryCountFourthAttempt pins the retry budget at exactly two
+// extra attempts: three declaration-only answers exceed it.
+func TestReferencesRetryCountFourthAttempt(t *testing.T) {
+	calls := 0
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/references" {
+				calls++
+				a := lsp.FileToURI(filepath.Join(d, "a.go"))
+				if calls <= 3 {
+					return []any{map[string]any{
+						"uri": a,
+						"range": map[string]any{
+							"start": map[string]any{"line": 0, "character": 4},
+							"end":   map[string]any{"line": 0, "character": 7},
+						},
+					}}, true
+				}
+				return []any{
+					map[string]any{"uri": a, "range": map[string]any{
+						"start": map[string]any{"line": 1, "character": 0}, "end": map[string]any{"line": 1, "character": 3}}},
+					map[string]any{"uri": a, "range": map[string]any{
+						"start": map[string]any{"line": 2, "character": 0}, "end": map[string]any{"line": 2, "character": 3}}},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc a() {}\nfunc b() {}\nfunc c() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := fakeClient(t, reg)
+	res, err := references(context.Background(), c,
+		lsp.FileToURI(filepath.Join(dir, "a.go")), lsp.Position{Line: 0, Character: 4},
+		dir, lsp.ServerSpec{Name: "fakels"})
+	if err != nil {
+		t.Fatalf("references: %v", err)
+	}
+	got := fmt.Sprintf("%v", res.Data)
+	// Budget exhausted at 3 attempts: the declaration-only answer stands.
+	if !strings.HasPrefix(got, "Found 1 reference(s):") {
+		t.Errorf("expected the declaration to stand, got:\n%s", got)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
 	}
 }

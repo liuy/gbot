@@ -399,6 +399,64 @@ func TestResolveCodeAction_BadJSON(t *testing.T) {
 	}
 }
 
+// TestApplyCodeAction_ResolveCommandOnly pins omp's unconditional adoption of
+// the resolved action (utils.ts:505-518): a resolve reply that carries only a
+// command — no edit — must still be executed, not dropped.
+func TestApplyCodeAction_ResolveCommandOnly(t *testing.T) {
+	execCh := make(chan string, 2)
+	c, _, cleanup := initClient(t, func(req rpcRequest) (any, bool) {
+		switch req.Method {
+		case "codeAction/resolve":
+			return map[string]any{
+				"title":   "resolved-title",
+				"command": map[string]any{"title": "c", "command": "cmd.organize"},
+			}, true
+		case "workspace/executeCommand":
+			raw, _ := json.Marshal(req.Params)
+			execCh <- string(raw)
+			return nil, true
+		}
+		return nil, false
+	})
+	defer cleanup()
+
+	applied, err := ApplyCodeAction(testContext(t), c, CodeAction{Title: "x"}, func(_ *WorkspaceEdit) ([]string, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("ApplyCodeAction: %v", err)
+	}
+	if applied == nil {
+		t.Fatal("applied = nil, want the resolved command-only action adopted")
+	}
+	if applied.Title != "resolved-title" {
+		t.Errorf("title = %q, want resolved-title", applied.Title)
+	}
+	if len(applied.ExecutedCommands) != 1 || applied.ExecutedCommands[0] != "cmd.organize" {
+		t.Errorf("ExecutedCommands = %v, want [cmd.organize]", applied.ExecutedCommands)
+	}
+	var ep struct {
+		Command   string          `json:"command"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	select {
+	case p := <-execCh:
+		if err := json.Unmarshal([]byte(p), &ep); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("workspace/executeCommand never arrived")
+	}
+	if ep.Command != "cmd.organize" {
+		t.Errorf("executeCommand params = %+v, want command cmd.organize", ep)
+	}
+	select {
+	case extra := <-execCh:
+		t.Errorf("second executeCommand: %s", extra)
+	default:
+	}
+}
+
 func TestApplyCodeAction_ApplyEditFails(t *testing.T) {
 	c, _, cleanup := initClient(t, func(req rpcRequest) (any, bool) { return nil, false })
 	defer cleanup()

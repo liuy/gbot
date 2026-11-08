@@ -2,9 +2,11 @@ package lsptool
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/lsp"
@@ -168,5 +170,59 @@ func TestFilterGitIgnoredCallees_NoFilter(t *testing.T) {
 	filtered := filterGitIgnoredCallees(context.Background(), calls, dir)
 	if len(filtered) != 1 {
 		t.Fatalf("expected 1 callee (no filter), got %d", len(filtered))
+	}
+}
+
+// TestFilterGitIgnored_SingleIgnoredLoc pins the empty-check mutation: a
+// one-element ignored list must drop to zero, not short-circuit.
+func TestFilterGitIgnored_SingleIgnoredLoc(t *testing.T) {
+	dir := t.TempDir()
+	if err := exec.Command("git", "init", dir).Run(); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("vendor/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vendorURI := lsp.FileToURI(filepath.Join(dir, "vendor", "lib.go"))
+	filtered := filterGitIgnored(context.Background(), []lsp.Location{{URI: vendorURI}}, dir)
+	if len(filtered) != 0 {
+		t.Errorf("single ignored loc: got %d, want 0", len(filtered))
+	}
+}
+
+// TestFilterGitIgnored_BatchBoundary covers >50 unique paths so the batching
+// loop runs twice, with an ignored file beyond the first batch.
+func TestFilterGitIgnored_BatchBoundary(t *testing.T) {
+	dir := t.TempDir()
+	if err := exec.Command("git", "init", dir).Run(); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "vendor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("vendor/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var locs []lsp.Location
+	for i := range 60 {
+		var p string
+		if i >= 50 {
+			p = filepath.Join(dir, "vendor", fmt.Sprintf("v%d.go", i))
+		} else {
+			p = filepath.Join(dir, fmt.Sprintf("m%02d.go", i))
+		}
+		if err := os.WriteFile(p, []byte("package x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		locs = append(locs, lsp.Location{URI: lsp.FileToURI(p)})
+	}
+	filtered := filterGitIgnored(context.Background(), locs, dir)
+	if len(filtered) != 50 {
+		t.Errorf("filtered = %d, want 50 (10 vendor dropped)", len(filtered))
+	}
+	for _, l := range filtered {
+		if strings.Contains(lsp.URItoPath(l.URI), "vendor") {
+			t.Errorf("vendor path survived: %s", l.URI)
+		}
 	}
 }

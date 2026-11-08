@@ -209,9 +209,10 @@ func ApplyCodeAction(
 ) (*AppliedCodeActionResult, error) {
 	resolved := action
 	if resolved.Edit == nil {
-		// Try codeAction/resolve; ignore errors (resolve is optional).
-		r, err := ResolveCodeAction(ctx, c, action)
-		if err == nil && r.Edit != nil {
+		// Try codeAction/resolve; ignore errors (resolve is optional). The
+		// resolved action is adopted whole — omp (utils.ts:505-518) executes a
+		// command-only reply too, so gating on r.Edit would drop it.
+		if r, err := ResolveCodeAction(ctx, c, action); err == nil && r != nil {
 			resolved = *r
 		}
 	}
@@ -243,11 +244,16 @@ func ApplyCodeAction(
 }
 
 // ResolveCodeAction calls codeAction/resolve to fill in the action's edit/command.
-// Mirrors omp codeAction/resolve (utils.ts:525-531).
+// Mirrors omp codeAction/resolve (utils.ts:525-531). A JSON null reply means the
+// server resolved nothing: reported as (nil, nil) so callers keep the original
+// action (omp would crash on property access there).
 func ResolveCodeAction(ctx context.Context, c *Client, action CodeAction) (*CodeAction, error) {
 	raw, err := c.Request(ctx, "codeAction/resolve", action)
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
 	}
 	var out CodeAction
 	if err := json.Unmarshal(raw, &out); err != nil {

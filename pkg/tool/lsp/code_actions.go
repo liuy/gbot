@@ -47,6 +47,9 @@ func codeActions(ctx context.Context, c *lsp.Client, uri string, pos lsp.Positio
 		var selected *lsp.CodeAction
 		if idxRe.MatchString(normalized) {
 			idx, _ := strconv.Atoi(normalized)
+			// idx >= 0 is unreachable (idxRe is ^\d+$, Atoi of digits is
+			// always >= 0) but kept as a defensive bound next to the real
+			// check idx < len(actions).
 			if idx >= 0 && idx < len(actions) {
 				selected = &actions[idx]
 			}

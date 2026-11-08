@@ -191,3 +191,158 @@ func TestReloadServer_FallbackKillAndEvict(t *testing.T) {
 		t.Errorf("expected reload/restart message, got: %s", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Mutation-kill tests for reload/reloadServer.
+// ---------------------------------------------------------------------------
+
+func TestReload_UnclaimedExtStillReloads(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	res, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "reload", File: filepath.Join(dir, "x.md"),
+	}), basicCtxWithDir(t, dir))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := res.Data.(string); got != "Reloaded fakels" {
+		t.Errorf("reload with unclaimed ext = %q, want Reloaded fakels", got)
+	}
+}
+
+func TestReloadServer_RequestFallsBackToNotify(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				return rpcError{"boom"}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Reloaded fakels" {
+		t.Errorf("reloadServer = %q, want Reloaded fakels", got)
+	}
+}
+
+func TestReloadServer_CancelledCtx(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				return holdResponse{}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := reloadServer(ctx, reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Failed to reload fakels: context canceled" {
+		t.Errorf("reloadServer cancelled = %q", got)
+	}
+}
+
+func TestReloadServer_NotifyParams(t *testing.T) {
+	paramsCh := make(chan string, 2)
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, params json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				return rpcError{"boom"}, true
+			}
+			if method == "workspace/didChangeConfiguration" {
+				paramsCh <- string(params)
+				return nil, false
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Reloaded fakels" {
+		t.Fatalf("reloadServer = %q", got)
+	}
+	if p := recvNot(t, paramsCh, "didChangeConfiguration"); p != "{\"settings\":{}}" {
+		t.Errorf("didChangeConfiguration params = %q, want {\"settings\":{}}", p)
+	}
+}
+
+// TestReloadServer_SpawnFailureAndNilCtxGuard: an evicted client forces the
+// spawn path — a nil-ctx mutation panics inside StartClient's ctx.Err().
+func TestReloadServer_SpawnFailure(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	if !reg.KillAndEvict("fakels", dir) {
+		t.Fatal("KillAndEvict: no live client")
+	}
+	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if !strings.HasPrefix(got, "Failed to reload fakels: ") {
+		t.Errorf("reloadServer spawn-fail = %q, want Failed prefix", got)
+	}
+}
+
+// TestReloadServer_CancelDuringRequest: the ctx dies while the reload request
+// is being served — the success path must still report the failure.
+func TestReloadServer_CancelDuringRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	arrived := make(chan struct{})
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				close(arrived)
+				<-ctx.Done()
+				return map[string]any{"ok": true}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	go func() {
+		<-arrived
+		cancel()
+	}()
+	got := reloadServer(ctx, reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Failed to reload fakels: context canceled" {
+		t.Errorf("reloadServer cancel-during-request = %q", got)
+	}
+}
+
+// TestReloadServer_CancelledWithFailingRequest: step 1 errors, the Notify
+// still succeeds, and the post-Notify ctx check must catch the cancellation.
+func TestReloadServer_CancelledWithFailingRequest(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				return rpcError{"boom"}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := reloadServer(ctx, reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Failed to reload fakels: context canceled" {
+		t.Errorf("reloadServer cancelled+rpcError = %q, want Failed ... context canceled", got)
+	}
+}
+
+// TestReloadServer_NotifyFallbackMessage: step 1 failing with a healthy ctx
+// falls to the generic Notify, whose success is the observable "Reloaded X".
+func TestReloadServer_NotifyFallbackMessage(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "rust-analyzer/reloadWorkspace" {
+				return rpcError{"boom"}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	got := reloadServer(context.Background(), reg, lsp.ServerSpec{Name: "fakels"}, dir)
+	if got != "Reloaded fakels" {
+		t.Errorf("reloadServer request-fail+notify-ok = %q, want Reloaded fakels", got)
+	}
+}

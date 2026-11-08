@@ -131,11 +131,15 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 	}
 	var perServer []serverEdit
 	var serverNotes []string
+	var hardFailures []string
 	for _, spec := range relevantSpecs {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		c, err := reg.ForFile(ctx, source)
+		// Per-spec client (mirrors omp tool.ts:605-609 and the didRename loop
+		// below): resolving via the source's extension would starve the other
+		// servers and break entirely for a directory source, which has none.
+		c, err := reg.ForSpecInRoot(ctx, spec, reg.RootFor(source))
 		if err != nil {
 			serverNotes = append(serverNotes, fmt.Sprintf("  %s: %v", spec.Name, err))
 			continue
@@ -146,6 +150,11 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 			if isMethodNotFoundError(err) {
 				continue
 			}
+			// A supporting server that failed is a hard failure: applying
+			// partial edits (or none) and moving the path anyway would leave
+			// references dangling, so the abort is decided after the loop,
+			// before any mutation (omp #8380 semantics).
+			hardFailures = append(hardFailures, spec.Name)
 			serverNotes = append(serverNotes, fmt.Sprintf("  %s: %v", spec.Name, err))
 			continue
 		}
@@ -160,6 +169,18 @@ func renameFile(ctx context.Context, reg *lsp.Registry, in Input, workingDir str
 			continue
 		}
 		perServer = append(perServer, serverEdit{spec.Name, &edit})
+	}
+
+	if len(hardFailures) > 0 {
+		// Abort before any mutation: partial (or no) edits plus a moved path
+		// would leave references dangling with no way to apply them later.
+		var lines []string
+		lines = append(lines, fmt.Sprintf(
+			"Error: aborted rename; workspace/willRenameFiles failed on %s, so semantic references would not be updated. No files were moved.",
+			strings.Join(hardFailures, ", ")))
+		lines = append(lines, "  Server notes:")
+		lines = append(lines, serverNotes...)
+		return nil, fmt.Errorf("%s", strings.Join(lines, "\n"))
 	}
 
 	sourceLabel := lsp.URItoRelativePath(lsp.FileToURI(source), workingDir)

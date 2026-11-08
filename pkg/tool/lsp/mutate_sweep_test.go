@@ -1,6 +1,8 @@
 package lsptool
 
 import (
+	"errors"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -517,4 +519,66 @@ func TestRenameFile_PreviewEdits(t *testing.T) {
 			t.Errorf("%s: data = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+}
+
+// The four documented-gap wrap sites must keep their %w chains: callers
+// surface the underlying error through Unwrap, and a %v rewrite is
+// byte-identical in Error() text — only a chain assertion can tell.
+func TestWrapChains_UnwrapUnderlying(t *testing.T) {
+	t.Run("resolveAndOpen wraps ForFileInRoot failure", func(t *testing.T) {
+		tsURI := ""
+		reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+			return func(method string, _ json.RawMessage) (any, bool) {
+				if method == "workspace/symbol" {
+					return []map[string]any{{
+						"name": "foo", "kind": 12,
+						"location": map[string]any{
+							"uri":   tsURI,
+							"range": map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 3}},
+						},
+					}}, true
+				}
+				return nil, false
+			}
+		})
+		defer cleanup()
+		tsFile := filepath.Join(dir, "x.ts")
+		tsURI = lsp.FileToURI(tsFile)
+		if err := os.WriteFile(tsFile, []byte("function foo() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := New(reg).Call(context.Background(), mustInput(t, Input{Action: "definition", Symbol: "foo"}), &tool.ToolUseContext{WorkingDir: dir})
+		if err == nil {
+			t.Fatal("expected error for .ts symbol with only-.go server")
+		}
+		if !strings.HasPrefix(err.Error(), "lsp for file:") || errors.Unwrap(err) == nil {
+			t.Errorf("err = %v, want wrapped lsp-for-file chain", err)
+		}
+	})
+	t.Run("symbolsAction wraps ForFile failure", func(t *testing.T) {
+		reg, dir, cleanup := newFakeEnv(t, nil)
+		defer cleanup()
+		tsFile := filepath.Join(dir, "x.ts")
+		if err := os.WriteFile(tsFile, []byte("function foo() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := New(reg).Call(context.Background(), mustInput(t, Input{Action: "symbols", File: tsFile}), basicCtxWithDir(t, dir))
+		if err == nil {
+			t.Fatal("expected ForFile error for .ts file")
+		}
+		if !strings.HasPrefix(err.Error(), "lsp for file:") || errors.Unwrap(err) == nil {
+			t.Errorf("err = %v, want wrapped lsp-for-file chain", err)
+		}
+	})
+	t.Run("write root guard wraps the check error", func(t *testing.T) {
+		reg, _, cleanup := newFakeEnv(t, nil)
+		defer cleanup()
+		err := guardWriteRootPath(reg, "rename_file", "/definitely/outside/root")
+		if err == nil {
+			t.Fatal("expected outside-root rejection")
+		}
+		if !strings.HasPrefix(err.Error(), "rename_file:") || errors.Unwrap(err) == nil {
+			t.Errorf("err = %v, want wrapped guard chain", err)
+		}
+	})
 }

@@ -2,8 +2,10 @@ package lsptool
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +27,38 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeHandler func(method string, params json.RawMessage) (any, bool)
+
+// holdResponse is the marker a handler returns to make serveFake swallow one
+// request without answering — the client then aborts via ctx cancellation.
+type holdResponse struct{}
+
+// rpcError makes serveFake answer a request with a JSON-RPC error response,
+// so client.Request returns a non-nil error (deterministic, unlike closing
+// the pipe mid-call).
+type rpcError struct{ msg string }
+
+// injectSecondFake adds a second fake server to an existing registry, for
+// tests that need two relevant specs (per-spec loops, conflict coalescing).
+// The new spec also claims .go, so it wins the ext→spec mapping.
+func injectSecondFake(t *testing.T, reg *lsp.Registry, dir, name string, handler fakeHandler) *lsp.Client {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	var wg sync.WaitGroup
+	wg.Go(func() { serveFake(t, serverConn, handler, dir) })
+	c := lsp.NewTestClient(name, clientConn)
+	reg.InjectClientInRoot(name, dir, lsp.ServerSpec{
+		Name:     name,
+		Language: "Fake",
+		FileExts: []string{".go"},
+		Command:  "fake-lsp",
+	}, c)
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+		wg.Wait()
+	})
+	return c
+}
 
 // newFakeEnv builds a fake LSP server connected via net.Pipe.
 // The handler factory is called AFTER the temp dir exists, so closures can
@@ -163,6 +197,26 @@ func serveFake(t *testing.T, conn net.Conn, handler fakeHandler, dir string) {
 		}
 		if !handled {
 			result = nil
+		}
+		// holdResponse: consume the request but never answer it, so the only
+		// way the client's Request can finish is ctx cancellation (it fires
+		// $/cancelRequest, which needs this loop back reading — so the handler
+		// must return instead of blocking forever).
+		if handled {
+			if _, ok := result.(holdResponse); ok {
+				continue
+			}
+			if re, ok := result.(rpcError); ok {
+				errResp := map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]any{"code": -32000, "message": re.msg},
+				}
+				errBody, _ := json.Marshal(errResp)
+				_, _ = fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n", len(errBody))
+				_, _ = conn.Write(errBody)
+				continue
+			}
 		}
 
 		resp := map[string]any{
@@ -1749,5 +1803,451 @@ func TestComparePosition(t *testing.T) {
 
 	if comparePosition(lsp.Position{Line: 5, Character: 10}, lsp.Position{Line: 5, Character: 3}) <= 0 {
 		t.Errorf("larger character should be positive")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mutation-kill tests for lsp.go: tool-def wiring, execute timeout handling,
+// fileOp validation, resolveAndOpen error paths, formatting helpers.
+// ---------------------------------------------------------------------------
+
+func TestNew_ToolDefFields(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	if got := tt.Name(); got != "Lsp" {
+		t.Errorf("Name() = %q", got)
+	}
+	if aliases := tt.Aliases(); len(aliases) != 1 || aliases[0] != "lsp" {
+		t.Errorf("Aliases() = %v, want [lsp]", aliases)
+	}
+	schema := tt.InputSchema()
+	if schema == nil || !bytes.Contains(schema, []byte(`"action"`)) {
+		t.Errorf("InputSchema() = %s, want schema mentioning action", schema)
+	}
+	sr := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(mustInput(t, Input{Action: "definition"}))
+	if !sr.IsLsp {
+		t.Errorf("IsSearchOrRead().IsLsp = false, want true")
+	}
+	if !tt.IsConcurrencySafe(mustInput(t, Input{Action: "status"})) {
+		t.Error("IsConcurrencySafe = false, want true")
+	}
+	if tt.InterruptBehavior() != tool.InterruptCancel {
+		t.Errorf("InterruptBehavior() = %v, want InterruptCancel", tt.InterruptBehavior())
+	}
+	if tt.Prompt() == "" {
+		t.Error("Prompt() empty")
+	}
+	if !tt.IsEnabled() {
+		t.Error("IsEnabled() = false, want true")
+	}
+	if tt.MaxResultSize() <= 0 {
+		t.Errorf("MaxResultSize() = %d, want the BuildTool default", tt.MaxResultSize())
+	}
+	// Wire blocks: a string result must round-trip as a single text block,
+	// anything else as JSON text.
+	wb := tt.(tool.ToolWithWireBlocks).FormatWireBlocks("some lsp output")
+	if len(wb) != 1 || wb[0].Type != "text" || wb[0].Text != "some lsp output" {
+		t.Errorf("FormatWireBlocks(string) = %+v", wb)
+	}
+	wb2 := tt.(tool.ToolWithWireBlocks).FormatWireBlocks(map[string]any{"k": 1})
+	if len(wb2) != 1 || wb2[0].Text != `{"k":1}` {
+		t.Errorf("FormatWireBlocks(map) = %+v", wb2)
+	}
+}
+
+func TestExecute_ParseInputError(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	_, err := New(reg).Call(context.Background(), json.RawMessage(`{bad json`), basicCtx())
+	if err == nil || !strings.HasPrefix(err.Error(), "parse input:") {
+		t.Fatalf("error = %v, want prefix parse input:", err)
+	}
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("error does not unwrap to *json.SyntaxError: %v", err)
+	}
+}
+
+// TestExecute_TimeoutMessage pins the wall-clock timeout error, including the
+// default-30s derivation (a 30s wait on purpose: the default is otherwise
+// unobservable) and the parent-deadline distinction.
+func TestExecute_TimeoutMessage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("31s wall-clock wait by design")
+	}
+	reg, _, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/hover" {
+				return holdResponse{}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	_, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "request", Query: "textDocument/hover", Timeout: 1,
+	}), basicCtx())
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	want := "LSP request timed out after 1s (server may still be indexing; try again or pass timeout=<larger>)"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+
+	// The default-30s derivation costs a real 30s wait, so it runs only when
+	// LSP_SLOW=1 (targeted mutant verification); the fast suite would slow
+	// every mutation-testing cycle by half a minute.
+	if os.Getenv("LSP_SLOW") != "" {
+		_, err = New(reg).Call(context.Background(), mustInput(t, Input{
+			Action: "request", Query: "textDocument/hover", Timeout: 0,
+		}), basicCtx())
+		if err == nil {
+			t.Fatal("expected timeout error for default timeout")
+		}
+		want = "LSP request timed out after 30s (server may still be indexing; try again or pass timeout=<larger>)"
+		if err.Error() != want {
+			t.Errorf("default-timeout error = %q, want %q", err.Error(), want)
+		}
+	}
+}
+
+// TestExecute_ParentDeadlineNotWrapped: when the caller's own ctx expires, the
+// plain deadline error surfaces — no "timed out after" guidance.
+func TestExecute_ParentDeadlineNotWrapped(t *testing.T) {
+	reg, _, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/hover" {
+				return holdResponse{}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	parent, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := New(reg).Call(parent, mustInput(t, Input{
+		Action: "request", Query: "textDocument/hover", Timeout: 5,
+	}), basicCtx())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "timed out after") {
+		t.Errorf("parent-deadline error must not carry the server guidance: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error does not unwrap to context.DeadlineExceeded: %v", err)
+	}
+}
+
+func TestFileOp_ValidationErrors(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc foo() {}\n"), 0o644)
+	tt := New(reg)
+
+	_, err := tt.Call(context.Background(), mustInput(t, Input{Action: "symbols"}), basicCtxWithDir(t, dir))
+	if err == nil || err.Error() != "file parameter required for symbols" {
+		t.Errorf("symbols-no-file error = %v", err)
+	}
+
+	_, err = tt.Call(context.Background(), mustInput(t, Input{Action: "definition"}), basicCtxWithDir(t, dir))
+	if err == nil || err.Error() != "symbol parameter required for definition" {
+		t.Errorf("definition-no-symbol error = %v", err)
+	}
+
+	// "check" passes dispatch's case list but has no fileOp handler.
+	_, err = tt.Call(context.Background(), mustInput(t, Input{
+		Action: "check", File: filepath.Join(dir, "a.go"), Symbol: "foo",
+	}), basicCtxWithDir(t, dir))
+	if err == nil || err.Error() != "unknown file action: check" {
+		t.Errorf("unknown file action error = %v", err)
+	}
+}
+
+// TestFileOp_GuardOnlyForWrites: the write-root guard must not fire for read
+// actions or preview renames.
+func TestFileOp_GuardOnlyForWrites(t *testing.T) {
+	outside := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outside, "x.go"), []byte("package main\n"), 0o644)
+
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	tt := New(reg)
+
+	_, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "definition", File: filepath.Join(outside, "x.go"), Symbol: "x", Apply: new(true),
+	}), basicCtxWithDir(t, dir))
+	if err == nil || !strings.Contains(err.Error(), "not found in") {
+		t.Fatalf("read action must reach symbol resolution, got: %v", err)
+	}
+
+	_, err = tt.Call(context.Background(), mustInput(t, Input{
+		Action: "rename", File: filepath.Join(outside, "x.go"), Symbol: "x", NewName: "y", Apply: new(false),
+	}), basicCtxWithDir(t, dir))
+	if err == nil || !strings.Contains(err.Error(), "not found in") {
+		t.Fatalf("preview rename must reach symbol resolution, got: %v", err)
+	}
+
+	// No file at all: the guard must stay silent even when the working dir
+	// itself is outside the registry root.
+	_, err = tt.Call(context.Background(), mustInput(t, Input{
+		Action: "rename", Symbol: "x", NewName: "y",
+	}), basicCtxWithDir(t, outside))
+	if err == nil || !strings.Contains(err.Error(), "not found in") {
+		t.Fatalf("fileless rename must reach symbol resolution, got: %v", err)
+	}
+}
+
+func TestResolveAndOpen_ResolvedURIEdges(t *testing.T) {
+	cases := []struct {
+		name     string
+		uri      string
+		wantErr  string
+		injectTS bool
+	}{
+		{"no extension", "file:///noext", "no extension: /noext", false},
+		{"no server for ext", "file:///x.ts", "lsp for file:", false},
+		{"missing file", "file:///gone/missing.go", "stat file:", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+				return func(method string, _ json.RawMessage) (any, bool) {
+					if method == "workspace/symbol" {
+						return []lsp.SymbolInformation{{
+							Name: "foo", Kind: lsp.SymbolFunction,
+							Location: lsp.Location{URI: tc.uri, Range: lsp.Range{Start: lsp.Position{Line: 0, Character: 0}}},
+						}}, true
+					}
+					return nil, false
+				}
+			})
+			defer cleanup()
+			_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\n"), 0o644)
+			_, err := New(reg).Call(context.Background(), mustInput(t, Input{
+				Action: "definition", File: filepath.Join(dir, "a.go"), Symbol: "foo",
+			}), basicCtxWithDir(t, dir))
+			if err == nil || !strings.HasPrefix(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want prefix %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestResolveAndOpen_UnknownLanguage needs a spec that claims an extension
+// DetectLanguage does not know.
+func TestResolveAndOpen_UnknownLanguage(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "workspace/symbol" {
+				return []lsp.SymbolInformation{{
+					Name: "foo", Kind: lsp.SymbolFunction,
+					Location: lsp.Location{URI: "file:///w/x.xyz", Range: lsp.Range{Start: lsp.Position{Line: 0, Character: 0}}},
+				}}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	// A second fake server claiming .xyz, rooted at the env dir.
+	clientConn, serverConn := net.Pipe()
+	var wg sync.WaitGroup
+	wg.Go(func() { serveFake(t, serverConn, nil, dir) })
+	xc := lsp.NewTestClient("xyzls", clientConn)
+	reg.InjectClientInRoot("xyzls", dir, lsp.ServerSpec{
+		Name: "xyzls", Language: "Xyz", FileExts: []string{".xyz"}, Command: "fake-xyz",
+	}, xc)
+	t.Cleanup(func() { _ = clientConn.Close(); _ = serverConn.Close(); wg.Wait() })
+
+	_ = os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\n"), 0o644)
+	_, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "definition", File: filepath.Join(dir, "a.go"), Symbol: "foo",
+	}), basicCtxWithDir(t, dir))
+	if err == nil || err.Error() != "unknown language: .xyz" {
+		t.Fatalf("error = %v, want unknown language: .xyz", err)
+	}
+
+	// The symbols action hits the same check via its own path.
+	_ = os.WriteFile(filepath.Join(dir, "b.xyz"), []byte("x"), 0o644)
+	_, err = New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "symbols", File: filepath.Join(dir, "b.xyz"),
+	}), basicCtxWithDir(t, dir))
+	if err == nil || err.Error() != "unknown language: .xyz" {
+		t.Fatalf("symbols error = %v, want unknown language: .xyz", err)
+	}
+}
+
+// TestEnsureFileOpenWithGuard_Kill pins the three error wraps and the
+// already-open shortcut with a file that disappears underneath the client.
+func TestEnsureFileOpenWithGuard_AlreadyOpenThenDeleted(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	src := filepath.Join(dir, "gone.go")
+	if err := os.WriteFile(src, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := fakeClient(t, reg)
+	uri := lsp.FileToURI(src)
+	if err := ensureFileOpenWithGuard(context.Background(), c, uri, "go", src); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	// Already tracked open: no re-stat, so the missing file is not an error.
+	if err := ensureFileOpenWithGuard(context.Background(), c, uri, "go", src); err != nil {
+		t.Errorf("second open after delete should be a no-op, got: %v", err)
+	}
+}
+
+func TestEnsureFileOpenWithGuard_StatWrap(t *testing.T) {
+	reg, _, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	c := fakeClient(t, reg)
+	missing := "/nonexistent/x.go"
+	err := ensureFileOpenWithGuard(context.Background(), c, lsp.FileToURI(missing), "go", missing)
+	if err == nil || !strings.HasPrefix(err.Error(), "stat file:") {
+		t.Fatalf("error = %v, want prefix stat file:", err)
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
+		t.Errorf("error does not unwrap to *fs.PathError: %v", err)
+	}
+}
+
+func TestEnsureFileOpenWithGuard_ReadError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	src := filepath.Join(dir, "secret.go")
+	if err := os.WriteFile(src, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(src, 0o644) }()
+	c := fakeClient(t, reg)
+	err := ensureFileOpenWithGuard(context.Background(), c, lsp.FileToURI(src), "go", src)
+	if err == nil || !strings.HasPrefix(err.Error(), "read file:") {
+		t.Fatalf("error = %v, want prefix read file:", err)
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
+		t.Errorf("error does not unwrap to *fs.PathError: %v", err)
+	}
+}
+
+func TestEnsureFileOpenWithGuard_EnsureOpenError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(src, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A private pipe so the test can close the server side before the call,
+	// making EnsureFileOpen's write fail deterministically.
+	clientConn, serverConn := net.Pipe()
+	var wg sync.WaitGroup
+	wg.Go(func() { serveFake(t, serverConn, nil, dir) })
+	reg := lsp.NewRegistry(dir)
+	c := lsp.NewTestClient("fakels", clientConn)
+	reg.InjectClient("fakels", lsp.ServerSpec{
+		Name: "fakels", Language: "Fake", FileExts: []string{".go"}, Command: "fake-lsp",
+	}, c)
+	defer func() { _ = clientConn.Close(); _ = serverConn.Close(); wg.Wait() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := c.Initialize(ctx, "file:///test"); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_ = serverConn.Close()
+	err := ensureFileOpenWithGuard(context.Background(), c, lsp.FileToURI(src), "go", src)
+	if err == nil || !strings.HasPrefix(err.Error(), "ensure open:") {
+		t.Fatalf("error = %v, want prefix ensure open:", err)
+	}
+	// Chain assertion: %v would render byte-identical text but break Unwrap.
+	if errors.Unwrap(err) == nil {
+		t.Error("ensure-open error must wrap the notify failure")
+	}
+}
+
+func TestFormatJSON_Exact(t *testing.T) {
+	got := formatJSON(json.RawMessage(`{"b":1,"a":2}`))
+	if got != "{\n  \"a\": 2,\n  \"b\": 1\n}" {
+		t.Errorf("formatJSON sorted+indented = %q", got)
+	}
+	if got := formatJSON(json.RawMessage(`not json`)); got != "not json" {
+		t.Errorf("formatJSON passthrough = %q, want raw", got)
+	}
+}
+
+func TestFormatDocumentSymbol_Exact(t *testing.T) {
+	var b strings.Builder
+	formatDocumentSymbol(&b, lsp.DocumentSymbol{
+		Name: "Foo", Kind: lsp.SymbolFunction, Detail: "my detail",
+		Range: lsp.Range{Start: lsp.Position{Line: 4}},
+		Children: []lsp.DocumentSymbol{{
+			Name: "inner", Kind: lsp.SymbolMethod,
+			Range: lsp.Range{Start: lsp.Position{Line: 5}},
+		}},
+	}, 0)
+	want := "- func `Foo` — my detail @ line 5\n  - method `inner` @ line 6\n"
+	if b.String() != want {
+		t.Errorf("tree = %q, want %q", b.String(), want)
+	}
+
+	var b2 strings.Builder
+	formatDocumentSymbol(&b2, lsp.DocumentSymbol{
+		Name: "Bar", Kind: lsp.SymbolStruct,
+		Range: lsp.Range{Start: lsp.Position{Line: 1}},
+	}, 0)
+	if got := b2.String(); got != "- struct `Bar` @ line 2\n" {
+		t.Errorf("no-detail tree = %q", got)
+	}
+}
+
+func TestDecodeLocations_LSPTOOL_Kill(t *testing.T) {
+	// Array with a malformed element: skipped, good ones kept in order.
+	locs, err := decodeLocations(json.RawMessage(
+		`[{"no_uri":1},{"uri":"file:///a.go","range":{"start":{"line":3,"character":0}}},{"uri":"file:///b.go"}]`))
+	if err != nil {
+		t.Fatalf("decodeLocations: %v", err)
+	}
+	if len(locs) != 2 || locs[0].URI != "file:///a.go" || locs[0].Range.Start.Line != 3 || locs[1].URI != "file:///b.go" {
+		t.Errorf("locs = %+v", locs)
+	}
+
+	// Array that is not objects at all: decode error with prefix and wrap.
+	_, err = decodeLocations(json.RawMessage(`[123]`))
+	if err == nil || !strings.HasPrefix(err.Error(), "decodeLocations array:") {
+		t.Fatalf("error = %v, want prefix decodeLocations array:", err)
+	}
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+		t.Errorf("error does not unwrap to *json.UnmarshalTypeError: %v", err)
+	}
+
+	// Malformed single object.
+	_, err = decodeLocations(json.RawMessage(`{"uri": `))
+	if err == nil || !strings.HasPrefix(err.Error(), "decodeLocations single:") {
+		t.Fatalf("error = %v, want prefix decodeLocations single:", err)
+	}
+	if _, ok := errors.AsType[*json.SyntaxError](err); !ok {
+		t.Errorf("error does not unwrap to *json.SyntaxError: %v", err)
+	}
+}
+
+func TestFormatLspDescription_RenameFileEdgeCases(t *testing.T) {
+	cases := []struct {
+		in   Input
+		want string
+	}{
+		{Input{Action: "rename_file", Symbol: "old.go"}, "rename_file old.go"},
+		{Input{Action: "rename_file"}, "rename_file"},
+		{Input{Action: "definition"}, "definition"},
+	}
+	for _, c := range cases {
+		if got := formatLspDescription(c.in); got != c.want {
+			t.Errorf("formatLspDescription(%+v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
