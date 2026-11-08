@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -726,11 +727,16 @@ func TestResponsesComplete_ErrorPaths(t *testing.T) {
 func TestResponsesComplete_Wire(t *testing.T) {
 	t.Parallel()
 
+	// The handler goroutine and these assertions share the captures with no
+	// happens-before edge through the HTTP chain; mu supplies it.
+	var mu sync.Mutex
 	var gotReq *http.Request
 	var gotBody []byte
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotReq = r
 		gotBody, _ = io.ReadAll(r.Body)
+		mu.Unlock()
 		_, _ = w.Write([]byte(`{"id":"r","model":"glm","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`))
 	})
 	defer srv.Close()
@@ -742,14 +748,18 @@ func TestResponsesComplete_Wire(t *testing.T) {
 	if len(resp.Content) != 1 || resp.Content[0].Text != "done" || resp.StopReason != "end_turn" {
 		t.Errorf("resp = %+v", resp)
 	}
-	if gotReq == nil || gotReq.Header.Get("Authorization") != "Bearer key" {
+	mu.Lock()
+	reqSnapshot := gotReq
+	bodySnapshot := gotBody
+	mu.Unlock()
+	if reqSnapshot == nil || reqSnapshot.Header.Get("Authorization") != "Bearer key" {
 		t.Error("auth header missing")
 	}
-	if !strings.HasSuffix(gotReq.URL.Path, "/responses") {
-		t.Errorf("path = %q, want /responses", gotReq.URL.Path)
+	if !strings.HasSuffix(reqSnapshot.URL.Path, "/responses") {
+		t.Errorf("path = %q, want /responses", reqSnapshot.URL.Path)
 	}
 	var m map[string]any
-	_ = json.Unmarshal(gotBody, &m)
+	_ = json.Unmarshal(bodySnapshot, &m)
 	if m["store"] != false || m["stream"] != false {
 		t.Errorf("wire body store/stream = %v/%v", m["store"], m["stream"])
 	}
@@ -760,10 +770,17 @@ func TestResponsesComplete_Wire(t *testing.T) {
 func TestResponsesStream_RetryBehavior(t *testing.T) {
 	t.Parallel()
 
+	// hits is written on the server goroutine and read by the assertions below
+	// with no happens-before edge; the increment+branch must be one critical
+	// section.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
-		if hits < 2 {
+		early := hits < 2
+		mu.Unlock()
+		if early {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
@@ -778,13 +795,18 @@ func TestResponsesStream_RetryBehavior(t *testing.T) {
 	}
 	for range ch {
 	}
-	if hits != 2 {
-		t.Errorf("hits = %d, want 2 (one 502 then success)", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 2 {
+		t.Errorf("hits = %d, want 2 (one 502 then success)", gotHits)
 	}
 
 	hits2 := 0
 	p2, srv2 := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits2++
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
 	})
@@ -794,8 +816,11 @@ func TestResponsesStream_RetryBehavior(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "max retries exceeded:") {
 		t.Fatalf("err = %v, want max retries exceeded", err)
 	}
-	if hits2 != 1 {
-		t.Errorf("zero-budget hits = %d, want 1", hits2)
+	mu.Lock()
+	gotHits2 := hits2
+	mu.Unlock()
+	if gotHits2 != 1 {
+		t.Errorf("zero-budget hits = %d, want 1", gotHits2)
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 503 {
@@ -807,9 +832,13 @@ func TestResponsesStream_RetryBehavior(t *testing.T) {
 func TestResponsesStream_NonRetryableImmediate(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"code":"x","message":"bad key","type":"auth"}}`))
 	})
@@ -820,8 +849,11 @@ func TestResponsesStream_NonRetryableImmediate(t *testing.T) {
 	if !ok || apiErr.Status != 401 || apiErr.Message != "bad key" || apiErr.Retryable {
 		t.Errorf("err = %+v, want non-retryable 401", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1", gotHits)
 	}
 }
 
@@ -830,9 +862,13 @@ func TestResponsesStream_NonRetryableImmediate(t *testing.T) {
 func TestResponsesStream_BackoffOnlyOnRetry(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	defer srv.Close()
@@ -843,8 +879,11 @@ func TestResponsesStream_BackoffOnlyOnRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("nil error")
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — first attempt runs without backoff", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — first attempt runs without backoff", gotHits)
 	}
 }
 
@@ -854,10 +893,16 @@ func TestResponsesStream_BackoffOnlyOnRetry(t *testing.T) {
 func TestResponsesStream_RetryAfterHeaderHonored(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read; the
+	// increment+branch must stay one critical section.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
-		if hits > 1 {
+		later := hits > 1
+		mu.Unlock()
+		if later {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			return
@@ -878,8 +923,11 @@ func TestResponsesStream_RetryAfterHeaderHonored(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — retry must wait the advised 3600s", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — retry must wait the advised 3600s", gotHits)
 	}
 }
 
@@ -932,9 +980,13 @@ func TestResponsesStream_ParsesRetryAfterHeader(t *testing.T) {
 func TestResponsesStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"message":"x","type":"server_error"}}`))
@@ -951,8 +1003,11 @@ func TestResponsesStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", gotHits)
 	}
 }
 
@@ -1975,9 +2030,14 @@ func TestResponsesHTTP_ErrorSurfaces(t *testing.T) {
 		t.Errorf("merge error not unwrappable: %v", err)
 	}
 
+	// No happens-before between the handler goroutines and these reads.
+	var mu sync.Mutex
 	var body []byte
 	p3, srv3 := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
-		body, _ = io.ReadAll(r.Body)
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"r"}`))
 	})
@@ -1986,12 +2046,19 @@ func TestResponsesHTTP_ErrorSurfaces(t *testing.T) {
 	if _, err := p3.Complete(context.Background(), &Request{Model: "m", MaxTokens: 1, Messages: msgs}); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(body, []byte(`"custom":true`)) {
-		t.Errorf("1-key extraParams missing from wire: %s", body)
+	mu.Lock()
+	bodySnapshot := body
+	mu.Unlock()
+	if !bytes.Contains(bodySnapshot, []byte(`"custom":true`)) {
+		t.Errorf("1-key extraParams missing from wire: %s", bodySnapshot)
 	}
 
 	hits := 0
-	p4, srv4 := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) { hits++ })
+	p4, srv4 := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+	})
 	defer srv4.Close()
 	bigMsgs := []types.Message{{
 		Role: types.RoleUser,
@@ -2007,8 +2074,11 @@ func TestResponsesHTTP_ErrorSurfaces(t *testing.T) {
 	if _, err := p4.Stream(context.Background(), &Request{Model: "m", MaxTokens: 1, Messages: bigMsgs}); err == nil || !strings.Contains(err.Error(), "image") {
 		t.Fatalf("oversized image stream err = %v", err)
 	}
-	if hits != 0 {
-		t.Errorf("oversized image still sent %d requests", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 0 {
+		t.Errorf("oversized image still sent %d requests", gotHits)
 	}
 
 	p5 := &ResponsesProvider{name: "t", httpClient: srv.Client(), retryConfig: DefaultRetryConfig(), apiKey: "k", baseURL: "http://[::bad", model: "m"}
@@ -2078,12 +2148,16 @@ func TestResponsesHTTP_ErrorSurfaces(t *testing.T) {
 func TestResponsesStream_Plumbing(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and these reads.
+	var mu sync.Mutex
 	var gotCT, gotAuth string
 	hits := 0
 	p, srv := newResponsesMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
 		gotCT = r.Header.Get("Content-Type")
 		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})
@@ -2096,8 +2170,11 @@ func TestResponsesStream_Plumbing(t *testing.T) {
 	}
 	for range ch {
 	}
-	if hits != 1 || gotCT != "application/json" || gotAuth != "Bearer key" {
-		t.Errorf("hits=%d ct=%q auth=%q", hits, gotCT, gotAuth)
+	mu.Lock()
+	gotHits, ct, auth := hits, gotCT, gotAuth
+	mu.Unlock()
+	if gotHits != 1 || ct != "application/json" || auth != "Bearer key" {
+		t.Errorf("hits=%d ct=%q auth=%q", gotHits, ct, auth)
 	}
 
 	// NaN temperature errors identically on the stream path.

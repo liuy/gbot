@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,11 +197,17 @@ func TestOpenAIComplete_BodyCapBoundaries(t *testing.T) {
 func TestOpenAIComplete_NegotiationRetry(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and these reads; the
+	// append+len branch must stay one critical section.
+	var mu sync.Mutex
 	var bodies []string
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		bodies = append(bodies, string(b))
-		if len(bodies) == 1 {
+		first := len(bodies) == 1
+		mu.Unlock()
+		if first {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":{"code":"invalid","message":"Invalid reasoning_effort \"low\", valid levels are: minimal, low"}}`))
 			return
@@ -216,14 +223,17 @@ func TestOpenAIComplete_NegotiationRetry(t *testing.T) {
 	if resp.ID != "ok" {
 		t.Errorf("resp = %+v, want the retried response", resp)
 	}
-	if len(bodies) != 2 {
-		t.Fatalf("request count = %d, want 2", len(bodies))
+	mu.Lock()
+	bodiesSnapshot := append([]string(nil), bodies...)
+	mu.Unlock()
+	if len(bodiesSnapshot) != 2 {
+		t.Fatalf("request count = %d, want 2", len(bodiesSnapshot))
 	}
-	if !strings.Contains(bodies[0], `"reasoning_effort":"low"`) {
-		t.Errorf("first body = %s, want the effort spelling", bodies[0])
+	if !strings.Contains(bodiesSnapshot[0], `"reasoning_effort":"low"`) {
+		t.Errorf("first body = %s, want the effort spelling", bodiesSnapshot[0])
 	}
-	if !strings.Contains(bodies[1], `"reasoning_effort":"minimal"`) {
-		t.Errorf("second body = %s, want the effort remapped to the nearest allowed tier minimal", bodies[1])
+	if !strings.Contains(bodiesSnapshot[1], `"reasoning_effort":"minimal"`) {
+		t.Errorf("second body = %s, want the effort remapped to the nearest allowed tier minimal", bodiesSnapshot[1])
 	}
 }
 
@@ -797,9 +807,14 @@ func TestOpenAISSE_BufferBoundaries(t *testing.T) {
 func TestOpenAIStream_WireDetails(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	var body []byte
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
-		body, _ = io.ReadAll(r.Body)
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})
@@ -811,11 +826,14 @@ func TestOpenAIStream_WireDetails(t *testing.T) {
 	}
 	for range ch {
 	}
-	if !strings.Contains(string(body), `"stream":true`) {
-		t.Errorf("body = %s, want stream:true", body)
+	mu.Lock()
+	bodySnapshot := body
+	mu.Unlock()
+	if !strings.Contains(string(bodySnapshot), `"stream":true`) {
+		t.Errorf("body = %s, want stream:true", bodySnapshot)
 	}
-	if !strings.Contains(string(body), `"path":"/v1/chat/completions"`) && !strings.Contains(string(body), `"messages"`) {
-		t.Errorf("body shape unexpected: %s", body)
+	if !strings.Contains(string(bodySnapshot), `"path":"/v1/chat/completions"`) && !strings.Contains(string(bodySnapshot), `"messages"`) {
+		t.Errorf("body shape unexpected: %s", bodySnapshot)
 	}
 
 	big := strings.Repeat("a", API_IMAGE_MAX_BASE64_SIZE+1)
@@ -833,10 +851,17 @@ func TestOpenAIStream_WireDetails(t *testing.T) {
 func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	t.Parallel()
 
+	// hits is written on the server goroutine and read by the assertions below
+	// with no happens-before edge; the increment+branch must be one critical
+	// section.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
-		if hits < 2 {
+		early := hits < 2
+		mu.Unlock()
+		if early {
 			w.WriteHeader(http.StatusGatewayTimeout)
 			return
 		}
@@ -851,13 +876,18 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	}
 	for range ch {
 	}
-	if hits != 2 {
-		t.Errorf("hits = %d, want 2", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 2 {
+		t.Errorf("hits = %d, want 2", gotHits)
 	}
 
 	hits2 := 0
 	p2, srv2 := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits2++
+		mu.Unlock()
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
 	})
@@ -867,8 +897,11 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "max retries exceeded:") {
 		t.Fatalf("err = %v, want max retries exceeded", err)
 	}
-	if hits2 != 1 {
-		t.Errorf("zero-budget hits = %d, want 1", hits2)
+	mu.Lock()
+	gotHits2 := hits2
+	mu.Unlock()
+	if gotHits2 != 1 {
+		t.Errorf("zero-budget hits = %d, want 1", gotHits2)
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 500 {
@@ -879,7 +912,9 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	// aborts with exactly one request sent.
 	hits3 := 0
 	p3, srv3 := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits3++
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	defer srv3.Close()
@@ -887,8 +922,11 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	_, _ = p3.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: openAIMutMessages("q")})
-	if hits3 != 1 {
-		t.Errorf("hits = %d, want 1 (no backoff before first attempt)", hits3)
+	mu.Lock()
+	gotHits3 := hits3
+	mu.Unlock()
+	if gotHits3 != 1 {
+		t.Errorf("hits = %d, want 1 (no backoff before first attempt)", gotHits3)
 	}
 }
 
@@ -899,10 +937,16 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 func TestOpenAIStream_RetryAfterHeaderHonored(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read; the
+	// increment+branch must stay one critical section.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
-		if hits > 1 {
+		later := hits > 1
+		mu.Unlock()
+		if later {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			return
@@ -925,8 +969,11 @@ func TestOpenAIStream_RetryAfterHeaderHonored(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — retry must wait the advised 3600s", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — retry must wait the advised 3600s", gotHits)
 	}
 }
 
@@ -935,9 +982,13 @@ func TestOpenAIStream_RetryAfterHeaderHonored(t *testing.T) {
 func TestOpenAIStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"message":"x","type":"server_error"}}`))
@@ -956,8 +1007,11 @@ func TestOpenAIStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", gotHits)
 	}
 }
 
@@ -1005,9 +1059,13 @@ func TestOpenAIPostChat_ParsesRetryAfterHeader(t *testing.T) {
 func TestOpenAIStream_NonRetryableImmediate(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	p, srv := newOpenAIMutServer(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request","message":"nope"}}`))
 	})
@@ -1018,8 +1076,11 @@ func TestOpenAIStream_NonRetryableImmediate(t *testing.T) {
 	if !ok || apiErr.Status != 400 || apiErr.Message != "nope" || apiErr.Type != "invalid_request" {
 		t.Errorf("err = %+v", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1", gotHits)
 	}
 }
 

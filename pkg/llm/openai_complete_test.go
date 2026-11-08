@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -474,9 +475,13 @@ func TestProvider_CalculateBackoffWithRetryAfter(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenAIStream_Success(t *testing.T) {
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	callCount := 0
 	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
+		mu.Unlock()
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("missing Authorization header")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -505,8 +510,11 @@ func TestOpenAIStream_Success(t *testing.T) {
 		events = append(events, e)
 	}
 
-	if callCount != 1 {
-		t.Errorf("expected 1 call, got %d", callCount)
+	mu.Lock()
+	gotCalls := callCount
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Errorf("expected 1 call, got %d", gotCalls)
 	}
 	if len(events) < 3 {
 		t.Fatalf("expected >= 3 events, got %d", len(events))
@@ -521,9 +529,13 @@ func TestOpenAIStream_Success(t *testing.T) {
 }
 
 func TestOpenAIStream_NoRetryOn429(t *testing.T) {
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	callCount := 0
 	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
+		mu.Unlock()
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
 	}))
@@ -550,8 +562,11 @@ func TestOpenAIStream_NoRetryOn429(t *testing.T) {
 		t.Error("429 should NOT be retryable")
 	}
 
-	if callCount != 1 {
-		t.Errorf("expected 1 call (no retry on 429), got %d", callCount)
+	mu.Lock()
+	gotCalls := callCount
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Errorf("expected 1 call (no retry on 429), got %d", gotCalls)
 	}
 }
 

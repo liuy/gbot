@@ -61,11 +61,16 @@ func TestAnthropicComplete_WireAndResponse(t *testing.T) {
 	ResetPromptCacheBreakDetection()
 	defer ResetPromptCacheBreakDetection()
 
+	// The handler goroutine and these assertions share the captures with no
+	// happens-before edge through the HTTP chain; mu supplies it.
+	var mu sync.Mutex
 	var gotReq *http.Request
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotReq = r
 		gotBody, _ = io.ReadAll(r.Body)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"model":"claude","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}`))
 	}))
@@ -93,22 +98,26 @@ func TestAnthropicComplete_WireAndResponse(t *testing.T) {
 		t.Errorf("content = %+v", resp.Content)
 	}
 
-	if gotReq == nil {
+	mu.Lock()
+	reqSnapshot := gotReq
+	bodySnapshot := gotBody
+	mu.Unlock()
+	if reqSnapshot == nil {
 		t.Fatal("no request captured")
 	}
-	if gotReq.Header.Get("x-api-key") != "key" || gotReq.Header.Get("Authorization") != "Bearer key" {
-		t.Errorf("auth headers missing: %v", gotReq.Header)
+	if reqSnapshot.Header.Get("x-api-key") != "key" || reqSnapshot.Header.Get("Authorization") != "Bearer key" {
+		t.Errorf("auth headers missing: %v", reqSnapshot.Header)
 	}
-	if gotReq.Header.Get("anthropic-version") != "2023-06-01" {
-		t.Errorf("anthropic-version = %q", gotReq.Header.Get("anthropic-version"))
+	if reqSnapshot.Header.Get("anthropic-version") != "2023-06-01" {
+		t.Errorf("anthropic-version = %q", reqSnapshot.Header.Get("anthropic-version"))
 	}
-	if gotReq.Header.Get("anthropic-beta") != "" {
-		t.Errorf("beta header without cache control = %q, want empty", gotReq.Header.Get("anthropic-beta"))
+	if reqSnapshot.Header.Get("anthropic-beta") != "" {
+		t.Errorf("beta header without cache control = %q, want empty", reqSnapshot.Header.Get("anthropic-beta"))
 	}
 	var body struct {
 		Stream bool `json:"stream"`
 	}
-	if err := json.Unmarshal(gotBody, &body); err != nil {
+	if err := json.Unmarshal(bodySnapshot, &body); err != nil {
 		t.Fatalf("request body: %v", err)
 	}
 	if body.Stream {
@@ -126,9 +135,13 @@ func TestAnthropicComplete_WireAndResponse(t *testing.T) {
 func TestAnthropicComplete_BetaHeaderWithCacheControl(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	var beta string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		beta = r.Header.Get("anthropic-beta")
+		mu.Unlock()
 		_, _ = w.Write([]byte(`{"id":"m","content":[],"usage":{}}`))
 	}))
 	defer srv.Close()
@@ -143,8 +156,11 @@ func TestAnthropicComplete_BetaHeaderWithCacheControl(t *testing.T) {
 	if _, err := p.Complete(t.Context(), req); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if beta != "prompt-caching-2024-10-22" {
-		t.Errorf("anthropic-beta = %q, want prompt-caching-2024-10-22", beta)
+	mu.Lock()
+	gotBeta := beta
+	mu.Unlock()
+	if gotBeta != "prompt-caching-2024-10-22" {
+		t.Errorf("anthropic-beta = %q, want prompt-caching-2024-10-22", gotBeta)
 	}
 	// The last system block carries the cache_control marker and the blocks
 	// are serialized into the system field.
@@ -232,10 +248,17 @@ func TestAnthropicComplete_ShortReadBody(t *testing.T) {
 func TestAnthropicStream_RetryBehavior(t *testing.T) {
 	t.Parallel()
 
+	// hits is written on the server goroutine and read by the assertions below
+	// with no happens-before edge; the increment+branch must be one critical
+	// section so concurrent attempts cannot interleave.
+	var mu sync.Mutex
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
-		if hits < 3 {
+		early := hits < 3
+		mu.Unlock()
+		if early {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -263,14 +286,19 @@ func TestAnthropicStream_RetryBehavior(t *testing.T) {
 	if !sawStop {
 		t.Error("no message_stop after retries")
 	}
-	if hits != 3 {
-		t.Errorf("server hits = %d, want 3 (two 503s then success)", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 3 {
+		t.Errorf("server hits = %d, want 3 (two 503s then success)", gotHits)
 	}
 
 	// Non-retryable status: immediate failure, single hit.
 	hits2 := 0
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits2++
+		mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`))
 	}))
@@ -284,8 +312,11 @@ func TestAnthropicStream_RetryBehavior(t *testing.T) {
 	if !ok || apiErr.Status != 400 || apiErr.Message != "bad" {
 		t.Errorf("err = %+v, want 400 APIError with message bad", err)
 	}
-	if hits2 != 1 {
-		t.Errorf("non-retryable hits = %d, want 1", hits2)
+	mu.Lock()
+	gotHits2 := hits2
+	mu.Unlock()
+	if gotHits2 != 1 {
+		t.Errorf("non-retryable hits = %d, want 1", gotHits2)
 	}
 }
 
@@ -611,12 +642,16 @@ func TestAnthropicStream_RecordsPromptState(t *testing.T) {
 // Stream serializes stream:true, honors cache-control headers, and rejects
 // oversized images before the wire.
 func TestAnthropicStream_WireDetails(t *testing.T) {
+	// No happens-before between the handler goroutine and these reads.
+	var mu sync.Mutex
 	var body []byte
 	var beta, accept string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		body, _ = io.ReadAll(r.Body)
 		beta = r.Header.Get("anthropic-beta")
 		accept = r.Header.Get("Accept")
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_stop\ndata: {}\n\n"))
 	}))
@@ -636,14 +671,17 @@ func TestAnthropicStream_WireDetails(t *testing.T) {
 	}
 	for range ch {
 	}
-	if !strings.Contains(string(body), `"stream":true`) {
-		t.Errorf("request body = %s, want stream:true", body)
+	mu.Lock()
+	bodySnapshot, betaSnapshot, acceptSnapshot := body, beta, accept
+	mu.Unlock()
+	if !strings.Contains(string(bodySnapshot), `"stream":true`) {
+		t.Errorf("request body = %s, want stream:true", bodySnapshot)
 	}
-	if beta != "prompt-caching-2024-10-22" {
-		t.Errorf("anthropic-beta = %q, want prompt-caching-2024-10-22", beta)
+	if betaSnapshot != "prompt-caching-2024-10-22" {
+		t.Errorf("anthropic-beta = %q, want prompt-caching-2024-10-22", betaSnapshot)
 	}
-	if accept != "text/event-stream" {
-		t.Errorf("Accept = %q, want text/event-stream", accept)
+	if acceptSnapshot != "text/event-stream" {
+		t.Errorf("Accept = %q, want text/event-stream", acceptSnapshot)
 	}
 
 	// Oversized image short-circuits Stream.
@@ -693,9 +731,13 @@ func TestAnthropicComplete_ErrorChains(t *testing.T) {
 func TestAnthropicStream_ZeroRetryBudget(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
 	}))
@@ -707,8 +749,11 @@ func TestAnthropicStream_ZeroRetryBudget(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "max retries exceeded:") {
 		t.Fatalf("err = %v, want max retries exceeded", err)
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want exactly 1 (the single permitted attempt)", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want exactly 1 (the single permitted attempt)", gotHits)
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 503 {
@@ -721,9 +766,13 @@ func TestAnthropicStream_ZeroRetryBudget(t *testing.T) {
 func TestAnthropicStream_BackoffOnlyOnRetry(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read.
+	var mu sync.Mutex
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		hits++
+		mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
@@ -736,8 +785,11 @@ func TestAnthropicStream_BackoffOnlyOnRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stream = nil error, want ctx cancellation")
 	}
-	if hits != 1 {
-		t.Errorf("hits = %d, want 1 — the first attempt must run without backoff", hits)
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 1 {
+		t.Errorf("hits = %d, want 1 — the first attempt must run without backoff", gotHits)
 	}
 }
 

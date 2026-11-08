@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,10 +211,16 @@ func TestResponsesStream_EndToEnd(t *testing.T) {
 func TestResponsesStream_RetryOn500(t *testing.T) {
 	t.Parallel()
 
+	// No happens-before between the handler goroutine and this read; the
+	// increment+branch must stay one critical section.
+	var mu sync.Mutex
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		callCount++
-		if callCount == 1 {
+		first := callCount == 1
+		mu.Unlock()
+		if first {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = fmt.Fprint(w, `{"error":{"code":"internal","message":"boom","type":"server_error"}}`)
 			return
@@ -247,8 +254,11 @@ func TestResponsesStream_RetryOn500(t *testing.T) {
 	acc := newStreamAccumulator()
 	acc.consume(ch)
 
-	if callCount != 2 {
-		t.Errorf("server calls = %d, want 2 (one retry)", callCount)
+	mu.Lock()
+	gotCalls := callCount
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Errorf("server calls = %d, want 2 (one retry)", gotCalls)
 	}
 	if acc.gotError {
 		t.Fatal("stream produced an error event after retry")
