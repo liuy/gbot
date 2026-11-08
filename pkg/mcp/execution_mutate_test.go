@@ -11,8 +11,10 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,6 +330,25 @@ func TestCallMCPTool_AuthKeywordsProduceAuthError(t *testing.T) {
 				t.Errorf("Message = %q, want it to contain %q", authErr.Message, tc.message)
 			}
 		})
+	}
+}
+
+// A dead-connection error whose text merely contains "401" — an ephemeral
+// port like 127.0.0.1:40193 — must not classify as auth: the misroute wrapped
+// refused dials in McpAuthError (no Unwrap), which unclassed the dead link and
+// stranded the registry entry as connected.
+func TestIsAuthFailure_DeadConnectionWithPort401IsNotAuth(t *testing.T) {
+	refused := &net.OpError{
+		Op:  "dial",
+		Net: "tcp",
+		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+	}
+	err := fmt.Errorf(`Post "http://127.0.0.1:40193": %w`, refused)
+	if isAuthFailure(err) {
+		t.Fatalf("refused dial to a 401-containing port classified as auth: %v", err)
+	}
+	if isAuthFailure(fmt.Errorf("stream died: %w", io.EOF)) {
+		t.Fatal("EOF-classified failure must not classify as auth")
 	}
 }
 

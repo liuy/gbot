@@ -175,6 +175,17 @@ type MCPToolCallResult struct {
 	StructuredContent any
 }
 
+// isAuthFailure reports whether err looks like an authentication rejection.
+// Connection-death errors are never auth — see the call site for why the
+// port-substring false positive matters.
+func isAuthFailure(err error) bool {
+	if IsConnectionDeadError(err) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized")
+}
+
 // CallMCPTool executes a tool on a connected MCP server with timeout and progress.
 // Source: client.ts:3029-3245
 func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
@@ -220,8 +231,12 @@ func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallRes
 
 	result, err := params.Server.Session.CallTool(ctx, callParams)
 	if err != nil {
-		// Source: client.ts:3196-3208 — auth error detection
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "Unauthorized") {
+		// Source: client.ts:3196-3208 — auth error detection.
+		// Dead connections are excluded first: their text can contain "401"
+		// as a bare port substring (127.0.0.1:40193), and misrouting a
+		// refused dial into McpAuthError (which has no Unwrap) makes the
+		// dead link unclassifiable and strands the registry entry.
+		if isAuthFailure(err) {
 			return nil, &McpAuthError{
 				ServerName: params.Server.Name,
 				Message:    err.Error(),

@@ -1163,9 +1163,29 @@ func TestMCPTool_Call_HoldsInFlightSlotDuringCall(t *testing.T) {
 		_, err := tl.Call(context.Background(), json.RawMessage(`{"text":"late"}`), nil)
 		done <- err
 	}()
-	time.Sleep(100 * time.Millisecond) // REAL-TIME: land inside the slow call's window
-	idle, remaining := registry.DrainServer("test-srv", 50*time.Millisecond)
-	if idle || remaining != 1 {
+	// Wait until the slow call's in-flight slot is observable instead of a
+	// fixed sleep racing the call goroutine's start under full load.
+	// DrainServer(0) is a single count probe; the slow tool's 400ms hold
+	// bounds how long the slot stays visible once held.
+	deadline := time.Now().Add(3 * time.Second) // REAL-TIME: full-load margin for the call to start
+	var idle bool
+	var remaining int64
+	for {
+		idle, remaining = registry.DrainServer("test-srv", 0)
+		if !idle && remaining == 1 {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("slow call completed before its in-flight slot was observed (probe idle=%v remaining=%d): %v", idle, remaining, err)
+		default:
+		}
+		if time.Now().After(deadline) { // REAL-TIME: bounded poll
+			t.Fatalf("in-flight slot never observable: idle=%v remaining=%d", idle, remaining)
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: poll interval
+	}
+	if idle, remaining = registry.DrainServer("test-srv", 50*time.Millisecond); idle || remaining != 1 {
 		t.Errorf("DrainServer during a running call = (idle=%v, remaining=%d), want (false, 1) — the in-flight slot is not held for the call's duration", idle, remaining)
 	}
 	if err := <-done; err != nil {

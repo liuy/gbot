@@ -359,11 +359,15 @@ func IsConnectionError(err error) bool {
 		return false
 	}
 	msg := err.Error()
+	// "server closed idle connection" is included: the peer closed the conn
+	// before the request landed — retrying on a fresh conn is safe because
+	// every provider rebuilds the body reader per attempt.
 	return strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "EOF") ||
 		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "temporary")
+		strings.Contains(msg, "temporary") ||
+		strings.Contains(msg, "server closed idle connection")
 }
 
 // truncateForLog truncates a string for safe logging.

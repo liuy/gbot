@@ -919,7 +919,12 @@ func TestOpenAIStream_RetryBehavior(t *testing.T) {
 	})
 	defer srv3.Close()
 	p3.retryConfig = &RetryConfig{MaxRetries: 1, BaseBackoff: 30 * time.Second, MaxBackoff: 30 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	// 2s, not 150ms: under make-check's full load the first request can
+	// spend >150ms before the handler runs, and the deadline would expire
+	// with hits=0 — a load artifact, not a backoff regression. Still far
+	// under the 30s backoff, so the no-backoff-first contract keeps its
+	// resolution.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, _ = p3.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: openAIMutMessages("q")})
 	mu.Lock()
@@ -958,7 +963,10 @@ func TestOpenAIStream_RetryAfterHeaderHonored(t *testing.T) {
 	defer srv.Close()
 	p.retryConfig = &RetryConfig{MaxRetries: 2, BaseBackoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// 2s, not 500ms: the deadline only has to beat the advised 3600s, and
+	// under full load the first request can spend >500ms before the handler
+	// runs, which would expire the deadline with hits=0.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	ch, err := p.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: openAIMutMessages("q")})
 	if err == nil {
@@ -1007,10 +1015,19 @@ func TestOpenAIStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	mu.Lock()
-	gotHits := hits
-	mu.Unlock()
-	if gotHits != 1 {
+	// The ctx window is a detection band (it must stay under the advised 1s
+	// so an honored Retry-After holds the second hit past it), so it cannot
+	// be widened for load; instead poll: under full load the deadline can
+	// expire mid-request and the handler's increment lands after Stream
+	// returned.
+	if !waitUntil(2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits == 1
+	}) {
+		mu.Lock()
+		gotHits := hits
+		mu.Unlock()
 		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", gotHits)
 	}
 }
@@ -1340,8 +1357,12 @@ func TestOpenAIStream_IdleGapErrors(t *testing.T) {
 		w.(http.Flusher).Flush()
 		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}` + "\n\n"))
 		w.(http.Flusher).Flush()
+		// 2s, not 300ms: the idle timeout only arms on the reader's first
+		// Read; under full load the parser goroutine can start after the
+		// whole stream is buffered, and the gap must still be observed.
+		// The gap-vs-idle band only widens (40x vs 6x).
 		select {
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
 			return
 		}

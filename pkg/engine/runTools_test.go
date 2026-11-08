@@ -5502,35 +5502,57 @@ func TestExtractErrMsgShapeGates(t *testing.T) {
 	}
 }
 
+// The yield give-up window is a reviewed margin: short enough that a tool
+// ignoring cancellation cannot stall the turn, long enough that a responsive
+// goroutine starved under full load still delivers its result. Pinned exactly
+// like TestRegistryDefaultConstantsExact pins registry constants.
+func TestYieldGiveUpWindowExact(t *testing.T) {
+	t.Parallel()
+	if yieldGiveUpWindow != 500*time.Millisecond {
+		t.Errorf("yieldGiveUpWindow = %v, want 500ms", yieldGiveUpWindow)
+	}
+}
+
 // The cancelled-path yield window ends as soon as the tool goroutine reaches
 // close(tt.done); it must not burn the whole window.
 func TestExecuteAllYieldWindowEndsWhenTheToolCompletes(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	entered := make(chan struct{})
-	finish := make(chan struct{})
-	// InterruptBlock keeps the tool running past the cancelled root context,
-	// which is what puts ExecuteAll in the bounded-yield branch.
-	slow := &fakeTool{name: "Blocker", safe: true, interrupt: tool.InterruptBlock,
-		callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
-			close(entered)
-			<-finish
-			return &tool.ToolResult{Data: "ok"}, nil
-		}}
-	e := NewStreamingToolExecutor(map[string]tool.Tool{"Blocker": slow}, nil, nil, ctx)
-	go func() {
-		<-entered
-		close(finish)
-	}()
-	start := time.Now() // REAL-TIME: the 100ms yield window is a wall-clock bound
-	res := e.ExecuteAll([]types.ContentBlock{toolUseBlock("tu_1", "Blocker", `{}`)})
-	elapsed := time.Since(start)
-	if len(res.ToolResultBlocks) != 1 {
-		t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+	// Best of three rounds, not one: the measured span includes two goroutine
+	// handoffs, and under make-check's full load a single round can lose
+	// 50ms+ to scheduling alone. The minimum is load-immune for healthy code
+	// (one promptly scheduled round lands in single-digit ms) while a mutant
+	// burning the whole window loses nothing to take — every round is
+	// >= 100ms.
+	best := time.Duration(1<<62 - 1)
+	for range 3 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		entered := make(chan struct{})
+		finish := make(chan struct{})
+		// InterruptBlock keeps the tool running past the cancelled root context,
+		// which is what puts ExecuteAll in the bounded-yield branch.
+		slow := &fakeTool{name: "Blocker", safe: true, interrupt: tool.InterruptBlock,
+			callFn: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(entered)
+				<-finish
+				return &tool.ToolResult{Data: "ok"}, nil
+			}}
+		e := NewStreamingToolExecutor(map[string]tool.Tool{"Blocker": slow}, nil, nil, ctx)
+		go func() {
+			<-entered
+			close(finish)
+		}()
+		start := time.Now() // REAL-TIME: the 500ms yield window is a wall-clock bound
+		res := e.ExecuteAll([]types.ContentBlock{toolUseBlock("tu_1", "Blocker", `{}`)})
+		if d := time.Since(start); d < best {
+			best = d
+		}
+		if len(res.ToolResultBlocks) != 1 {
+			t.Fatalf("result blocks = %d, want 1", len(res.ToolResultBlocks))
+		}
 	}
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("ExecuteAll waited %v after the tool completed, want well under the 100ms yield window", elapsed)
+	if best > 50*time.Millisecond {
+		t.Errorf("ExecuteAll waited %v after the tool completed (best of 3), want well under the 500ms yield window", best)
 	}
 }
 

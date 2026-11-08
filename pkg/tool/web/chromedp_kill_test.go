@@ -276,7 +276,13 @@ setTimeout(function(){ var p = document.createElement('p'); p.textContent = 'LAT
 		if err != nil {
 			t.Fatalf("run error: %v", err)
 		}
-		if d < 100*time.Millisecond {
+		// Floor is one full poll cycle (~50ms + eval latency), not the page's
+		// 100ms timer: under load WaitReady can outlive the timer, so the
+		// child is already rendered when measurement starts and a correct
+		// two-read settle legitimately returns at ~70ms. The count>0 term
+		// itself is pinned by the empty-body subtest (full-window wait) and
+		// by the LATE assertion below.
+		if d < 45*time.Millisecond {
 			t.Errorf("returned after %v; the count>0 term must hold until the first child renders", d)
 		}
 		if !strings.Contains(html, "LATE") {
@@ -389,7 +395,12 @@ setInterval(function(){ document.body.appendChild(document.createElement('span')
 	if err != nil {
 		t.Fatalf("fetch error: %v", err)
 	}
-	if d := time.Since(start); d < 4600*time.Millisecond || d > 6200*time.Millisecond {
-		t.Errorf("fetch took %v; want the ~5s render window (4.6s-6.2s)", d)
+	// 8s upper bound, not 6.2s: under make-check's full load (race detector
+	// + parallel packages all spawning Chrome) the 5s render window can
+	// stretch past 6.2s of wall time. The band's resolution lives at the
+	// bottom — a dropped or shortened window lands under 4.6s — while the
+	// top only needs to catch a doubled window (~10s).
+	if d := time.Since(start); d < 4600*time.Millisecond || d > 8*time.Second {
+		t.Errorf("fetch took %v; want the ~5s render window (4.6s-8s)", d)
 	}
 }

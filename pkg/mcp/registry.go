@@ -61,6 +61,21 @@ type ChangeCallbacks struct {
 	OnServerStatusChanged func(serverName string, conn ServerConnection)
 }
 
+// snapshotCallbacks reads the callback set under the lock: invocation sites
+// run off the registry lock (notification handlers, reconnect completion,
+// reload tails), and tests swap callbacks after construction — an unlocked
+// field read there is a data race the detector fires on under full load.
+// No defer: the critical section is one statement, and an explicit unlock
+// keeps the mutation surface observable (a removed unlock leaks the lock,
+// which TestSnapshotCallbacksReleasesLock pins; a defer→call swap would be
+// race-only and invisible to go-mutesting's no-race runs).
+func (r *Registry) snapshotCallbacks() ChangeCallbacks {
+	r.mu.RLock()
+	cbs := r.callbacks
+	r.mu.RUnlock()
+	return cbs
+}
+
 // ---------------------------------------------------------------------------
 // Registry — Source: useManageMCPConnections.ts (orchestration hook)
 //
@@ -330,14 +345,15 @@ func (r *Registry) Reconnect(ctx context.Context, serverName string) (ServerConn
 		r.mu.Unlock()
 
 		// Notify callbacks
-		if r.callbacks.OnToolsChanged != nil {
-			r.callbacks.OnToolsChanged(serverName, tools)
+		cbs := r.snapshotCallbacks()
+		if cbs.OnToolsChanged != nil {
+			cbs.OnToolsChanged(serverName, tools)
 		}
-		if r.callbacks.OnResourcesChanged != nil {
-			r.callbacks.OnResourcesChanged(serverName, resources)
+		if cbs.OnResourcesChanged != nil {
+			cbs.OnResourcesChanged(serverName, resources)
 		}
-		if r.callbacks.OnCommandsChanged != nil {
-			r.callbacks.OnCommandsChanged(serverName, commands)
+		if cbs.OnCommandsChanged != nil {
+			cbs.OnCommandsChanged(serverName, commands)
 		}
 	}
 
@@ -928,8 +944,8 @@ func (r *Registry) ScheduleReconnect(serverName string, attempt int) {
 		}
 
 		// Notify status change
-		if r.callbacks.OnServerStatusChanged != nil {
-			r.callbacks.OnServerStatusChanged(serverName, conn)
+		if cb := r.snapshotCallbacks().OnServerStatusChanged; cb != nil {
+			cb(serverName, conn)
 		}
 	})
 	r.mu.Unlock()
@@ -999,8 +1015,8 @@ func (r *Registry) handleResourceNotification(serverName string) {
 	r.mu.Lock()
 	r.rebuildAggregatesLocked()
 	r.mu.Unlock()
-	if r.callbacks.OnResourcesChanged != nil {
-		r.callbacks.OnResourcesChanged(serverName, resources)
+	if cb := r.snapshotCallbacks().OnResourcesChanged; cb != nil {
+		cb(serverName, resources)
 	}
 }
 
@@ -1023,8 +1039,8 @@ func (r *Registry) handleToolNotification(serverName string) {
 	r.mu.Lock()
 	r.rebuildAggregatesLocked()
 	r.mu.Unlock()
-	if r.callbacks.OnToolsChanged != nil {
-		r.callbacks.OnToolsChanged(serverName, tools)
+	if cb := r.snapshotCallbacks().OnToolsChanged; cb != nil {
+		cb(serverName, tools)
 	}
 }
 
@@ -1047,8 +1063,8 @@ func (r *Registry) handleCommandNotification(serverName string) {
 	r.mu.Lock()
 	r.rebuildAggregatesLocked()
 	r.mu.Unlock()
-	if r.callbacks.OnCommandsChanged != nil {
-		r.callbacks.OnCommandsChanged(serverName, commands)
+	if cb := r.snapshotCallbacks().OnCommandsChanged; cb != nil {
+		cb(serverName, commands)
 	}
 }
 
@@ -1184,8 +1200,8 @@ func (r *Registry) handleConfigReload() {
 	r.mu.Unlock()
 
 	// Notify callbacks
-	if r.callbacks.OnToolsChanged != nil {
-		r.callbacks.OnToolsChanged("", nil) // empty server name signals full refresh
+	if cb := r.snapshotCallbacks().OnToolsChanged; cb != nil {
+		cb("", nil) // empty server name signals full refresh
 	}
 }
 
@@ -1371,8 +1387,8 @@ func (r *Registry) Reconcile(ctx context.Context, configs map[string]ScopedMcpSe
 	r.rebuildAggregatesLocked()
 	r.mu.Unlock()
 
-	if r.callbacks.OnToolsChanged != nil {
-		r.callbacks.OnToolsChanged("", nil) // empty server name signals full refresh
+	if cb := r.snapshotCallbacks().OnToolsChanged; cb != nil {
+		cb("", nil) // empty server name signals full refresh
 	}
 	return res, true
 }

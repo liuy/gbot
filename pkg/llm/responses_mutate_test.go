@@ -32,6 +32,20 @@ func newResponsesMutServer(handler http.HandlerFunc) (*ResponsesProvider, *httpt
 	return p, srv
 }
 
+// waitUntil polls cond until it holds or timeout elapses: the substitute for
+// widening a fixed ctx window when that window is itself the mutation
+// detection band (e.g. it must stay under a Retry-After the test honors).
+func waitUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout) // REAL-TIME
+	for time.Now().Before(deadline) {   // REAL-TIME
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+	return cond()
+}
+
 func TestNewResponsesProviderDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -873,7 +887,12 @@ func TestResponsesStream_BackoffOnlyOnRetry(t *testing.T) {
 	})
 	defer srv.Close()
 	p.retryConfig = &RetryConfig{MaxRetries: 1, BaseBackoff: 30 * time.Second, MaxBackoff: 30 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	// 2s, not 150ms: under make-check's full load the first request can
+	// spend >150ms before the handler runs, and then the deadline expires
+	// with hits=0 — a load artifact, not a backoff regression. 2s stays
+	// far under the 30s backoff, so "backoff before first attempt" still
+	// yields hits=0 and any backoff shrink below 2s still yields hits>=2.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err := p.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "q"}}}}})
 	if err == nil {
@@ -914,7 +933,10 @@ func TestResponsesStream_RetryAfterHeaderHonored(t *testing.T) {
 	defer srv.Close()
 	p.retryConfig = &RetryConfig{MaxRetries: 2, BaseBackoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// 2s, not 500ms: the deadline only has to beat the advised 3600s, and
+	// under full load the first request can spend >500ms before the handler
+	// runs, which would expire the deadline with hits=0.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err := p.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "q"}}}}})
 	if err == nil {
@@ -1003,10 +1025,19 @@ func TestResponsesStream_RetryAfterOneSecondBeatsBase(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	mu.Lock()
-	gotHits := hits
-	mu.Unlock()
-	if gotHits != 1 {
+	// The ctx window is a detection band (it must stay under the advised 1s
+	// so an honored Retry-After holds the second hit past it), so it cannot
+	// be widened for load; instead poll: under full load the deadline can
+	// expire mid-request and the handler's increment lands after Stream
+	// returned.
+	if !waitUntil(2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits == 1
+	}) {
+		mu.Lock()
+		gotHits := hits
+		mu.Unlock()
 		t.Errorf("hits = %d, want 1 — retry must wait the advised 1s", gotHits)
 	}
 }
@@ -1097,8 +1128,11 @@ func TestResponsesStream_ParserDeliversEarly(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}\n\n"))
 		w.(http.Flusher).Flush()
+		// Hold scales with the client window (2:1): a parser that only
+		// forwards after the stream ends still cannot deliver inside the
+		// window, so the concurrency contract keeps its resolution.
 		select {
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
 			return
 		}
@@ -1116,7 +1150,11 @@ func TestResponsesStream_ParserDeliversEarly(t *testing.T) {
 		if !ok || evt.Type != "message_start" {
 			t.Fatalf("first = %+v ok=%v, want message_start", evt, ok)
 		}
-	case <-time.After(200 * time.Millisecond):
+		// 1s, not 200ms: under make-check's full load (race detector +
+		// parallel packages) the parser goroutine can lose 200ms to
+		// scheduling. Still half the server's 2s hold, so a batch-mode
+		// parser cannot sneak inside the window.
+	case <-time.After(1 * time.Second):
 		t.Fatal("no early delivery — parser not concurrent")
 	}
 	for range ch {

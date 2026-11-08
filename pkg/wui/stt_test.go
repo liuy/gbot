@@ -32,8 +32,12 @@ import (
 // --- fake audio.cpp upstream ---------------------------------------------
 
 type sttFakeUpstream struct {
-	t   *testing.T
-	srv *httptest.Server
+	t *testing.T
+	// noPinRcv skips the 16KB receive-buffer pin: only the backpressure
+	// tests (stall/write-error) need it — normal-flow tests pay delayed-ACK
+	// windows on every 16KB otherwise, which turns a 2.5MB upload into 12s.
+	noPinRcv bool
+	srv      *httptest.Server
 
 	mu sync.Mutex
 	// /v1/models knobs
@@ -96,7 +100,7 @@ func (l smallRcvListener) Accept() (net.Conn, error) {
 // race build inflates both together (stt_race_test.go).
 var sttStallHold = 3 * time.Second
 
-func newSttFakeUpstream(t *testing.T) *sttFakeUpstream {
+func newSttFakeUpstream(t *testing.T, noPin ...struct{}) *sttFakeUpstream {
 	t.Helper()
 	f := &sttFakeUpstream{
 		t:           t,
@@ -107,12 +111,15 @@ func newSttFakeUpstream(t *testing.T) *sttFakeUpstream {
 		progress:    make(chan struct{}, 32),
 		handlerExit: make(chan struct{}),
 	}
+	f.noPinRcv = noPin != nil
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", f.handleModels)
 	mux.HandleFunc("/v1/audio/transcriptions/live", f.handleLive)
 	mux.HandleFunc("/v1/audio/transcriptions", f.handleBatch)
 	f.srv = httptest.NewUnstartedServer(mux)
-	f.srv.Listener = smallRcvListener{f.srv.Listener}
+	if !f.noPinRcv {
+		f.srv.Listener = smallRcvListener{f.srv.Listener}
+	}
 	f.srv.Start()
 	t.Cleanup(f.srv.Close)
 	return f
@@ -814,7 +821,7 @@ func TestSttWS_EmptyUtteranceAutoCloses(t *testing.T) {
 // 60s insurance on exact sample count through the bridge: 50 × 1.2s frames,
 // finalize on frame 50 (960,000 samples).
 func TestSttWS_MaxStreamInsurance(t *testing.T) {
-	f := newSttFakeUpstream(t)
+	f := newSttFakeUpstream(t, struct{}{})
 	var expect []byte
 	var blocks [][]byte
 	for i := 0; i < 25; i++ {
@@ -1791,8 +1798,13 @@ func TestSttWS_ProbeBranches(t *testing.T) {
 	})
 	t.Run("models answering just inside 5s still goes live", func(t *testing.T) {
 		f := newSttFakeUpstream(t)
+		// Short injected probe window: 450ms inside vs 550ms past keeps the
+		// same both-sides-of-the-boundary shape at a tenth of the wait.
+		oldTO := sttProbeTimeout
+		sttProbeTimeout = 500 * time.Millisecond
+		defer func() { sttProbeTimeout = oldTO }()
 		f.mu.Lock()
-		f.modelsDelay = 4500 * time.Millisecond
+		f.modelsDelay = 450 * time.Millisecond
 		f.mu.Unlock()
 		srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
 		ws := dialSttWS(t, srv)
@@ -1802,8 +1814,11 @@ func TestSttWS_ProbeBranches(t *testing.T) {
 	})
 	t.Run("models answering just past 5s falls back to batch", func(t *testing.T) {
 		f := newSttFakeUpstream(t)
+		oldTO := sttProbeTimeout
+		sttProbeTimeout = 500 * time.Millisecond
+		defer func() { sttProbeTimeout = oldTO }()
 		f.mu.Lock()
-		f.modelsDelay = 5500 * time.Millisecond
+		f.modelsDelay = 550 * time.Millisecond
 		f.mu.Unlock()
 		srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
 		ws := dialSttWS(t, srv)
@@ -2161,7 +2176,7 @@ func TestSttWS_PTT_SilenceDoesNotFinalize(t *testing.T) {
 
 // PTT: the 60s forgot-to-stop insurance fires without any stop frame.
 func TestSttWS_PTT_SixtySecondCapAutoFinalizes(t *testing.T) {
-	f := newSttFakeUpstream(t)
+	f := newSttFakeUpstream(t, struct{}{})
 	srv := newSttBridge(t, sttSettings(f.srv.URL+"/v1", "", "audiocpp/stt-stream"))
 	ws := dialSttWS(t, srv)
 	sttSendJSON(t, ws, map[string]any{"type": "start", "ptt": true})
@@ -2239,5 +2254,13 @@ func TestSttWS_StopWithoutStart(t *testing.T) {
 	sttSendJSON(t, ws, map[string]any{"type": "stop"})
 	if got := r.readUntilDone(t); got != "你好。 世界。" {
 		t.Errorf("done after late start = %q, want 你好。 世界。", got)
+	}
+}
+
+// Default probe window pin: the boundary subtests rewrite sttProbeTimeout,
+// so the production value needs its own literal guard.
+func TestSttProbeTimeoutDefaultPinned(t *testing.T) {
+	if sttProbeTimeout != 5*time.Second {
+		t.Errorf("sttProbeTimeout = %v, want 5s", sttProbeTimeout)
 	}
 }

@@ -67,6 +67,10 @@ const sttBatchLimit = 20 << 20
 // slowness, not an upstream stall.
 var sttStallGrace = 500 * time.Millisecond
 
+// sttProbeTimeout bounds the models probe. Injectable so the boundary
+// tests run on a short window instead of parking either side of a real 5s.
+var sttProbeTimeout = 5 * time.Second
+
 // sttReadLimit caps a single WS frame: one binary frame above the 20MB
 // transcription budget is protocol abuse, not audio.
 const sttReadLimit = 20<<20 + 1024
@@ -259,7 +263,7 @@ func (c *sttConn) probeLiveMode() bool {
 // declares mode "streaming". Any failure reports false (callers fall back
 // to batch, which works for both entry modes).
 func probeAudioLiveMode(baseURL, apiKey, model string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sttProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {

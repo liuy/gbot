@@ -1163,12 +1163,16 @@ func TestRegistry_Reconnect_SuccessWithInMemory(t *testing.T) {
 	})
 	defer r.Close()
 
-	// Setup server with a tool
-	srv, t2 := setupInMemoryServer(t)
-	mcp.AddTool(srv, &mcp.Tool{Name: "read_file", Description: "Read a file"}, noopToolHandler)
+	// Register the tool before the fixture connects: AddTool after connect
+	// broadcasts tools/list_changed into the pipe, and the client's late
+	// dispatch of that stale notification delivers a second OnToolsChanged
+	// under full-suite load.
+	tr := registeredInMemoryTransport(t, func(srv *mcp.Server) {
+		mcp.AddTool(srv, &mcp.Tool{Name: "read_file", Description: "Read a file"}, noopToolHandler)
+	})
 
 	p.mu.Lock()
-	p.transports["srv"] = t2
+	p.transports["srv"] = tr
 	p.mu.Unlock()
 
 	cfg := ScopedMcpServerConfig{

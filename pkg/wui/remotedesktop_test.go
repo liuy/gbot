@@ -718,7 +718,13 @@ func TestProbeVNC_HandshakeTimeout5s(t *testing.T) {
 	// noise instead. The upper bound stays below 6s to keep killing the
 	// 5s→6s HandshakeTimeout mutant (elapsed ≈6s).
 	addr := mutDHangListener(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// Short injected window: the proportional bounds still kill the
+	// numbers mutants (500ms vs 600ms differs by the same 10% band the
+	// original 5s/6s pair did), at a fraction of the wall time.
+	old := vncProbeTimeout
+	vncProbeTimeout = 500 * time.Millisecond
+	defer func() { vncProbeTimeout = old }()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	start := time.Now() // REAL-TIME
 	_, err := probeVNC(ctx, addr)
@@ -726,8 +732,8 @@ func TestProbeVNC_HandshakeTimeout5s(t *testing.T) {
 	if err == nil {
 		t.Fatal("dial to a hanging server must fail")
 	}
-	if elapsed < 4500*time.Millisecond || elapsed > 5950*time.Millisecond {
-		t.Fatalf("handshake timeout fired after %v, want ~5s", elapsed)
+	if elapsed < 400*time.Millisecond || elapsed > 950*time.Millisecond {
+		t.Fatalf("handshake timeout fired after %v, want ~500ms", elapsed)
 	}
 }
 
@@ -739,6 +745,12 @@ func TestVNCProxy_DeviceDialTimeout10s(t *testing.T) {
 	srv := newRemoteDesktopServer(t)
 	addr := mutDHangListener(t)
 	seedSettings(t, `{"desktops":[{"name":"hang","addr":"`+addr+`"}]}`)
+	// Short injected device-dial window; the read deadline below also
+	// shrinks, so a field-clear mutant (no timeout at all) still dies on
+	// the deadline instead of stalling for seconds.
+	old := vncDialTimeout
+	vncDialTimeout = 700 * time.Millisecond
+	defer func() { vncDialTimeout = old }()
 	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
 	start := time.Now() // REAL-TIME
 	client, _, err := dialer.Dial(wsProxyURL(srv, "/wui/vnc/hang"), nil)
@@ -746,15 +758,15 @@ func TestVNCProxy_DeviceDialTimeout10s(t *testing.T) {
 		t.Fatalf("client dial: %v", err)
 	}
 	defer client.Close()
-	_ = client.SetReadDeadline(time.Now().Add(12 * time.Second)) // REAL-TIME
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second)) // REAL-TIME
 	_, _, rerr := client.ReadMessage()
 	elapsed := time.Since(start) // REAL-TIME
 	ce, ok := rerr.(*websocket.CloseError)
 	if !ok || ce.Code != websocket.CloseInternalServerErr {
 		t.Fatalf("client read err = %v, want a 1011 close after the device dial fails", rerr)
 	}
-	if elapsed < 9300*time.Millisecond || elapsed > 10700*time.Millisecond {
-		t.Fatalf("device dial failed after %v, want ~10s handshake timeout", elapsed)
+	if elapsed < 550*time.Millisecond || elapsed > 1900*time.Millisecond {
+		t.Fatalf("device dial failed after %v, want ~700ms handshake timeout", elapsed)
 	}
 }
 
@@ -958,5 +970,17 @@ func TestPumpWS_ReadErrorForwardsNothing(t *testing.T) {
 	case <-pumped:
 	case <-time.After(time.Second):
 		t.Fatal("pumpWS did not return after the read error")
+	}
+}
+
+// The injected timeouts default to the production contract values; the
+// literal pins kill numeric mutants on the var declarations themselves
+// (the short-window tests rewrite the vars and cannot see them).
+func TestVNCTimeoutDefaultsPinned(t *testing.T) {
+	if vncDialTimeout != 10*time.Second {
+		t.Errorf("vncDialTimeout = %v, want 10s", vncDialTimeout)
+	}
+	if vncProbeTimeout != 5*time.Second {
+		t.Errorf("vncProbeTimeout = %v, want 5s", vncProbeTimeout)
 	}
 }

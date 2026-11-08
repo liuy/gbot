@@ -171,7 +171,7 @@ func probeVNC(ctx context.Context, addr string) (int, error) {
 	}
 	dialer := websocket.Dialer{
 		Subprotocols:     []string{"binary"},
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: vncProbeTimeout,
 	}
 	start := time.Now()
 	conn, resp, err := dialer.DialContext(ctx, normalized, nil)
@@ -242,7 +242,7 @@ func handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	// cancellation — is the actual bound on a stuck dial.
 	dialer := websocket.Dialer{
 		Subprotocols:     []string{"binary"},
-		HandshakeTimeout: 10 * time.Second,
+		HandshakeTimeout: vncDialTimeout,
 	}
 	target, _, err := dialer.DialContext(r.Context(), addr, nil)
 	if err != nil {
@@ -253,6 +253,14 @@ func handleVNCProxy(w http.ResponseWriter, r *http.Request) {
 	defer target.Close()
 	relayWS(client, target)
 }
+
+// Injectable so the timeout-shape tests can run on a short window (the
+// gorilla HandshakeTimeout is a real fd deadline — synctest cannot shrink
+// it; a small value with a proportional assert window can).
+var (
+	vncDialTimeout  = 10 * time.Second
+	vncProbeTimeout = 5 * time.Second
+)
 
 // relayWS pumps frames both ways until the first pump exits; it then closes
 // both conns so the peer's blocked read unblocks.

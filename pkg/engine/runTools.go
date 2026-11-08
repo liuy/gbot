@@ -35,6 +35,16 @@ const userRejectMessage = "The user doesn't want to proceed with this tool use. 
 // Source: messages.ts:216 — SUBAGENT_REJECT_MESSAGE
 const subAgentRejectMessage = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task."
 
+// yieldGiveUpWindow bounds how long ExecuteAll waits, after a user cancel,
+// for a tool goroutine that has not yet reached close(done). Dropping the
+// result is safe — EnsureToolResultPairing synthesizes an interrupted
+// tool_result for any unpaired tool_use before the next API call — so this
+// is a quality window, not a correctness one: 500ms covers a responsive
+// goroutine starved by scheduler pressure under full load (the real
+// interruption detail beats the synthetic placeholder when we can get it).
+// Pinned exactly by TestYieldGiveUpWindowExact in runTools_test.go.
+const yieldGiveUpWindow = 500 * time.Millisecond
+
 // denialWorkaroundGuidance is appended to rule-based deny messages.
 // Source: messages.ts:226 — DENIAL_WORKAROUND_GUIDANCE
 const denialWorkaroundGuidance = "IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request, STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed."
@@ -500,10 +510,12 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 			select {
 			case <-ch:
 			default:
-				// Tool goroutine hasn't scheduled yet, try briefly.
+				// Tool goroutine hasn't scheduled yet. Quality window only —
+				// see yieldGiveUpWindow: past it the synthetic pairing
+				// placeholder covers the gap.
 				select {
 				case <-ch:
-				case <-time.After(100 * time.Millisecond):
+				case <-time.After(yieldGiveUpWindow):
 				}
 			}
 		}

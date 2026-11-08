@@ -7166,7 +7166,12 @@ func TestAbort_DuringTool_QueuedMessageSurvivesInHistory(t *testing.T) {
 	// and a helper that swallows events while waiting for the other
 	// condition makes the test flap.
 	var gotFirstTurnEnd, idleTurnStarted bool
-	deadline := time.After(5 * time.Second)
+	// 10s, not 5s: this waits out the whole abort → endQuery → idle-turn
+	// chain through dispatcher goroutines; under make-check's full load
+	// (race detector + parallel packages) that chain has been observed to
+	// outlive 5s with the state still converging. It is a wait-for-final-
+	// state bound, so widening costs no resolution.
+	deadline := time.After(10 * time.Second)
 	for {
 		count := 0
 		for _, m := range eng.Messages() {

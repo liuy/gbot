@@ -1157,7 +1157,11 @@ func TestWSFrameCompressed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second)) // REAL-TIME
+	// 60s, not 10s: pure liveness bound for handshake + first frame; under
+	// make-check's full load (race detector + parallel packages) even 30s
+	// has been starved past on a localhost round trip. No detection band
+	// lives here — a broken server times out at either bound.
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second)) // REAL-TIME
 
 	// The key must decode to exactly 16 bytes (RFC 6455), hence 16 raw chars.
 	key := base64.StdEncoding.EncodeToString([]byte("mutc-sample-key0"))

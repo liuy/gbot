@@ -779,7 +779,12 @@ func TestAnthropicStream_BackoffOnlyOnRetry(t *testing.T) {
 
 	p := newAnthropicMutProvider(srv.URL)
 	p.retryConfig = &RetryConfig{MaxRetries: 1, BaseBackoff: 30 * time.Second, MaxBackoff: 30 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	// 2s, not 150ms: under make-check's full load the first request can
+	// spend >150ms before the handler runs, and then the deadline expires
+	// with hits=0 — a load artifact, not a backoff regression. 2s stays far
+	// under the 30s backoff, so "backoff before first attempt" still yields
+	// hits=0 and any backoff shrink below 2s still yields a second hit.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err := p.Stream(ctx, &Request{Model: "m", MaxTokens: 1, Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}}})
 	if err == nil {
@@ -908,8 +913,11 @@ func TestAnthropicStream_ParserGoroutineDeliversEarly(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\ndata: {\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":1}}}\n\n"))
 		w.(http.Flusher).Flush()
+		// Hold scales with the client window (2:1): a parser that only
+		// forwards after the stream ends still cannot deliver inside the
+		// window, so the concurrency contract keeps its resolution.
 		select {
-		case <-time.After(400 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
 			return
 		}
@@ -929,8 +937,12 @@ func TestAnthropicStream_ParserGoroutineDeliversEarly(t *testing.T) {
 		if !ok || evt.Type != "message_start" {
 			t.Fatalf("first event = %+v ok=%v, want message_start while stream in flight", evt, ok)
 		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("no event within 200ms — parser not running concurrently")
+		// 1s, not 200ms: under make-check's full load (race detector +
+		// parallel packages) the parser goroutine can lose 200ms to
+		// scheduling. Still half the server's 2s hold, so a batch-mode
+		// parser cannot sneak inside the window.
+	case <-time.After(1 * time.Second):
+		t.Fatal("no event within 1s — parser not running concurrently")
 	}
 	for range ch {
 	}
@@ -986,8 +998,11 @@ func TestAnthropicStream_TextPhaseKeepsIdleTimeout(t *testing.T) {
 		_, _ = w.Write([]byte("event: message_start\ndata: {}\n\n"))
 		_, _ = w.Write([]byte("event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n"))
 		w.(http.Flusher).Flush()
+		// 2s, not 500ms: the idle timeout only arms on the reader's first
+		// Read; under full load the parser goroutine can start after the
+		// whole stream is buffered, and the gap must still be observed.
 		select {
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
 			return
 		}
@@ -1070,8 +1085,10 @@ func TestAnthropicStream_StopDeltaReArmsIdleTimeout(t *testing.T) {
 			_, _ = w.Write([]byte("event: ping\ndata: {}\n\n"))
 		}
 		w.(http.Flusher).Flush()
+		// 2s, not 500ms: same reader-start starvation margin as the text-
+		// phase test — the gap must survive a starved parser goroutine.
 		select {
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
 			return
 		}

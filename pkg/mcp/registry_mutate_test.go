@@ -214,10 +214,16 @@ func (p *regProvider) closeAll() {
 
 // closableInMemoryServer is an in-memory server whose server-side session
 // can be closed mid-test, making later List* calls fail deterministically.
-func closableInMemoryServer(t *testing.T) (*mcp.Server, mcp.Transport, func()) {
+// closableInMemoryServer connects an in-memory server with register's items
+// present before Connect, whose session can be closed mid-test. Registering
+// after connect broadcasts a list_changed notification into the pipe that the
+// client may dispatch long after the test swapped its callbacks in (the load
+// flake that fired "commands=1" here).
+func closableInMemoryServer(t *testing.T, register func(*mcp.Server)) (*mcp.Server, mcp.Transport, func()) {
 	t.Helper()
 	t1, t2 := mcp.NewInMemoryTransports()
 	server := mcp.NewServer(&mcp.Implementation{Name: "closable", Version: "1.0"}, nil)
+	register(server)
 	type sessRes struct {
 		s   *mcp.ServerSession
 		err error
@@ -1296,6 +1302,21 @@ func swapCallbacks(r *Registry, cb ChangeCallbacks) {
 	r.mu.Unlock()
 }
 
+// snapshotCallbacks must drop its RLock: every invocation site (notification
+// handlers, reconnect tails) goes on to take the write lock for
+// rebuildAggregates — a leaked RLock self-deadlocks the registry on its next
+// mutation. The pin asserts TryLock directly and registers no r.Close
+// cleanup: under the defer-remove mutant the leaked RLock would hang that
+// cleanup, and the pin must fail fast instead of dying in a deadlock.
+func TestSnapshotCallbacksReleasesLock(t *testing.T) {
+	r := NewRegistry(NewClientManager(newInMemoryProvider(), true, ""), ChangeCallbacks{})
+	_ = r.snapshotCallbacks()
+	if !r.mu.TryLock() {
+		t.Fatal("snapshotCallbacks leaked its RLock — next write lock would deadlock")
+	}
+	r.mu.Unlock()
+}
+
 func TestHandleToolNotificationUpdatesAggregatesAndFiresCallback(t *testing.T) {
 	var fired atomic.Int32
 	var gotName string
@@ -1383,10 +1404,15 @@ func TestHandleNotificationFetchFailureSkipsCallback(t *testing.T) {
 	// 会话关闭后 ListTools 确定性失败：原版必须静默返回（无回调）。
 	var toolsFired, resFired, cmdsFired atomic.Int32
 	p := newInMemoryProvider()
-	srv, tr, closeSrv := closableInMemoryServer(t)
-	mcp.AddTool(srv, &mcp.Tool{Name: "t"}, noopToolHandler)
-	srv.AddResource(&mcp.Resource{URI: "res://1", Name: "r", MIMEType: "text/plain"}, noopResourceHandler)
-	srv.AddPrompt(&mcp.Prompt{Name: "p"}, noopPromptHandler)
+	// Register before connect (see closableInMemoryServer): the old
+	// post-connect Add* calls each broadcast a list_changed into the pipe,
+	// and the client's late dispatch of one of those stale notifications —
+	// not the handle* calls below — was the "callbacks fired" load flake.
+	_, tr, closeSrv := closableInMemoryServer(t, func(srv *mcp.Server) {
+		mcp.AddTool(srv, &mcp.Tool{Name: "t"}, noopToolHandler)
+		srv.AddResource(&mcp.Resource{URI: "res://1", Name: "r", MIMEType: "text/plain"}, noopResourceHandler)
+		srv.AddPrompt(&mcp.Prompt{Name: "p"}, noopPromptHandler)
+	})
 	p.mu.Lock()
 	p.transports["srv"] = tr
 	p.mu.Unlock()
@@ -1405,12 +1431,12 @@ func TestHandleNotificationFetchFailureSkipsCallback(t *testing.T) {
 		OnCommandsChanged:  func(string, []MCPCommand) { cmdsFired.Add(1) },
 	})
 	closeSrv()
-	// Observed twice under full-suite load: "callbacks fired 1". Root cause
-	// UNRESOLVED: the SDK's Close is synchronous (verified against the
-	// vendored jsonrpc2 — the reader exits before Close returns), and ~2000
-	// adversarial iterations could not reproduce. The per-callback dump in
-	// the assertion below is the adjudication probe — the next red pins
-	// which fetch path fired.
+	// The "callbacks fired" load flake observed here twice was never the
+	// handle* fetch path: it was a stale fixture-time list_changed
+	// notification (from the old post-connect Add* calls) dispatched by the
+	// client after swapCallbacks installed the counters. Registering before
+	// connect removes the notification; the fetch-failure silence below is
+	// now the only thing that can fire a counter.
 	r.handleToolNotification("srv")
 	r.handleResourceNotification("srv")
 	r.handleCommandNotification("srv")

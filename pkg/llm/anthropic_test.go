@@ -697,6 +697,9 @@ func TestIsConnectionError(t *testing.T) {
 		{name: "EOF", err: fmt.Errorf("unexpected EOF"), result: true},
 		{name: "timeout", err: fmt.Errorf("dial timeout"), result: true},
 		{name: "temporary", err: fmt.Errorf("temporary failure"), result: true},
+		// The peer closed a pooled/fresh conn before the request landed:
+		// retrying on a fresh conn is safe (request bodies are rewindable).
+		{name: "server closed idle connection", err: fmt.Errorf(`Post "http://x": http: server closed idle connection`), result: true},
 		{name: "other", err: fmt.Errorf("some other error"), result: false},
 		{name: "nil", err: nil, result: false},
 	}
