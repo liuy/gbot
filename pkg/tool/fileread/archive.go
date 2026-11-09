@@ -217,10 +217,12 @@ func readArchiveFS(fsys fs.FS, subPath string, in Input) (*tool.ToolResult, erro
 			totalLines++
 		}
 	}
+	// applyOffsetLimit is a no-op for un-sliced inputs (offset≤1, limit=0
+	// returns the string verbatim), so no caller-side gate is needed; the
+	// offset/limit normalization lives in one place there. sliced only feeds
+	// the numLines adjustment below.
 	sliced := in.Offset > 1 || in.Limit > 0
-	if sliced {
-		content = applyOffsetLimit(content, in.Offset, in.Limit)
-	}
+	content = applyOffsetLimit(content, in.Offset, in.Limit)
 	numLines := 0
 	if content != "" {
 		numLines = strings.Count(content, "\n") + 1

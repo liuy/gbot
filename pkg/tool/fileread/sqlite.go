@@ -1,7 +1,6 @@
 package fileread
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -99,9 +98,11 @@ func isSqliteFile(absPath string) bool {
 
 // parseSqlitePathCandidates finds all possible SQLite path splits in the input.
 // omp: parseSqlitePathCandidates — finds .sqlite/.db extensions followed by : or ?
+// Matches are non-overlapping with strictly increasing end offsets, so every
+// candidate's sqlitePath prefix length differs — no dedup is needed (unlike
+// parseArchivePathCandidates, where ".tar.gz"/".gz" can end at one position).
 func parseSqlitePathCandidates(filePath string) []sqlitePathCandidate {
 	normalized := strings.ReplaceAll(filePath, "\\", "/")
-	seen := map[string]bool{}
 	var candidates []sqlitePathCandidate
 
 	matches := sqlitePathPattern.FindAllStringIndex(normalized, -1)
@@ -121,11 +122,6 @@ func parseSqlitePathCandidates(filePath string) []sqlitePathCandidate {
 		remainder := normalized[extEnd:]
 
 		subPath, queryString := splitSqliteRemainder(remainder)
-		key := sqlitePath + "\x00" + subPath + "\x00" + queryString
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
 		candidates = append(candidates, sqlitePathCandidate{
 			sqlitePath:  sqlitePath,
 			subPath:     subPath,
@@ -178,7 +174,8 @@ func parseSqliteSelector(subPath, queryString string) (*sqliteSelector, error) {
 		return &sqliteSelector{kind: sqliteSelList}, nil
 	}
 
-	// Split table:key
+	// Split table:key. normalizedSubPath is non-empty here and its leading
+	// colons were stripped above, so the pre-colon table part can't be empty.
 	before, after, ok := strings.Cut(normalizedSubPath, ":")
 	var table, key string
 	if !ok {
@@ -186,9 +183,6 @@ func parseSqliteSelector(subPath, queryString string) (*sqliteSelector, error) {
 	} else {
 		table = before
 		key = after
-	}
-	if table == "" {
-		return nil, fmt.Errorf("sqlite selectors must include a table name")
 	}
 
 	if key != "" {
@@ -381,7 +375,7 @@ func quoteIdent(ident string) string {
 
 // executeSqliteRead handles SQLite database reads with selector syntax.
 // omp: #readSqlite
-func executeSqliteRead(ctx context.Context, in Input, candidate sqlitePathCandidate, absPath string) (*tool.ToolResult, error) {
+func executeSqliteRead(in Input, candidate sqlitePathCandidate, absPath string) (*tool.ToolResult, error) {
 	selector, err := parseSqliteSelector(candidate.subPath, candidate.queryString)
 	if err != nil {
 		return nil, err
@@ -1065,7 +1059,7 @@ func buildSqliteOutput(columns []string, rows []map[string]any) string {
 // trySqlitePath attempts to handle the input as a SQLite path.
 // Returns (result, true, nil) if handled, (nil, false, nil) if not a SQLite path,
 // (nil, true, err) if it is a SQLite path but an error occurred.
-func trySqlitePath(ctx context.Context, in Input) (*tool.ToolResult, bool, error) {
+func trySqlitePath(in Input) (*tool.ToolResult, bool, error) {
 	candidates := parseSqlitePathCandidates(in.FilePath)
 	if len(candidates) == 0 {
 		return nil, false, nil
@@ -1084,7 +1078,7 @@ func trySqlitePath(ctx context.Context, in Input) (*tool.ToolResult, bool, error
 			continue
 		}
 		// It's a real SQLite file — handle it. Pass c + ap to avoid re-scanning.
-		result, err := executeSqliteRead(ctx, in, c, ap)
+		result, err := executeSqliteRead(in, c, ap)
 		if err != nil {
 			return nil, true, err
 		}

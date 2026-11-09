@@ -389,7 +389,7 @@ func TestExecuteDocument_OffsetLimitSlicing(t *testing.T) {
 		{6, 0, "", 0, 6},
 	}
 	for _, tc := range cases {
-		res, err := executeDocument(context.Background(), Input{FilePath: path, Offset: tc.offset, Limit: tc.limit}, info)
+		res, err := executeDocument(Input{FilePath: path, Offset: tc.offset, Limit: tc.limit}, info)
 		if err != nil {
 			t.Errorf("offset=%d limit=%d: %v", tc.offset, tc.limit, err)
 			continue

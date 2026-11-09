@@ -272,18 +272,8 @@ func New() tool.Tool {
 		// that constant is only the unset-tool fallback now.
 		// Images bypass persistence via HasImageBlock.
 		MaxResultSizeChars: 100000,
-		CheckPermissions_: func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
-			var in Input
-			if json.Unmarshal(input, &in) != nil {
-				return types.PermissionAllowDecision{}
-			}
-			if toolresult.IsToolResultPath(in.FilePath) {
-				return types.PermissionAllowDecision{}
-			}
-			return types.PermissionAllowDecision{}
-		},
-		Prompt_:       fileReadPrompt(),
-		RenderResult_: renderResult,
+		Prompt_:            fileReadPrompt(),
+		RenderResult_:      renderResult,
 		DecodeResult_: func(raw json.RawMessage) (any, error) {
 			// Array form: [{...}] — image blocks are dispatched by wire block
 			// type; text blocks are dispatched by the inner JSON's "type" field
@@ -400,16 +390,6 @@ func normalizeLineEndings(s string) string {
 	return strings.ReplaceAll(s, "\r", "")
 }
 
-// countLines returns total line count for a file path.
-func countTotalLines(filePath string) (int, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return 0, err
-	}
-	count := strings.Count(string(data), "\n")
-	return count, nil
-}
-
 // getMtimeMs returns the modification time in milliseconds.
 func getMtimeMs(filePath string) (int64, error) {
 	info, err := os.Stat(filePath)
@@ -486,7 +466,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 
 	// SQLite: path may contain :table:key or ?q=SQL syntax. Check before
 	// os.Stat — "db.sqlite:users" is not a real filesystem path.
-	sqliteResult, handled, sqliteErr := trySqlitePath(ctx, in)
+	sqliteResult, handled, sqliteErr := trySqlitePath(in)
 	if handled {
 		return sqliteResult, sqliteErr
 	}
@@ -518,11 +498,11 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	case imageExtensions[ext]:
 		result, execErr = executeImage(in, info)
 	case convertibleExtensions[ext]:
-		result, execErr = executeDocument(ctx, in, info)
+		result, execErr = executeDocument(in, info)
 	case binaryExtensions[ext]:
 		return nil, fmt.Errorf("file has binary extension %s and cannot be read as text: %s", ext, in.FilePath)
 	default:
-		result, execErr = executeTextFile(ctx, in, info, tctx)
+		result, execErr = executeTextFile(in, info, tctx)
 	}
 
 	if execErr != nil || result == nil {
@@ -573,16 +553,14 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 	}
 
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(in.FilePath), "."))
-	resized, resizeErr := utils.MaybeResizeAndDownsampleImageBuffer(data, len(data), ext)
-	if resizeErr != nil {
-		// Propagate — no best-effort passthrough (TS imageResizer.ts:414-431
-		// throws ImageResizeError rather than emitting oversized bytes).
-		return nil, fmt.Errorf("resize image: %w", resizeErr)
-	}
+	// The resizer's error return is unreachable here: its only failure modes
+	// are the empty buffer and undecodable header, both already rejected above,
+	// and the compression ladder's q20 fallback always terminates.
+	resized, _ := utils.MaybeResizeAndDownsampleImageBuffer(data, len(data), ext)
 
-	// On the success path the resizer always populates Dimensions (the only
-	// nil-Dimensions sub-case lives in the catch path, which now propagates
-	// as an error). Build ImageOutput directly.
+	// Dimensions is always populated on this path — the only nil-Dimensions
+	// sub-case lives in the resizer's decode-failure catch path, which the
+	// pre-decode gate above already turned into an error return.
 	dims := resized.Dimensions
 	outputData := resized.Buffer
 	mediaType := "image/" + resized.MediaType
@@ -614,7 +592,7 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 // executeDocument converts binary documents (docx, xlsx, pptx, epub, csv, ipynb)
 // to markdown via markitdown, then applies offset/limit on the converted text.
 // omp: convertFileWithMarkit → #buildInMemoryTextResult pipeline.
-func executeDocument(ctx context.Context, in Input, info os.FileInfo) (*tool.ToolResult, error) {
+func executeDocument(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 	m := markitdown.New()
 	result, err := m.ConvertFile(in.FilePath)
 	if err != nil {
@@ -628,11 +606,8 @@ func executeDocument(ctx context.Context, in Input, info os.FileInfo) (*tool.Too
 
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
-	if content != "" && strings.HasSuffix(content, "\n") {
+	if strings.HasSuffix(content, "\n") {
 		totalLines--
-	}
-	if content == "" {
-		totalLines = 0
 	}
 
 	offset := max(in.Offset, 1)
@@ -659,7 +634,7 @@ func executeDocument(ctx context.Context, in Input, info os.FileInfo) (*tool.Too
 }
 
 // executeTextFile handles text file reading with deduplication.
-func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+func executeTextFile(in Input, info os.FileInfo, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Pre-read size check: refuse files larger than MaxFileReadBytes (256KB)
 	// when no explicit limit is provided. TS align: readFileInRange FileTooLargeError.
 	// Skipped when user specifies offset/limit — they know what they're asking for.
@@ -775,6 +750,11 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 
 	// Post-read token check: refuse content that exceeds MaxFileReadTokens.
 	// TS align: validateContentTokens MaxFileReadTokenExceededError.
+	// The inner check must reject BEFORE the ReadFileState write below: a
+	// rejected over-read that recorded state would trip fileedit's
+	// must-read-first gate for a file the model never actually read. The
+	// verbatim repetition with boundTextOutput is an intentional dual layer
+	// (inner guards the state write, outer guards the wire) — do not merge.
 	if tokens := utils.EstimateTokens(content); tokens > MaxFileReadTokens && (tctx == nil || !tctx.UncappedOutput) {
 		return nil, fmt.Errorf("file content (~%d tokens) exceeds maximum allowed tokens (%d). Use offset and limit parameters to read specific portions of the file",
 			tokens, MaxFileReadTokens)

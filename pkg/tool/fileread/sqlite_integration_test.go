@@ -1,7 +1,6 @@
 package fileread
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -313,7 +312,7 @@ func TestSqliteExecuteRawQuery_NoLimitStillCapped(t *testing.T) {
 func TestExecuteSqliteRead_List(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "", queryString: ""}
-	result, err := executeSqliteRead(context.Background(), Input{FilePath: dbPath}, cand, dbPath)
+	result, err := executeSqliteRead(Input{FilePath: dbPath}, cand, dbPath)
 	if err != nil {
 		t.Fatalf("executeSqliteRead list: %v", err)
 	}
@@ -325,7 +324,7 @@ func TestExecuteSqliteRead_List(t *testing.T) {
 func TestExecuteSqliteRead_Schema(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "users", queryString: ""}
-	result, err := executeSqliteRead(context.Background(), Input{FilePath: dbPath}, cand, dbPath)
+	result, err := executeSqliteRead(Input{FilePath: dbPath}, cand, dbPath)
 	if err != nil {
 		t.Fatalf("executeSqliteRead schema: %v", err)
 	}
@@ -338,7 +337,7 @@ func TestExecuteSqliteRead_Schema(t *testing.T) {
 func TestExecuteSqliteRead_KeyLookup(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "users:1", queryString: ""}
-	result, err := executeSqliteRead(context.Background(), Input{FilePath: dbPath}, cand, dbPath)
+	result, err := executeSqliteRead(Input{FilePath: dbPath}, cand, dbPath)
 	if err != nil {
 		t.Fatalf("executeSqliteRead key lookup: %v", err)
 	}
@@ -350,7 +349,7 @@ func TestExecuteSqliteRead_KeyLookup(t *testing.T) {
 func TestExecuteSqliteRead_RawQuery(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "", queryString: "q=SELECT name FROM users WHERE id = 2"}
-	result, err := executeSqliteRead(context.Background(), Input{FilePath: dbPath}, cand, dbPath)
+	result, err := executeSqliteRead(Input{FilePath: dbPath}, cand, dbPath)
 	if err != nil {
 		t.Fatalf("executeSqliteRead raw query: %v", err)
 	}
@@ -753,7 +752,7 @@ func TestSqliteSelectRows_BadWhere(t *testing.T) {
 
 func TestTrySqlitePath_RealFile(t *testing.T) {
 	dbPath := createTestDB(t)
-	result, handled, err := trySqlitePath(context.Background(), Input{FilePath: dbPath})
+	result, handled, err := trySqlitePath(Input{FilePath: dbPath})
 	if err != nil {
 		t.Fatalf("trySqlitePath: %v", err)
 	}
@@ -767,7 +766,7 @@ func TestTrySqlitePath_RealFile(t *testing.T) {
 
 func TestTrySqlitePath_TableSelector(t *testing.T) {
 	dbPath := createTestDB(t)
-	result, handled, err := trySqlitePath(context.Background(), Input{FilePath: dbPath + ":users"})
+	result, handled, err := trySqlitePath(Input{FilePath: dbPath + ":users"})
 	if err != nil {
 		t.Fatalf("trySqlitePath: %v", err)
 	}
@@ -786,7 +785,7 @@ func TestTrySqlitePath_NotSqlite(t *testing.T) {
 	if err := os.WriteFile(txtPath, []byte("hello"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, handled, err := trySqlitePath(context.Background(), Input{FilePath: txtPath})
+	_, handled, err := trySqlitePath(Input{FilePath: txtPath})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -796,7 +795,7 @@ func TestTrySqlitePath_NotSqlite(t *testing.T) {
 }
 
 func TestTrySqlitePath_NoMatch(t *testing.T) {
-	_, handled, err := trySqlitePath(context.Background(), Input{FilePath: "/nonexistent/file.db"})
+	_, handled, err := trySqlitePath(Input{FilePath: "/nonexistent/file.db"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -956,7 +955,7 @@ func TestParseSqlitePathCandidates_MultipleSplits(t *testing.T) {
 func TestExecuteSqliteRead_QueryMode(t *testing.T) {
 	dbPath := createTestDB(t)
 	cand := sqlitePathCandidate{sqlitePath: dbPath, subPath: "users", queryString: "limit=2&order=id:desc"}
-	result, err := executeSqliteRead(context.Background(), Input{FilePath: dbPath}, cand, dbPath)
+	result, err := executeSqliteRead(Input{FilePath: dbPath}, cand, dbPath)
 	if err != nil {
 		t.Fatalf("executeSqliteRead query: %v", err)
 	}

@@ -932,48 +932,6 @@ func TestRenderResult_FileUnchanged(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CheckPermissions — cover the CheckPermissions_ closure in New()
-// ---------------------------------------------------------------------------
-
-func TestCheckPermissions_ValidInput(t *testing.T) {
-	t.Parallel()
-	tt := fileread.New()
-	input := json.RawMessage(`{"file_path":"/tmp/test.txt"}`)
-	result := tt.CheckPermissions(input, nil)
-	if result.Behavior() != types.BehaviorAllow {
-		t.Errorf("CheckPermissions(valid) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
-	}
-}
-
-func TestCheckPermissions_InvalidJSON(t *testing.T) {
-	t.Parallel()
-	tt := fileread.New()
-	input := json.RawMessage(`{invalid`)
-	result := tt.CheckPermissions(input, nil)
-	// Invalid JSON should still return allow (early return on unmarshal error)
-	if result.Behavior() != types.BehaviorAllow {
-		t.Errorf("CheckPermissions(invalid JSON) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
-	}
-}
-
-func TestCheckPermissions_ToolResultPath(t *testing.T) {
-	tt := fileread.New()
-	// IsToolResultPath checks for <home>/.gbot/sessions/<id>/tool-results/<file>
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	toolResultDir := filepath.Join(dir, ".gbot", "sessions", "test-session", "tool-results")
-	if err := os.MkdirAll(toolResultDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	toolResultPath := filepath.Join(toolResultDir, "result-123.txt")
-	input := json.RawMessage(`{"file_path":"` + toolResultPath + `"}`)
-	result := tt.CheckPermissions(input, nil)
-	if result.Behavior() != types.BehaviorAllow {
-		t.Errorf("CheckPermissions(toolresult path) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // RenderResult — value-type (non-pointer) cases
 // ---------------------------------------------------------------------------
 

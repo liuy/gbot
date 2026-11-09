@@ -322,62 +322,6 @@ func TestExecute_OpenFileError(t *testing.T) {
 	}
 }
 
-func TestCountTotalLines(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "lines.txt")
-	content := "a\nb\nc\n"
-	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	count, err := countTotalLines(fp)
-	if err != nil {
-		t.Fatalf("countTotalLines: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("countTotalLines = %d, want 3", count)
-	}
-}
-
-func TestCountTotalLines_NoTrailingNewline(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "lines2.txt")
-	content := "a\nb\nc"
-	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	count, err := countTotalLines(fp)
-	if err != nil {
-		t.Fatalf("countTotalLines: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("countTotalLines = %d, want 2", count)
-	}
-}
-
-func TestCountTotalLines_Empty(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "empty.txt")
-	if err := os.WriteFile(fp, []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	count, err := countTotalLines(fp)
-	if err != nil {
-		t.Fatalf("countTotalLines: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("countTotalLines = %d, want 0", count)
-	}
-}
-
 // --- byte-truthful MIME (replaces former TestGetMimeType) ---
 // executeImage must emit an ImageOutput.MimeType that matches the actual
 // bytes produced by utils.MaybeResizeAndDownsampleImageBuffer. The legacy
@@ -629,21 +573,6 @@ func TestGetMtimeMs_Error(t *testing.T) {
 	_, err := getMtimeMs("/nonexistent/file/path")
 	if err == nil {
 		t.Fatal("getMtimeMs should return error for nonexistent file")
-	}
-	if !strings.Contains(err.Error(), "/nonexistent/file/path") {
-		t.Errorf("Error = %q, should contain path", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Coverage: countTotalLines error path
-// ---------------------------------------------------------------------------
-
-func TestCountTotalLines_Error(t *testing.T) {
-	t.Parallel()
-	_, err := countTotalLines("/nonexistent/file/path")
-	if err == nil {
-		t.Fatal("countTotalLines should return error for nonexistent file")
 	}
 	if !strings.Contains(err.Error(), "/nonexistent/file/path") {
 		t.Errorf("Error = %q, should contain path", err.Error())
