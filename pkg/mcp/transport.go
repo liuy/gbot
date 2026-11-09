@@ -326,7 +326,7 @@ func (l *stderrLineLogger) Write(p []byte) (int, error) {
 	}
 }
 
-// newStdioTransport creates a CommandTransport for stdio servers.
+// newStdioTransport creates the stdio subprocess transport.
 // Source: client.ts:944-958
 //
 // Trust gate: project/local scope requires workspace trust before spawning.
@@ -341,8 +341,8 @@ func newStdioTransport(name string, cfg *StdioConfig, scope ConfigScope, trusted
 
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	proc.HideWindow(cmd)
-	// Own process group so cleanup can reap the whole tree (crash-orphaned
-	// descendants included) — see ProcessCleanupEscalation.
+	// Own process group so teardown's group signals reap the whole tree
+	// (crash-orphaned descendants included) — see stdio_lifecycle.go.
 	SetProcessGroup(cmd)
 	cmd.Stderr = &stderrLineLogger{server: name}
 
@@ -356,7 +356,7 @@ func newStdioTransport(name string, cfg *StdioConfig, scope ConfigScope, trusted
 		}
 	}
 
-	return &mcp.CommandTransport{Command: cmd}, nil
+	return newStdioProcTransport(name, cmd, processGroupApplied()), nil
 }
 
 // newSSETransport creates an SSEClientTransport for SSE servers.

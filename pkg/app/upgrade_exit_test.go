@@ -84,7 +84,7 @@ func TestWatchUpgradeExit_LeavesStoreOpenForAttachedChild(t *testing.T) {
 	store, dbPath := newExitTestStore(t)
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
 
-	go watchUpgradeExit(upg, &http.Server{}, nil, nil, nil, store)
+	go watchUpgradeExit(upg, &http.Server{}, nil, nil, nil, store, nil)
 	close(upg.exitCh)
 
 	select {
@@ -148,7 +148,7 @@ func TestWatchUpgradeExit_ExitsAfterDrain_LeavesStoreOpen(t *testing.T) {
 
 	exited := interceptExit(t)
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
-	go watchUpgradeExit(upg, srv, nil, nil, nil, store)
+	go watchUpgradeExit(upg, srv, nil, nil, nil, store, nil)
 	close(upg.exitCh)
 
 	select {
@@ -199,7 +199,7 @@ func TestWatchUpgradeExit_DreamJoinIsBounded(t *testing.T) {
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
 	dreamDone := make(chan struct{}) // never closed: dream tick "in flight"
 
-	go watchUpgradeExit(upg, &http.Server{}, nil, nil, dreamDone, store)
+	go watchUpgradeExit(upg, &http.Server{}, nil, nil, dreamDone, store, nil)
 	close(upg.exitCh)
 
 	select {
@@ -223,7 +223,7 @@ func TestWatchUpgradeExit_JoinsDreamBeforeExit(t *testing.T) {
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
 	dreamDone := make(chan struct{})
 
-	go watchUpgradeExit(upg, &http.Server{}, nil, nil, dreamDone, store)
+	go watchUpgradeExit(upg, &http.Server{}, nil, nil, dreamDone, store, nil)
 	close(upg.exitCh)
 
 	select {

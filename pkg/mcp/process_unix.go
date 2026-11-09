@@ -8,14 +8,23 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 // SetProcessGroup puts a spawned MCP server in its own process group
-// (pgid == child pid). Group ownership is what lets ProcessCleanupEscalation
-// reap the whole tree — including descendants that outlived their parents
-// (e.g. a browser child surviving a crashed server) — via kill(-pgid, sig).
-// Without it, signals reach only the top-level wrapper process.
+// (pgid == child pid). Group ownership is what lets the teardown's group
+// signals reap the whole tree — including descendants that outlived their
+// parents (e.g. a browser child surviving a crashed server) — via
+// kill(-pgid, sig). Without it, signals reach only the top-level wrapper
+// process.
+//
+// Setpgid (not Setsid) is deliberate: the two load-bearing properties both
+// hold — group kill reaches the whole tree, and the child leaves the daemon's
+// foreground process group so terminal-generated signals never reach MCP
+// servers (all three stdio ends are pipes; session-leader SIGHUP semantics
+// are irrelevant). omp's Bun detached:true (setsid) would add a behavior
+// change with no additional guarantee here. darwin stays grouped too — gbot's
+// shipped behavior; omp deliberately does not detach on darwin (documented
+// deviation: group kill is safe there).
 func SetProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -23,66 +32,37 @@ func SetProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// ProcessCleanupEscalation — Unix: SIGINT (100ms) → SIGTERM (400ms) →
-// SIGKILL, each delivered to the whole process group, then a bounded
-// synchronous wait for the group to disappear so a follow-up spawn (Reconnect)
-// never races a dying tree over shared resources (profile locks).
-// Source: client.ts:1428-1557; group semantics are gbot's addition — the TS
-// original never needed them because node's child trees die with the parent.
-// Every stage is logged: "who killed the server" must be answerable from the
-// daemon log alone (2026-10-18 hunt was blind because kills left no trace).
-func ProcessCleanupEscalation(proc *os.Process, server string) {
-	if proc == nil {
-		return
-	}
-	pid := proc.Pid
-	if !treeExists(pid) {
-		return
-	}
-	slog.Info("mcp: killing server process tree", "server", server, "pid", pid)
+// processGroupApplied reports whether SetProcessGroup actually puts children
+// in a dedicated group on this platform. It seeds the transport's `detached`
+// flag (omp resolveStdioSpawnCommand's detached matrix): only a transport
+// that actually spawned into its own group may group-target its signals.
+func processGroupApplied() bool { return true }
 
-	// Step 1: SIGINT — Source: client.ts:1438-1439
-	signalTree(pid, syscall.SIGINT)
-	if waitTreeGone(pid, 100*time.Millisecond) {
-		return
+// signalStdio — omp stdio.ts signalStdioProcess:477-497. Group first when
+// detached; ESRCH from the group signal means the group is already gone — a
+// success, no fallback; any other group-signal failure (e.g. EPERM) falls
+// back to signaling the direct child. Non-detached signals the direct child
+// only: a negative-pid signal outside a dedicated group could hit an
+// unrelated process group.
+func (p *stdioProc) signalStdio(sig procSignal) {
+	s := syscall.SIGTERM
+	if sig == procSigKill {
+		s = syscall.SIGKILL
 	}
-
-	// Step 2: SIGTERM — Source: client.ts:1492-1493
-	slog.Warn("mcp: server tree survived SIGINT, escalating to SIGTERM", "server", server, "pid", pid)
-	signalTree(pid, syscall.SIGTERM)
-	if waitTreeGone(pid, 400*time.Millisecond) {
-		return
+	pid := p.cmd.Process.Pid
+	if p.detached {
+		if err := syscall.Kill(-pid, s); err == nil {
+			slog.Info("mcp: signaled stdio server process group", "server", p.name, "pgid", pid, "signal", s.String())
+			return
+		} else if err == syscall.ESRCH {
+			slog.Info("mcp: stdio server process group already gone", "server", p.name, "pgid", pid, "signal", s.String())
+			return
+		}
+		// Other group-signal failure: fall through to the direct child.
 	}
-
-	// Step 3: SIGKILL — Source: client.ts:1523-1524. The final wait is
-	// unconditional: callers respawn immediately after cleanup, and a
-	// lingering group member holding a resource (browser profile lock) turns
-	// every subsequent launch into "Browser is already in use".
-	slog.Warn("mcp: server tree survived SIGTERM, escalating to SIGKILL", "server", server, "pid", pid)
-	signalTree(pid, syscall.SIGKILL)
-	if !waitTreeGone(pid, 2*time.Second) {
-		slog.Error("mcp: server tree still alive after SIGKILL", "server", server, "pid", pid)
-	}
-}
-
-// signalTree delivers sig to the process itself and, when a dedicated group
-// exists, to every member. Signalling both keeps escalation effective for
-// spawns that predate SetProcessGroup (group signal returns ESRCH then).
-func signalTree(pid int, sig syscall.Signal) {
-	_ = syscall.Kill(pid, sig)
-	_ = syscall.Kill(-pid, sig)
-}
-
-// treeExists reports whether the process or any of its group members lives.
-// A dead top process with live descendants (mid-tree crash orphan) still
-// counts: those orphans are exactly what group cleanup must reach. Zombies
-// count as gone — an unreaped group leader would otherwise pin waitTreeGone
-// for its full budget.
-func treeExists(pid int) bool {
-	if syscall.Kill(pid, 0) == nil && !isZombie(pid) {
-		return true
-	}
-	return syscall.Kill(-pid, 0) == nil
+	// Already-gone errors are ignored — teardown must stay no-op-safe against
+	// an exited target across repeat calls (omp close() idempotency).
+	_ = syscall.Kill(pid, s)
 }
 
 // isZombie reads the process state on Linux; on systems without /proc it
@@ -114,36 +94,4 @@ func itoa(v int) string {
 		v /= 10
 	}
 	return string(buf[i:])
-}
-
-// waitTreeGone polls until both the process and its group are gone.
-func waitTreeGone(pid int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !treeExists(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return !treeExists(pid)
-}
-
-// processExists checks if a process with the given PID is still running.
-// Uses syscall.Kill(pid, 0) which checks existence without sending a signal.
-// Source: client.ts:1453 — process.kill(pid, 0)
-func processExists(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
-}
-
-// waitProcessGone polls until the process exits or timeout elapses.
-// Returns true if the process is gone within the timeout.
-func waitProcessGone(pid int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !processExists(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return !processExists(pid)
 }

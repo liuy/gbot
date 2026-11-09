@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -521,78 +519,6 @@ func TestAreMcpConfigsEqual(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ProcessCleanupEscalation — Source: client.ts:1428-1557
-// ---------------------------------------------------------------------------
-
-func TestProcessCleanupEscalation(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root, signal behavior differs")
-	}
-
-	// Start a long-running subprocess
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start process: %v", err)
-	}
-	pid := cmd.Process.Pid
-
-	// Verify process exists
-	if !processExists(pid) {
-		t.Fatal("process should exist")
-	}
-
-	// Run escalation — should terminate within ~500ms
-	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process, "test")
-	elapsed := time.Since(start)
-
-	// Reap the zombie so processExists reflects the true state
-	if err := cmd.Wait(); err == nil {
-		t.Fatalf("cmd.Wait should return error for killed process, got nil")
-	}
-
-	// Process should be gone
-	if processExists(pid) {
-		t.Error("process should be terminated after escalation")
-	}
-
-	// Should complete within reasonable time (< 2 seconds)
-	if elapsed > 2*time.Second {
-		t.Errorf("escalation took too long: %v", elapsed)
-	}
-
-	t.Logf("escalation completed in %v", elapsed)
-}
-
-func TestProcessCleanupEscalation_NilProcess(t *testing.T) {
-	// Should not panic on nil
-	ProcessCleanupEscalation(nil, "test")
-}
-
-func TestProcessCleanupEscalation_AlreadyDead(t *testing.T) {
-	// Start and wait for a short-lived process
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to run process: %v", err)
-	}
-
-	// Process is already dead — should return quickly without error
-	ProcessCleanupEscalation(cmd.Process, "test")
-}
-
-func TestProcessExists(t *testing.T) {
-	// Our own process should exist
-	if !processExists(os.Getpid()) {
-		t.Error("current process should exist")
-	}
-
-	// A very high PID should not exist
-	if processExists(999999999) {
-		t.Error("PID 999999999 should not exist")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // getConnectionTimeout — Source: client.ts:456-458
 // ---------------------------------------------------------------------------
 
@@ -749,7 +675,7 @@ func TestClientCompileTimeChecks(t *testing.T) {
 
 // ===========================================================================
 // Coverage: connectInner SDK connect failure, ConnectToServer cache hit with
-// error, ProcessCleanupEscalation signal escalation, processCleanupEscalation
+// error
 // ===========================================================================
 
 // TestClientManager_ConnectToServer_ConnectInnerSDKFail tests connectInner when
@@ -820,7 +746,7 @@ func (p *connectFailProvider) NewTransport(name string, cfg McpServerConfig, sco
 }
 
 // TestClientManager_connectInner_NoCmdProcess tests connectInner where the
-// transport is stdio but not a CommandTransport, so cmd is nil.
+// transport is stdio but not a *stdioProcTransport, so st is nil.
 func TestClientManager_connectInner_NoCmdProcess(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
@@ -888,155 +814,6 @@ func TestClientManager_connectInner_LongInstructions(t *testing.T) {
 	t.Skip("requires server that sends long instructions — covered by code review")
 }
 
-// TestProcessCleanupEscalation_SIGINTStopsProcess tests that SIGINT alone
-// is sufficient to stop a process that handles SIGINT.
-func TestProcessCleanupEscalation_SIGINTStopsProcess(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root")
-	}
-
-	// Start a process that handles SIGINT by exiting
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	pid := cmd.Process.Pid
-
-	ProcessCleanupEscalation(cmd.Process, "test")
-
-	// Reap zombie
-	if err := cmd.Wait(); err == nil {
-		t.Log("process exited cleanly")
-	}
-
-	if processExists(pid) {
-		t.Error("process should be terminated")
-	}
-}
-
-// TestProcessCleanupEscalation_SigTermPath tests the SIGTERM escalation
-// when a process doesn't respond to SIGINT quickly.
-func TestProcessCleanupEscalation_SigTermPath(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root")
-	}
-
-	// Use a process that ignores SIGINT but responds to SIGTERM
-	// sh -c 'trap "" INT; sleep 60' ignores SIGINT
-	cmd := exec.Command("sh", "-c", "trap '' INT; sleep 60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	pid := cmd.Process.Pid
-
-	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process, "test")
-	elapsed := time.Since(start)
-
-	if err := cmd.Wait(); err == nil {
-		t.Log("process exited cleanly")
-	}
-
-	if processExists(pid) {
-		t.Error("process should be terminated after SIGTERM")
-	}
-	t.Logf("SIGTERM escalation took %v", elapsed)
-}
-
-// TestProcessCleanupEscalation_SigKillPath tests the SIGKILL escalation
-// when a process ignores both SIGINT and SIGTERM.
-func TestProcessCleanupEscalation_SigKillPath(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root")
-	}
-
-	// Process that ignores both SIGINT and SIGTERM
-	cmd := exec.Command("sh", "-c", "trap '' INT TERM; sleep 60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	pid := cmd.Process.Pid
-
-	start := time.Now() // REAL-TIME: auth cache TTL / process timing
-	ProcessCleanupEscalation(cmd.Process, "test")
-	elapsed := time.Since(start)
-
-	if err := cmd.Wait(); err == nil {
-		t.Log("process exited cleanly")
-	}
-
-	if processExists(pid) {
-		t.Error("process should be terminated after SIGKILL")
-	}
-	t.Logf("SIGKILL escalation took %v", elapsed)
-	if elapsed > 2*time.Second {
-		t.Errorf("escalation took too long: %v", elapsed)
-	}
-}
-
-// TestProcessCleanupEscalation_Unexported tests the unexported
-// processCleanupEscalation wrapper function.
-func TestProcessCleanupEscalation_Unexported(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root")
-	}
-
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	pid := cmd.Process.Pid
-
-	// Call ProcessCleanupEscalation directly
-	ProcessCleanupEscalation(cmd.Process, "test")
-
-	if err := cmd.Wait(); err == nil {
-		t.Log("process exited cleanly")
-	}
-
-	if processExists(pid) {
-		t.Error("process should be terminated")
-	}
-}
-
-// TestWaitProcessGone_ProcessExists tests waitProcessGone when the process
-// is gone before the timeout.
-func TestWaitProcessGone_ProcessGone(t *testing.T) {
-	// Already-dead process
-	cmd := exec.Command("true")
-	_ = cmd.Run()
-
-	gone := waitProcessGone(cmd.Process.Pid, 100*time.Millisecond)
-	if !gone {
-		t.Error("should return true for already-dead process")
-	}
-}
-
-// TestWaitProcessGone_ProcessStillRunning tests waitProcessGone when the
-// process is still running and we wait for timeout.
-func TestWaitProcessGone_ProcessStillRunning(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: running as root")
-	}
-
-	cmd := exec.Command("sh", "-c", "trap '' INT TERM; sleep 10")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	// Very short timeout — process is still running
-	gone := waitProcessGone(cmd.Process.Pid, 5*time.Millisecond)
-	if gone {
-		t.Error("should return false when process is still running")
-	}
-
-	// Clean up
-	_ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)
-	if err := cmd.Wait(); err == nil {
-		t.Log("process exited cleanly")
-	}
-}
-
 // TestClientManager_ConnectToServer_ConcurrentErrorCacheHit tests the path
 // where a second caller hits the cache while the first is still connecting,
 // and the first connection fails with an error.
@@ -1077,18 +854,20 @@ func TestClientManager_ConnectToServer_ConcurrentErrorCacheHit(t *testing.T) {
 	}
 }
 
-// TestClientManager_connectInner_StdioNoCommandTransport tests the path where
-// the config is stdio but transport is not a CommandTransport (cmd stays nil).
-func TestClientManager_connectInner_StdioNoCommandTransport(t *testing.T) {
+// TestClientManager_connectInner_StdioNoStdioProcTransport tests the path
+// where the config is stdio but the transport is not a *stdioProcTransport
+// (in-memory transports from test providers), so st stays nil and the
+// cleanup closure is session.Close only.
+func TestClientManager_connectInner_StdioNoStdioProcTransport(t *testing.T) {
 	// Already tested above via countingProvider which returns in-memory transport
-	// The cleanup function checks cmd != nil && cmd.Process != nil
-	// Since cmd is nil for non-CommandTransport, it just calls session.Close()
+	// The cleanup function checks st != nil
+	// Since st is nil for non-stdio transports, it just calls session.Close()
 	// This is covered by TestClientManager_connectInner_NoCmdProcess
 }
 
 // ===========================================================================
 // Coverage: ConnectToServer cache hit with discovery error,
-// connectInner nil init result, ProcessCleanupEscalation with nil init result
+// connectInner nil init result
 // ===========================================================================
 
 // --- ConnectToServer: cache hit with discovery error (entry.err != nil) ---

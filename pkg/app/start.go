@@ -57,6 +57,47 @@ func buildModelThinking(cfg *config.Config) map[string]llm.Effort {
 // Start performs full initialization: config loading, provider setup,
 // engine restore, WeChat connectors, and WUI wiring. It returns an
 // Instance holding everything RunTUI() or the Wails GUI needs.
+// handleDaemonSignal is the signal-exit goroutine's body: load the
+// late-wired closes (nil until their Store, or when the Load type-assert
+// fails), run the ordered pre-exit actions, honor the handover/step-down PID
+// gate, then exit through the osExit seam. Extracted so the seam loads and
+// the gate are unit-testable — the goroutine itself only adds the signal
+// wait; verified live by the manual kill -TERM/kill -9 post-install smoke.
+func handleDaemonSignal(supervisedClose, mcpExitClose *atomic.Value, dreamCancel context.CancelFunc, pidCleanup func()) {
+	mcpClose := func() {}
+	if f, ok := mcpExitClose.Load().(func()); ok && f != nil {
+		mcpClose = f
+	}
+	closeWS := func() {
+		if f, ok := supervisedClose.Load().(func()); ok && f != nil {
+			f()
+		}
+	}
+	signalExitActions(dreamCancel, closeWS, mcpClose)
+	if !handedOver.Load() && !steppedDown.Load() {
+		pidCleanup()
+	}
+	osExit(0)
+}
+
+// signalExitActions runs the daemon's pre-exit steps on SIGINT/SIGTERM, in
+// order: dream cancel (stops new ticks), the supervised WS close (1012 close
+// frame to the browser), then the MCP registry close (stdio server process
+// tree teardown — the most destructive step last, when nothing else needs
+// the subprocesses). All slots nil-guarded: before the late wires exist the
+// corresponding step is a no-op.
+func signalExitActions(dreamCancel context.CancelFunc, closeWS, mcpClose func()) {
+	if dreamCancel != nil {
+		dreamCancel()
+	}
+	if closeWS != nil {
+		closeWS()
+	}
+	if mcpClose != nil {
+		mcpClose()
+	}
+}
+
 // The caller handles the WeChat login subcommand before calling Start.
 func Start(opts Options) (*Instance, error) {
 	var mediaStores []*media.Store
@@ -93,18 +134,14 @@ func Start(opts Options) (*Instance, error) {
 	// only later in the boot; TERM before that just exits (nothing to
 	// notify yet — same as pre-existing behavior).
 	var supervisedClose atomic.Value // func()
+	// Late-wired like supervisedClose: the MCP registry exists before the
+	// env holder is built, but the signal goroutine can only read the close
+	// through this seam. os.Exit skips Instance.Cleanup, so without this a
+	// SIGTERM/SIGINT exit leaks every stdio server process tree.
+	var mcpExitClose atomic.Value // func()
 	go func() {
 		<-sigCh
-		if dreamCancel != nil {
-			dreamCancel()
-		}
-		if closeWS, ok := supervisedClose.Load().(func()); ok && closeWS != nil {
-			closeWS()
-		}
-		if !handedOver.Load() && !steppedDown.Load() {
-			pidCleanup()
-		}
-		os.Exit(0)
+		handleDaemonSignal(&supervisedClose, &mcpExitClose, dreamCancel, pidCleanup)
 	}()
 
 	logLevel := slog.LevelInfo
@@ -350,6 +387,10 @@ func Start(opts Options) (*Instance, error) {
 		PermissionChecker:  permCheckerIface,
 		McpReg:             mcpRegistry,
 	})
+	// The signal-exit goroutine closes the registry through this seam —
+	// Registry.Close is Once-idempotent, so this and a deferred Instance
+	// Cleanup close never double-teardown.
+	mcpExitClose.Store(mcpCloseFromHolder(holder))
 
 	// Both the startup prompt and every later refresh are built from the same
 	// construction-time workingDir. That is deliberate and is the same bug
@@ -757,7 +798,7 @@ func Start(opts Options) (*Instance, error) {
 			if err := upg.Ready(); err != nil {
 				return nil, fmt.Errorf("upgrade ready: %w", err)
 			}
-			go watchUpgradeExit(upg, srv, wc, dreamCancel, dreamDone, store)
+			go watchUpgradeExit(upg, srv, wc, dreamCancel, dreamDone, store, mcpCloseFromHolder(holder))
 		}
 	}
 

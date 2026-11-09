@@ -37,9 +37,6 @@ func mustLRU[K comparable, V any](capacity int) *lru.Cache[K, V] {
 // ---------------------------------------------------------------------------
 
 var (
-	// shutdownGracePeriod is the time to wait for graceful shutdown before forcing.
-	shutdownGracePeriod = 5 * time.Second
-
 	// reconnectMinBackoff is the minimum backoff for ScheduleReconnect (tests can override).
 	reconnectMinBackoff = time.Duration(InitialBackoffMs) * time.Millisecond
 )
@@ -92,7 +89,7 @@ func (r *Registry) snapshotCallbacks() ChangeCallbacks {
 //   - Reconnect       → useManageMCPConnections.ts:1046-1070 + client.ts:2137-2214
 //   - Disconnect      → useManageMCPConnections.ts:810 + client.ts:1648-1673
 //   - ToggleServer    → useManageMCPConnections.ts:1074-1107
-//   - Close           → useManageMCPConnections.ts:1027-1041 + client.ts:1404-1581
+//   - Close           → client.ts:1404-1581 (per-server teardown; registry just awaits)
 //   - list_changed    → useManageMCPConnections.ts:617-751
 // ---------------------------------------------------------------------------
 
@@ -586,14 +583,25 @@ func (r *Registry) GetConfigs() map[string]ScopedMcpServerConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Close — Two-phase shutdown
-// Source: useManageMCPConnections.ts:1027-1041 + client.ts:1404-1581
+// Close — two-phase shutdown
+// Source: client.ts:1404-1581 — per-server cleanup with process teardown
 //
-// Phase 1: Notify all servers to close gracefully (call Close on each)
-// Phase 2: After shutdownGracePeriod (5s), force kill any remaining
+// Phase 1: Notify all servers to close gracefully in parallel, each wait
+// individually bounded by perServerCloseBound.
+// Phase 2: Await every bounded waiter — no registry-level grace clock, like
+// omp's manager: each transport's close is self-bounded, the manager just
+// awaits them.
 //
 // Uses sync.Once to ensure Close is idempotent.
 // ---------------------------------------------------------------------------
+
+// perServerCloseBound caps the registry's wait on a single server's Close().
+// session.Close can hang indefinitely (jsonrpc2 waits for in-flight requests
+// with no internal timeout of its own), so without this bound one hung server
+// stalls the entire registry shutdown. Abandoning the wait does not cancel the
+// background kill chain — the abandoned Close() keeps running in its own
+// goroutine, and the transport's omp five-step close still tears it down.
+const perServerCloseBound = 1 * time.Second
 
 // Agent-specific MCP server connections
 // Source: runAgent.ts:95-218 — initializeAgentMcpServers
@@ -804,11 +812,11 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 }
 
 // Close performs a two-phase shutdown of all MCP server connections.
-// Source: useManageMCPConnections.ts:1027-1041 — cleanup effect
 //
-// Phase 1: Sends close signals to all connected servers in parallel.
-// Phase 2: Waits up to shutdownGracePeriod (5s) for graceful shutdown,
-// then forces remaining processes to terminate.
+// Phase 1: Sends close signals to all connected servers in parallel, each
+// wait capped by perServerCloseBound.
+// Phase 2: Awaits the bounded waiters — no registry-level grace clock; the
+// transports' own closes are self-bounded (omp manager semantics).
 // Safe to call multiple times (sync.Once).
 func (r *Registry) Close() error {
 	var err error
@@ -850,7 +858,7 @@ func (r *Registry) closeInner() error {
 	}
 
 	// Phase 1: Notify all servers to close gracefully in parallel
-	// Source: client.ts:1404-1426 — cleanup function with process escalation
+	// Source: client.ts:1404-1426 — cleanup function with process teardown
 	done := make(chan struct{}, len(connected))
 	for _, cs := range connected {
 		go func(s *ConnectedServer) {
@@ -858,29 +866,21 @@ func (r *Registry) closeInner() error {
 			go func() { closeCh <- s.Close() }()
 			select {
 			case <-closeCh:
-			case <-time.After(5 * time.Second):
-				// Server Close() timed out, continue shutdown
+			case <-time.After(perServerCloseBound):
+				// Hung session.Close: abandon THIS wait only. The Close() in
+				// the inner goroutine keeps running its kill chain.
 			}
 			done <- struct{}{}
 		}(cs)
 	}
 
-	// Phase 2: Wait for graceful shutdown with timeout
-	// Source: useManageMCPConnections.ts:1027-1041 — cleanup on unmount
+	// Phase 2: Await every bounded per-server waiter. No registry-level grace
+	// clock — like omp's manager: each transport's close is self-bounded, the
+	// manager just awaits them.
 	remaining := len(connected)
-	timer := time.NewTimer(shutdownGracePeriod)
-	defer timer.Stop()
-
 	for remaining > 0 {
-		select {
-		case <-done:
-			remaining--
-		case <-timer.C:
-			// Graceful period elapsed — remaining servers are force-killed
-			// by their cleanup escalation (SIGINT→SIGTERM→SIGKILL)
-			// The Close() on each ConnectedServer already handles escalation.
-			return fmt.Errorf("mcp: registry shutdown: %d server(s) did not close within %v", remaining, shutdownGracePeriod)
-		}
+		<-done
+		remaining--
 	}
 
 	return nil

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type captureHandler struct {
@@ -143,14 +141,14 @@ func TestNewStdioTransportWiresStderrLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newStdioTransport: %v", err)
 	}
-	ct, ok := tr.(*mcp.CommandTransport)
+	st, ok := tr.(*stdioProcTransport)
 	if !ok {
-		t.Fatalf("transport type = %T, want *mcp.CommandTransport", tr)
+		t.Fatalf("transport type = %T, want *stdioProcTransport", tr)
 	}
-	if _, ok := ct.Command.Stderr.(*stderrLineLogger); !ok {
-		t.Fatalf("Command.Stderr = %T, want *stderrLineLogger", ct.Command.Stderr)
+	if _, ok := st.cmd.Stderr.(*stderrLineLogger); !ok {
+		t.Fatalf("Command.Stderr = %T, want *stderrLineLogger", st.cmd.Stderr)
 	}
-	if ct.Command.SysProcAttr == nil || !ct.Command.SysProcAttr.Setpgid {
-		t.Fatal("Command must start its own process group (Setpgid) so cleanup can reap the whole tree")
+	if st.cmd.SysProcAttr == nil || !st.cmd.SysProcAttr.Setpgid {
+		t.Fatal("Command must start its own process group (Setpgid) so teardown can reap the whole tree")
 	}
 }

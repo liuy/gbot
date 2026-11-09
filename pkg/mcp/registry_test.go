@@ -1311,7 +1311,7 @@ func TestRegistry_Disconnect_WithReconnectTimer(t *testing.T) {
 }
 
 // TestRegistry_Close_SlowServer tests closeInner when a server's Close
-// takes a bit of time but within grace period.
+// takes a bit of time but within the per-server close bound.
 func TestRegistry_Close_SlowServer(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
@@ -1338,69 +1338,6 @@ func TestRegistry_Close_SlowServer(t *testing.T) {
 	if err != nil {
 		t.Errorf("Close with slow server: %v", err)
 	}
-}
-
-// TestRegistry_Close_TimedOutServer tests closeInner when servers don't
-// close within the grace period, returning an error.
-func TestRegistry_Close_TimedOutServer(t *testing.T) {
-	origGrace := shutdownGracePeriod
-	shutdownGracePeriod = 50 * time.Millisecond
-	defer func() { shutdownGracePeriod = origGrace }()
-
-	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true, "")
-
-	r := &Registry{
-		manager:         mgr,
-		configs:         make(map[string]ScopedMcpServerConfig),
-		connections:     make(map[string]ServerConnection),
-		disabled:        make(map[string]bool),
-		toolCache:       mustLRU[string, []DiscoveredTool](fetchCacheCapacity),
-		resourceCache:   mustLRU[string, []ServerResource](fetchCacheCapacity),
-		commandCache:    mustLRU[string, []MCPCommand](fetchCacheCapacity),
-		reconnectTimers: make(map[string]*time.Timer),
-		ctx:             context.Background(),
-		cancel:          func() {},
-	}
-
-	cfg := ScopedMcpServerConfig{
-		Config: &StdioConfig{Command: "test-cmd"},
-		Scope:  ScopeUser,
-	}
-
-	r.mu.Lock()
-	r.configs["srv"] = cfg
-	// Signal for the blocking Cleanup to return after Close() times out.
-	cleanupRelease := make(chan struct{})
-	r.connections["srv"] = &ConnectedServer{
-		Name:   "srv",
-		Config: cfg,
-		Cleanup: func() error {
-			<-cleanupRelease
-			return nil
-		},
-	}
-	r.mu.Unlock()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- r.Close()
-	}()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Log("Close completed without error (server closed within grace period)")
-		} else if !strings.Contains(err.Error(), "did not close") {
-			t.Errorf("error should mention servers not closing, got: %v", err)
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("Close() took too long — test timeout exceeded")
-	}
-	close(cleanupRelease)
-	// Give the orphaned closeInner goroutine time to observe cleanupRelease
-	// and exit before goleak checks for leaked goroutines. // REAL-TIME
-	time.Sleep(100 * time.Millisecond)
 }
 
 // TestRegistry_ScheduleReconnect_TimerFiresAndFails tests that when the

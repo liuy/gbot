@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -68,7 +67,7 @@ type cacheEntry struct {
 // Manages connection lifecycle with:
 //   - Single-flight memoization (cacheEntry)
 //   - Auth cache (15-min TTL, skips reconnection for recently auth-failed servers)
-//   - Process cleanup escalation for stdio servers (SIGINT→SIGTERM→SIGKILL)
+//   - Process-group teardown for stdio servers (omp five-step close)
 // ---------------------------------------------------------------------------
 
 // ClientManager manages per-server MCP client connections with memoization.
@@ -277,8 +276,22 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Grab the owning transport before connecting: every stdio failure path
+	// below (handshake error, unsupported protocol version) must tear the
+	// process group down — the SDK's close signals only the direct child.
+	var st *stdioProcTransport
+	if serverRef.Config.GetTransport() == TransportStdio {
+		st, _ = transport.(*stdioProcTransport)
+	}
+
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		if st != nil {
+			// Covers the SDK paths that return without closing the connection
+			// (e.g. unsupported protocol version) and is idempotent for the
+			// ones that already closed via stdioProcConn.Close.
+			st.Teardown()
+		}
 		return &FailedServer{Name: name, Config: serverRef, Error: err.Error()}, nil
 	}
 
@@ -305,18 +318,16 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 		instructions = instructions[:MaxMCPDescriptionLength] + "… [truncated]"
 	}
 
-	// Source: client.ts:1404-1581 — cleanup function with process escalation for stdio
-	var cmd *exec.Cmd
-	if serverRef.Config.GetTransport() == TransportStdio {
-		if ct, ok := transport.(*mcp.CommandTransport); ok {
-			cmd = ct.Command
-		}
-	}
-
+	// Source: client.ts:1404-1581 — cleanup function with process teardown for
+	// stdio. Sequence source: omp stdio.ts close() (see stdio_lifecycle.go).
 	cleanup := func() error {
-		// Source: client.ts:1426-1557 — process cleanup escalation for stdio
-		if cmd != nil && cmd.Process != nil {
-			ProcessCleanupEscalation(cmd.Process, name)
+		if st != nil {
+			// Kill first: jsonrpc2's graceful Close waits for in-flight
+			// requests, which against a hung server parks indefinitely.
+			// A dead process fails them fast and session.Close returns
+			// promptly. session.Close re-enters Teardown via the connection
+			// Close — a no-op through the grab-and-null.
+			st.Teardown()
 		}
 		return session.Close()
 	}
@@ -554,29 +565,13 @@ func getConnectionTimeout() time.Duration {
 }
 
 // ---------------------------------------------------------------------------
-// Process cleanup escalation — Source: client.ts:1426-1557
+// Process teardown — Source: omp stdio.ts close()/terminateStdioProcess
 //
-// For stdio servers: after closing the transport, ensure the child process
-// terminates. Some MCP servers (especially Docker containers) ignore the
-// SDK's close signal, so we escalate:
-//   1. SIGINT (Ctrl+C — graceful)
-//   2. SIGTERM (after 100ms — force graceful)
-//   3. SIGKILL (after 400ms — uncatchable)
-//
-// Total max: ~500ms. Source: client.ts:1445 — "rapid escalation to keep CLI responsive"
-// ---------------------------------------------------------------------------
-// Process cleanup escalation — Source: client.ts:1426-1557
-//
-// For stdio servers: after closing the transport, ensure the child process
-// terminates. Some MCP servers (especially Docker containers) ignore the
-// SDK's close signal, so we escalate:
-//   1. SIGINT (Ctrl+C — graceful)
-//   2. SIGTERM (after 100ms — force graceful)
-//   3. SIGKILL (after 400ms — uncatchable)
-//
-// Platform-specific implementations live in process_unix.go and
-// process_windows.go — Windows has no signal concept so it goes straight
-// to TerminateProcess.
+// For stdio servers: the transport's Teardown runs the omp five-step close
+// (stdin EOF → group SIGTERM → grace → group SIGKILL sweep → conditional
+// grace) on every connection-closing path. Platform-specific signaling lives
+// in process_unix.go / process_windows.go; the sequence itself in
+// stdio_lifecycle.go.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

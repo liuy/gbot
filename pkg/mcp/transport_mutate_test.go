@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Zoned IP literals are the only way to drive ssrfDialContext's post-lookup
@@ -32,14 +30,14 @@ func stdioCommand(t *testing.T, cfg *StdioConfig) *exec.Cmd {
 	if err != nil {
 		t.Fatalf("newStdioTransport: %v", err)
 	}
-	ct, ok := tr.(*mcp.CommandTransport)
+	st, ok := tr.(*stdioProcTransport)
 	if !ok {
-		t.Fatalf("transport = %T, want *mcp.CommandTransport", tr)
+		t.Fatalf("transport = %T, want *stdioProcTransport", tr)
 	}
-	if ct.Command == nil {
-		t.Fatal("CommandTransport.Command is nil")
+	if st.cmd == nil {
+		t.Fatal("stdioProcTransport.cmd is nil")
 	}
-	return ct.Command
+	return st.cmd
 }
 
 func envHas(env []string, want string) bool {

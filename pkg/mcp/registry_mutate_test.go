@@ -270,12 +270,12 @@ func lockFreesWithin(t *testing.T, r *Registry, timeout time.Duration) {
 }
 
 // ---------------------------------------------------------------------------
-// Reconnection constants (registry.go:41, 575; discovery drain const 1238)
+// Default constants (perServerCloseBound, agentServerConnectTimeout, drainPollInterval)
 // ---------------------------------------------------------------------------
 
 func TestRegistryDefaultConstantsExact(t *testing.T) {
-	if shutdownGracePeriod != 5*time.Second {
-		t.Errorf("shutdownGracePeriod = %v, want 5s", shutdownGracePeriod)
+	if perServerCloseBound != 1*time.Second {
+		t.Errorf("perServerCloseBound = %v, want 1s", perServerCloseBound)
 	}
 	if agentServerConnectTimeout != 30*time.Second {
 		t.Errorf("agentServerConnectTimeout = %v, want 30s", agentServerConnectTimeout)
@@ -854,7 +854,7 @@ func TestCloseWaitsForServerCleanupWithinPerServerCap(t *testing.T) {
 		Name:   "srv",
 		Config: cfg,
 		Cleanup: func() error {
-			time.Sleep(200 * time.Millisecond) // REAL-TIME: slow Close, well inside the 5s cap
+			time.Sleep(200 * time.Millisecond) // REAL-TIME: slow Close, well inside the 1s cap
 			cleaned.Add(1)
 			return nil
 		},
@@ -875,28 +875,25 @@ func TestCloseWaitsForServerCleanupWithinPerServerCap(t *testing.T) {
 		t.Fatalf("cleanup ran %d times, want 1", cleaned.Load())
 	}
 	if elapsed < 150*time.Millisecond {
-		t.Fatalf("Close returned after %v; per-server 5s close wait was skipped", elapsed)
+		t.Fatalf("Close returned after %v; per-server 1s close wait was skipped", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > 800*time.Millisecond {
 		t.Fatalf("Close took %v with a 200ms cleanup — it waited the full per-server cap", elapsed)
 	}
 }
 
-func TestClosePerServerCapDurationIsFiveSeconds(t *testing.T) {
-	// 4.5s cleanup：cap=5s 时等 closeCh（elapsed≈4.5s）；cap 变 4s 则 4s 截断。
-	t.Run("cap not shortened", func(t *testing.T) {
+func TestClosePerServerCapDurationIsOneSecond(t *testing.T) {
+	// 500ms cleanup：短于 1s cap，closeCh 先到（elapsed≈500ms）；若误改成
+	// 无条件等满 cap 则 elapsed≈1s。
+	t.Run("completes when cleanup beats the cap", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			origGrace := shutdownGracePeriod
-			shutdownGracePeriod = 6 * time.Second
-			defer func() { shutdownGracePeriod = origGrace }()
-
 			r, _ := newTestRegistry(ChangeCallbacks{})
 			cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "c"}, Scope: ScopeUser}
 			r.mu.Lock()
 			r.configs["srv"] = cfg
 			r.connections["srv"] = &ConnectedServer{
 				Name: "srv", Config: cfg,
-				Cleanup: func() error { time.Sleep(4500 * time.Millisecond); return nil },
+				Cleanup: func() error { time.Sleep(500 * time.Millisecond); return nil },
 			}
 			r.mu.Unlock()
 
@@ -904,25 +901,24 @@ func TestClosePerServerCapDurationIsFiveSeconds(t *testing.T) {
 			if err := r.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			if d := time.Since(start); d < 4400*time.Millisecond {
-				t.Fatalf("Close returned after %v; the per-server cap fired before the 4.5s cleanup finished", d)
+			if d := time.Since(start); d >= 900*time.Millisecond {
+				t.Fatalf("Close returned after %v; the cap fired before the 500ms cleanup finished", d)
+			}
+			if d := time.Since(start); d < 450*time.Millisecond {
+				t.Fatalf("Close returned after %v; the 500ms cleanup was not awaited", d)
 			}
 		})
 	})
-	// 5.2s cleanup：cap=5s 时 5s 截断（elapsed≈5s）；cap 变 6s 则等满 5.2s。
-	t.Run("cap not lengthened", func(t *testing.T) {
+	// 1.5s cleanup：超过 1s cap，cap 截断（elapsed≈1s）；cap 变 2s 则等满 1.5s。
+	t.Run("truncates a too-slow close at 1s", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			origGrace := shutdownGracePeriod
-			shutdownGracePeriod = 6 * time.Second
-			defer func() { shutdownGracePeriod = origGrace }()
-
 			r, _ := newTestRegistry(ChangeCallbacks{})
 			cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "c"}, Scope: ScopeUser}
 			r.mu.Lock()
 			r.configs["srv"] = cfg
 			r.connections["srv"] = &ConnectedServer{
 				Name: "srv", Config: cfg,
-				Cleanup: func() error { time.Sleep(5200 * time.Millisecond); return nil },
+				Cleanup: func() error { time.Sleep(1500 * time.Millisecond); return nil },
 			}
 			r.mu.Unlock()
 
@@ -930,25 +926,26 @@ func TestClosePerServerCapDurationIsFiveSeconds(t *testing.T) {
 			if err := r.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			if d := time.Since(start); d >= 5100*time.Millisecond {
-				t.Fatalf("Close returned after %v; per-server cap did not cut off at 5s", d)
+			if d := time.Since(start); d < 900*time.Millisecond {
+				t.Fatalf("Close returned after %v; the cap fired before 1s", d)
 			}
-			// 5s 截断后 cleanup goroutine 还在虚拟睡眠——排空再退出 bubble。
-			time.Sleep(300 * time.Millisecond)
+			if d := time.Since(start); d >= 1400*time.Millisecond {
+				t.Fatalf("Close returned after %v; the cap did not cut off a 1.5s cleanup", d)
+			}
+			// 1s 截断后 cleanup goroutine 还剩 500ms 虚拟睡眠——推钟过 1.5s
+			// 再 Wait 排空（Wait 不为挂起的虚拟睡眠推钟）。
+			time.Sleep(600 * time.Millisecond)
 			synctest.Wait()
 		})
 	})
 }
 
 func TestClosePerServerCapBoundsWaitEvenWhenServerNeverCloses(t *testing.T) {
-	// synctest 气泡：closeInner 的 per-server 5s cap 与 grace 全部走虚拟钟，
-	// 零真实等待。cap 分支被删则唯一的 select 分支是 closeCh（cleanup 永不
-	// 返回）→ 只能撞 grace 超时报错，err 非 nil 即为红。
+	// synctest 气泡：closeInner 的 per-server 1s cap 走虚拟钟，零真实等待。
+	// cap 分支被删则唯一的 select 分支是 closeCh（cleanup 永不返回）→ Close
+	// 挂死、气泡超时即红。Phase 2 已无 grace 时钟：永不关闭的服务器必须得到
+	// nil error 且在 ~1s 截断返回。
 	synctest.Test(t, func(t *testing.T) {
-		origGrace := shutdownGracePeriod
-		shutdownGracePeriod = 6 * time.Second // must exceed the per-server 5s cap
-		defer func() { shutdownGracePeriod = origGrace }()
-
 		r, _ := newTestRegistry(ChangeCallbacks{})
 		release := make(chan struct{})
 		cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "c"}, Scope: ScopeUser}
@@ -966,48 +963,21 @@ func TestClosePerServerCapBoundsWaitEvenWhenServerNeverCloses(t *testing.T) {
 
 		start := time.Now()
 		if err := r.Close(); err != nil {
-			t.Fatalf("Close: %v — the per-server cap must let shutdown finish", err)
+			t.Fatalf("Close: %v — a hung server is truncated by the cap, not an error", err)
 		}
-		if d := time.Since(start); d < 4900*time.Millisecond {
+		d := time.Since(start)
+		if d < 900*time.Millisecond {
 			t.Fatalf("Close returned after %v; the per-server cap did not bound the hung server", d)
 		}
+		if d >= 1100*time.Millisecond {
+			t.Fatalf("Close returned after %v; the per-server cap did not fire at 1s", d)
+		}
 
-		// 5s 截断后 cleanup goroutine 还停在 release 上——放行再退出 bubble。
+		// 1s 截断后 cleanup goroutine 还停在 release 上——放行再退出 bubble。
 		close(release)
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
 	})
-}
-
-func TestCloseTimesOutWithErrorWhenServerNeverCloses(t *testing.T) {
-	origGrace := shutdownGracePeriod
-	shutdownGracePeriod = 200 * time.Millisecond
-	defer func() { shutdownGracePeriod = origGrace }()
-
-	r, _ := newTestRegistry(ChangeCallbacks{})
-	release := make(chan struct{})
-	cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "c"}, Scope: ScopeUser}
-	r.mu.Lock()
-	r.configs["srv"] = cfg
-	r.connections["srv"] = &ConnectedServer{
-		Name:   "srv",
-		Config: cfg,
-		Cleanup: func() error {
-			<-release // REAL-TIME
-			return nil
-		},
-	}
-	r.mu.Unlock()
-
-	err := r.Close()
-	close(release)
-	time.Sleep(100 * time.Millisecond) // REAL-TIME: drain parked goroutines
-	if err == nil {
-		t.Fatal("Close must report an error when a server outlives the grace period")
-	}
-	if !strings.Contains(err.Error(), "did not close") {
-		t.Errorf("error = %v, want 'did not close'", err)
-	}
 }
 
 // ---------------------------------------------------------------------------

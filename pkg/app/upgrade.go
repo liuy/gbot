@@ -156,7 +156,11 @@ var dreamJoinTimeout = 3 * time.Second
 // deliberately NOT closed either — crash semantics; see the comment at the
 // exit below. (The store param stays unused on purpose: the red-check —
 // reintroducing Close here — stays a one-line diff at this seam.)
-func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, dreamCancel context.CancelFunc, dreamDone <-chan struct{}, store *short.Store) {
+// mcpClose tears down the MCP registry's process trees: this parent's
+// os.Exit skips Instance.Cleanup, so without it the handover orphans every
+// stdio server tree (the child builds its own registry; this one's children
+// are no one's to reap).
+func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, dreamCancel context.CancelFunc, dreamDone <-chan struct{}, store *short.Store, mcpClose func()) {
 	<-upg.Exit()
 	handedOver.Store(true)
 	if dreamCancel != nil {
@@ -183,6 +187,12 @@ func watchUpgradeExit(upg Upgrader, srv *http.Server, wc *wui.WUIConnector, drea
 		_ = srv.Close()
 	}
 	cancel()
+	// Registry close after the HTTP drain: teardown kills the stdio server
+	// trees, and in-flight requests that depended on MCP tools must have
+	// finished first.
+	if mcpClose != nil {
+		mcpClose()
+	}
 	// Deliberately NOT closing the store here: the upgraded child opened
 	// the same database before this parent's upg.Exit() fired, so a Close
 	// would checkpoint and DELETE the -wal/-shm out from under its live

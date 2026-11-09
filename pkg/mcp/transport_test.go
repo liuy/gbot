@@ -389,13 +389,16 @@ func TestNewTransport_Stdio_Trusted(t *testing.T) {
 	if transport == nil {
 		t.Fatal("NewTransport(stdio, trusted) returned nil transport")
 	}
-	// Verify it's a CommandTransport
-	ct, ok := transport.(*mcp.CommandTransport)
+	// Verify it's a stdioProcTransport
+	st, ok := transport.(*stdioProcTransport)
 	if !ok {
-		t.Fatal("expected *mcp.CommandTransport")
+		t.Fatal("expected *stdioProcTransport")
 	}
-	if ct.Command == nil {
-		t.Fatal("CommandTransport.Command is nil")
+	if st.cmd == nil {
+		t.Fatal("stdioProcTransport.cmd is nil")
+	}
+	if !st.detached {
+		t.Fatal("stdioProcTransport.detached = false, want true on unix")
 	}
 }
 
@@ -445,11 +448,11 @@ func TestNewTransport_Stdio_Env(t *testing.T) {
 		Command: "echo",
 		Env:     map[string]string{"FOO": "bar", "BAZ": "qux"},
 	}
-	ct, ok := factoryNewCommandTransport(t, factory, cfg, ScopeUser, true)
+	st, ok := factoryNewStdioProcTransport(t, factory, cfg, ScopeUser, true)
 	if !ok {
 		return
 	}
-	cmd := ct.Command
+	cmd := st.cmd
 	found := 0
 	for _, e := range cmd.Env {
 		if e == "FOO=bar" || e == "BAZ=qux" {
@@ -461,20 +464,20 @@ func TestNewTransport_Stdio_Env(t *testing.T) {
 	}
 }
 
-// Helper to extract CommandTransport from factory.
-func factoryNewCommandTransport(t *testing.T, factory TransportFactory, cfg *StdioConfig, scope ConfigScope, trusted bool) (*mcp.CommandTransport, bool) {
+// Helper to extract stdioProcTransport from factory.
+func factoryNewStdioProcTransport(t *testing.T, factory TransportFactory, cfg *StdioConfig, scope ConfigScope, trusted bool) (*stdioProcTransport, bool) {
 	t.Helper()
 	transport, err := factory.NewTransport("test", cfg, scope, trusted)
 	if err != nil {
 		t.Fatalf("NewTransport() = %v", err)
 		return nil, false
 	}
-	ct, ok := transport.(*mcp.CommandTransport)
+	st, ok := transport.(*stdioProcTransport)
 	if !ok {
-		t.Fatal("expected *mcp.CommandTransport")
+		t.Fatal("expected *stdioProcTransport")
 		return nil, false
 	}
-	return ct, true
+	return st, true
 }
 
 func TestNewTransport_SSE(t *testing.T) {
