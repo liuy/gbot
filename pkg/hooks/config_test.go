@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -529,5 +530,33 @@ func writeSettingsFile(t *testing.T, path string, content map[string]any) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestMergeHooksFromFile_BadInputs(t *testing.T) {
+	dir := t.TempDir()
+	base := HooksConfig{}
+	missing := filepath.Join(dir, "missing.json")
+	if got := mergeHooksFromFile(base, missing); len(got) != len(base) {
+		t.Errorf("rules from a missing file = %d, want unchanged", len(got))
+	}
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte("{nope"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := mergeHooksFromFile(base, bad); len(got) != len(base) {
+		t.Errorf("rules from malformed JSON = %d, want unchanged", len(got))
+	}
+	nullHooks := filepath.Join(dir, "null.json")
+	if err := os.WriteFile(nullHooks, []byte(`{"hooks":null}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := mergeHooksFromFile(base, nullHooks); len(got) != len(base) {
+		t.Errorf("rules with hooks:null = %d, want unchanged", len(got))
+	}
+	if err := readJSONFile(filepath.Join(dir, "nope.json"), &struct{}{}); err == nil {
+		t.Error("readJSONFile on a missing file returned no error")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("missing-file error = %v, want it to wrap os.ErrNotExist", err)
 	}
 }

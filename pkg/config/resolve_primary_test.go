@@ -69,6 +69,37 @@ func TestResolvePrimary_ErrorPaths(t *testing.T) {
 	}
 }
 
+// TestResolvePrimary_KeylessProviderSurvivesSibling pins the shape that keeps
+// app's resolvePrimaryProvider guard from being dead code: CreateAllProviders
+// skips the keyless provider but a sibling keeps the map non-empty, so the
+// boot path reaches ResolvePrimary with a nil error and a missing entry.
+func TestResolvePrimary_KeylessProviderSurvivesSibling(t *testing.T) {
+	cfg := &Config{
+		Model: ModelSpec{"default": "p2/m2"},
+		Providers: []Provider{
+			{Name: "p1", URL: "http://127.0.0.1:1", Keys: []string{"k1"}, Models: newModelSet("m1")},
+			{Name: "p2", URL: "http://127.0.0.1:2", Keys: []string{"$GBOT_PIN_UNSET_KEY"}, Models: newModelSet("m2")},
+		},
+	}
+	pm, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	if len(pm) != 1 {
+		t.Fatalf("providerMap has %d entries (%v), want only p1", len(pm), pm)
+	}
+	if _, ok := pm["p1"]; !ok {
+		t.Fatalf("providerMap = %v, want p1", pm)
+	}
+	_, _, _, err = cfg.ResolvePrimary(pm)
+	if err == nil {
+		t.Fatal("ResolvePrimary must fail for the resolved provider that was skipped for having no key")
+	}
+	if !strings.Contains(err.Error(), "p2") {
+		t.Errorf("error must name the skipped provider, got: %v", err)
+	}
+}
+
 // newModelSet builds a Models set holding the given model ids.
 func newModelSet(ids ...string) Models {
 	m := Models{}

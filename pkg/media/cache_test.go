@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -144,8 +145,22 @@ func TestSave_EmptyExt_DefaultsBin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if filepath.Ext(path) != ".bin" {
-		t.Errorf("empty ext should fall back to .bin, got path = %q", path)
+	if filepath.Ext(path) != DefaultExt {
+		t.Errorf("empty ext should fall back to %q, got path = %q", DefaultExt, path)
+	}
+	// Path and SaveReader must agree with Save: three call sites, one default.
+	if got := filepath.Ext(s.Path(CategoryImage, []byte("x"), "")); got != DefaultExt {
+		t.Errorf("Path empty ext = %q, want %q", got, DefaultExt)
+	}
+	rp, _, err := s.SaveReader(CategoryImage, "", strings.NewReader("y"), -1)
+	if err != nil {
+		t.Fatalf("SaveReader: %v", err)
+	}
+	if filepath.Ext(rp) != DefaultExt {
+		t.Errorf("SaveReader empty ext = %q, want %q", filepath.Ext(rp), DefaultExt)
+	}
+	if ExtFromMime("application/x-unknown-type") != DefaultExt {
+		t.Errorf("ExtFromMime fallback = %q, want %q", ExtFromMime("application/x-unknown-type"), DefaultExt)
 	}
 }
 
@@ -828,5 +843,260 @@ func TestSave_StillDedupsAndRejectsDir(t *testing.T) {
 	}
 	if len(temps) != 0 {
 		t.Errorf("leftover temps after rename failure: %v", temps)
+	}
+}
+
+// mediaLogHandler captures slog records for the media package tests.
+type mediaLogHandler struct {
+	mu   sync.Mutex
+	recs []mediaLogRec
+}
+
+type mediaLogRec struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+func (h *mediaLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *mediaLogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.recs = append(h.recs, mediaLogRec{level: r.Level, msg: r.Message, attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *mediaLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *mediaLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *mediaLogHandler) find(msg string) []mediaLogRec {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []mediaLogRec
+	for _, r := range h.recs {
+		if r.msg == msg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func captureMediaLogs(t *testing.T) *mediaLogHandler {
+	t.Helper()
+	h := &mediaLogHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return h
+}
+
+// ---------------------------------------------------------------------------
+// Store lifecycle, category modes, cleanup failure paths
+// ---------------------------------------------------------------------------
+
+func TestCacheConstants(t *testing.T) {
+	if DefaultCleanupInterval != 6*time.Hour {
+		t.Errorf("DefaultCleanupInterval = %v, want 6h", DefaultCleanupInterval)
+	}
+	if DefaultMaxAge != 30*24*time.Hour {
+		t.Errorf("DefaultMaxAge = %v, want 720h", DefaultMaxAge)
+	}
+}
+
+func TestNew_HomeResolutionFailure(t *testing.T) {
+	t.Setenv("HOME", "")
+	_, err := New()
+	if err == nil || !strings.HasPrefix(err.Error(), "media: resolve home dir: ") {
+		t.Errorf("New with no HOME = %v, want the resolve-home error", err)
+	}
+}
+
+func TestNewAt_CategoryModesAndFailure(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewAt(root); err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse, CategoryTrace} {
+		info, err := os.Stat(filepath.Join(root, string(cat)))
+		if err != nil {
+			t.Fatalf("category dir %s: %v", cat, err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("category dir %s mode = %v, want 0755", cat, info.Mode().Perm())
+		}
+	}
+	blocked := t.TempDir()
+	if err := os.Chmod(blocked, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+	if _, err := NewAt(filepath.Join(blocked, "media-root")); err == nil {
+		t.Error("NewAt under an unwritable root succeeded")
+	} else if !strings.HasPrefix(err.Error(), "media: create images dir: ") {
+		t.Errorf("NewAt error = %v, want the create-dir prefix", err)
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("NewAt error does not wrap the permission failure: %v", err)
+	}
+}
+
+func TestStorePath_HashNameFormat(t *testing.T) {
+	store, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	sum := sha256.Sum256([]byte("payload"))
+	wantName := hex.EncodeToString(sum[:8]) + ".png"
+	got := store.Path(CategoryImage, []byte("payload"), ".png")
+	if filepath.Base(got) != wantName {
+		t.Errorf("Path name = %q, want %q", filepath.Base(got), wantName)
+	}
+	if filepath.Base(store.Path(CategoryImage, []byte("payload"), "")) != hex.EncodeToString(sum[:8])+".bin" {
+		t.Error("Path with an empty extension did not fall back to .bin")
+	}
+}
+
+func TestClose_ClearsCleanupHandles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if store.cancelStop == nil || store.stopDone == nil {
+		t.Fatal("New did not start the cleanup loop")
+	}
+	store.Close()
+	if store.cancelStop != nil || store.stopDone != nil {
+		t.Errorf("Close left handles set: cancelStop=%v stopDone=%v", store.cancelStop, store.stopDone)
+	}
+	store.Close()
+}
+
+func TestCleanupAll_CountsEveryCategory(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewAt(root)
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	old := time.Unix(1, 0) // 1970: unambiguously older than any maxAge under test
+	for _, cat := range []Category{CategoryImage, CategoryDocument, CategoryParse, CategoryTrace} {
+		p := filepath.Join(root, string(cat), "stale")
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", cat, err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatalf("chtimes %s: %v", cat, err)
+		}
+	}
+	if got := store.CleanupAll(time.Hour); got != 4 {
+		t.Errorf("CleanupAll = %d, want 4 (one stale file per category)", got)
+	}
+}
+
+func TestCleanup_WalkFailureIsLogged(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	store, err := NewAt(root)
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	locked := filepath.Join(root, string(CategoryImage), "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "hidden"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if n := store.Cleanup(CategoryImage, time.Hour); n != 0 {
+		t.Errorf("Cleanup = %d with an unreadable subdirectory, want 0", n)
+	}
+	recs := logs.find("media: cleanup walk failed")
+	if len(recs) != 1 {
+		t.Fatalf("walk failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["path"] != locked {
+		t.Errorf("path attr = %v, want the unreadable directory", recs[0].attrs["path"])
+	}
+}
+
+func TestCleanup_SkipsDirectories(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	store, err := NewAt(root)
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	sub := filepath.Join(root, string(CategoryImage), "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := time.Unix(1, 0) // 1970: unambiguously older than any maxAge under test
+	if err := os.Chtimes(sub, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if n := store.Cleanup(CategoryImage, time.Hour); n != 0 {
+		t.Errorf("Cleanup removed %d entries, want 0 (directories are skipped)", n)
+	}
+	if _, err := os.Stat(sub); err != nil {
+		t.Errorf("the stale directory was removed: %v", err)
+	}
+	if got := logs.find("media: cleanup remove failed"); len(got) != 0 {
+		t.Errorf("directory skip logged %d removal failures, want 0", len(got))
+	}
+}
+
+func TestCleanup_MissingCategoryIsSilent(t *testing.T) {
+	logs := captureMediaLogs(t)
+	store, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	if n := store.Cleanup(Category("missing"), time.Hour); n != 0 {
+		t.Errorf("Cleanup on a missing category = %d, want 0", n)
+	}
+	if len(logs.recs) != 0 {
+		t.Errorf("a missing category logged %d records, want 0", len(logs.recs))
+	}
+}
+
+func TestCleanup_RemoveFailureIsLogged(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	store, err := NewAt(root)
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	dir := filepath.Join(root, string(CategoryImage))
+	stale := filepath.Join(dir, "stale.png")
+	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	old := time.Unix(1, 0) // 1970: unambiguously older than any maxAge under test
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if n := store.Cleanup(CategoryImage, time.Hour); n != 0 {
+		t.Errorf("Cleanup = %d when removal fails, want 0", n)
+	}
+	recs := logs.find("media: cleanup remove failed")
+	if len(recs) != 1 {
+		t.Fatalf("remove failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["file"] != stale {
+		t.Errorf("file attr = %v, want the stale file", recs[0].attrs["file"])
 	}
 }

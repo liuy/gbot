@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -113,8 +114,95 @@ func TestTableflipHandoverFdsArePipes_GenuineChild(t *testing.T) {
 	}
 }
 
-// TestNewUpgrader_KeepsMarkerForGenuineChild covers the guard in newUpgrader from
-// the other side: a process exec'd with tableflip's real handover descriptors and
+// TestTableflipHandoverFdsArePipes_NonHandoverDescriptors is the negative side of
+// the same discriminator. Descriptors 3 and 4 that are not tableflip's pipe pair
+// must not read as a handover, or a harness passing ExtraFiles (or a shell
+// started with 3<) loses the marker-stripping protection. The last case pins the
+// limit the guard's comment admits: two unrelated FIFOs at both numbers ARE read
+// as a handover — documented behavior, not an accident.
+func TestTableflipHandoverFdsArePipes_NonHandoverDescriptors(t *testing.T) {
+	parentName := t.Name()
+	if os.Getenv(markerChildEnv) == parentName {
+		os.Exit(runHandoverFdVerdictChild())
+	}
+	regularFile := func(name string) *os.File {
+		t.Helper()
+		f, err := os.Create(filepath.Join(t.TempDir(), name))
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+	fifo := func(name string) *os.File {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name)
+		if err := syscall.Mkfifo(path, 0o644); err != nil {
+			t.Fatalf("mkfifo %s: %v", name, err)
+		}
+		// O_NONBLOCK on the read end: opening a FIFO with no writer blocks.
+		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0o644)
+		if err != nil {
+			t.Fatalf("open fifo %s: %v", name, err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+	pipeEnd := func() *os.File {
+		t.Helper()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = r.Close()
+			_ = w.Close()
+		})
+		return r
+	}
+	cases := []struct {
+		name string
+		fds  []*os.File
+		want string
+	}{
+		{"two regular files", []*os.File{regularFile("a"), regularFile("b")}, "false"},
+		{"one pipe, one regular file", []*os.File{pipeEnd(), regularFile("c")}, "false"},
+		{"one regular file, one pipe", []*os.File{regularFile("d"), pipeEnd()}, "false"},
+		{"two unrelated fifos", []*os.File{fifo("e"), fifo("f")}, "true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, stdout, stderr := markerChild(t, tc.fds...)
+			// markerChild stamps the subtest's name; the child's dispatch
+			// compares against its own top-level name, so the parent's name
+			// has to win (os/exec keeps the last value of a duplicate).
+			cmd.Env = append(cmd.Env, markerChildEnv+"="+parentName)
+			runErr := cmd.Run()
+			verdict, found := markerLine(stdout.String(), markerChildResult)
+			if !found {
+				t.Fatalf("fd child never reported a verdict (run: %v)\nstdout:\n%s\nstderr:\n%s",
+					runErr, stdout.String(), stderr.String())
+			}
+			if verdict != tc.want {
+				t.Errorf("tableflipHandoverFdsArePipes = %s, want %s\nstderr:\n%s", verdict, tc.want, stderr.String())
+			}
+			if runErr != nil {
+				t.Fatalf("scenario passed but the child exited non-zero: %v\nstderr:\n%s", runErr, stderr.String())
+			}
+		})
+	}
+}
+
+// runHandoverFdVerdictChild prints what the fd guard concludes about the
+// descriptors this process was exec'd with. It deliberately does not boot an
+// upgrader: the discriminator is what is under test, and newParent's blocking
+// gob.Decode on fd 4 would turn the FIFO case into a hang.
+func runHandoverFdVerdictChild() int {
+	fmt.Printf("%s %v\n", markerChildResult, tableflipHandoverFdsArePipes())
+	return childOK
+}
+
+// TestNewUpgrader_KeepsMarkerForGenuineChild covers the guard in newUpgrader from// the other side: a process exec'd with tableflip's real handover descriptors and
 // the marker in its environment must still come back from newUpgrader with a
 // parent. A guard that scrubs this one is worse than no guard at all — a real
 // upgraded child would boot with none of the listeners its parent handed it.

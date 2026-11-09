@@ -165,3 +165,126 @@ func TestIsImageMime(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Map tables and sniff boundaries — every entry is pinned
+// ---------------------------------------------------------------------------
+
+func TestExtToMime_Table(t *testing.T) {
+	want := map[string]string{
+		".pdf":  "application/pdf",
+		".doc":  "application/msword",
+		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		".xls":  "application/vnd.ms-excel",
+		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		".ppt":  "application/vnd.ms-powerpoint",
+		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		".txt":  "text/plain",
+		".csv":  "text/csv",
+		".zip":  "application/zip",
+		".tar":  "application/x-tar",
+		".gz":   "application/gzip",
+		".mp3":  "audio/mpeg",
+		".ogg":  "audio/ogg",
+		".wav":  "audio/wav",
+		".mp4":  "video/mp4",
+		".mov":  "video/quicktime",
+		".webm": "video/webm",
+		".mkv":  "video/x-matroska",
+		".avi":  "video/x-msvideo",
+		".png":  "image/png",
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".bmp":  "image/bmp",
+	}
+	if len(extToMime) != len(want) {
+		t.Errorf("extToMime has %d entries, want %d", len(extToMime), len(want))
+	}
+	for ext, mime := range want {
+		if got := MimeFromExt(ext); got != mime {
+			t.Errorf("MimeFromExt(%q) = %q, want %q", ext, got, mime)
+		}
+	}
+	if got := MimeFromExt(".unknown"); got != "application/octet-stream" {
+		t.Errorf("MimeFromExt(.unknown) = %q, want application/octet-stream", got)
+	}
+	if got := MimeFromExt(""); got != "application/octet-stream" {
+		t.Errorf("MimeFromExt(\"\") = %q, want application/octet-stream", got)
+	}
+	if got := MimeFromExt(".PNG"); got != "image/png" {
+		t.Errorf("MimeFromExt(.PNG) = %q, want image/png (case-insensitive)", got)
+	}
+}
+
+func TestMimeToExt_Table(t *testing.T) {
+	want := map[string]string{
+		"image/jpeg":        ".jpg",
+		"image/jpg":         ".jpg",
+		"image/png":         ".png",
+		"image/gif":         ".gif",
+		"image/webp":        ".webp",
+		"image/bmp":         ".bmp",
+		"video/mp4":         ".mp4",
+		"video/quicktime":   ".mov",
+		"video/webm":        ".webm",
+		"video/x-matroska":  ".mkv",
+		"video/x-msvideo":   ".avi",
+		"audio/mpeg":        ".mp3",
+		"audio/ogg":         ".ogg",
+		"audio/wav":         ".wav",
+		"application/pdf":   ".pdf",
+		"application/zip":   ".zip",
+		"application/x-tar": ".tar",
+		"application/gzip":  ".gz",
+		"text/plain":        ".txt",
+		"text/csv":          ".csv",
+	}
+	if len(mimeToExt) != len(want) {
+		t.Errorf("mimeToExt has %d entries, want %d", len(mimeToExt), len(want))
+	}
+	for mime, ext := range want {
+		if got := ExtFromMime(mime); got != ext {
+			t.Errorf("ExtFromMime(%q) = %q, want %q", mime, got, ext)
+		}
+	}
+	if got := ExtFromMime("image/png; charset=binary"); got != ".png" {
+		t.Errorf("ExtFromMime with a charset parameter = %q, want .png", got)
+	}
+	if got := ExtFromMime("application/unknown"); got != ".bin" {
+		t.Errorf("ExtFromMime(unknown) = %q, want .bin", got)
+	}
+}
+
+func TestSniffImageMime_WebPRequiresEveryMagicByte(t *testing.T) {
+	valid := []byte("RIFF\x01\x02\x03\x04WEBP")
+	if got := SniffImageMime(valid); got != "image/webp" {
+		t.Fatalf("SniffImageMime(valid) = %q, want image/webp", got)
+	}
+	for i := range 12 {
+		if i == 4 || i == 5 || i == 6 || i == 7 {
+			continue // the RIFF size field is not part of the signature
+		}
+		bad := append([]byte(nil), valid...)
+		bad[i] ^= 0xFF
+		if got := SniffImageMime(bad); got != "" {
+			t.Errorf("byte %d flipped: SniffImageMime = %q, want \"\"", i, got)
+		}
+	}
+	if got := SniffImageMime([]byte("RIFF\x01\x02\x03\x04WEP")); got != "" {
+		t.Errorf("11-byte RIFF prefix = %q, want \"\"", got)
+	}
+	if got := SniffImageMime([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}); got != "image/png" {
+		t.Errorf("PNG signature = %q, want image/png", got)
+	}
+	if got := SniffImageMime([]byte{0xFF, 0xD8, 0xFF}); got != "image/jpeg" {
+		t.Errorf("JPEG SOI = %q, want image/jpeg", got)
+	}
+	if got := SniffImageMime([]byte("GIF89a")); got != "image/gif" {
+		t.Errorf("GIF89a = %q, want image/gif", got)
+	}
+	if got := SniffImageMime(nil); got != "" {
+		t.Errorf("empty buffer = %q, want \"\"", got)
+	}
+}

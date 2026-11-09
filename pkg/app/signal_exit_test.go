@@ -1,8 +1,12 @@
 package app
 
 import (
+	"context"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,6 +17,147 @@ import (
 // The daemon's signal-exit goroutine calls os.Exit(0), which skips the
 // deferred Instance.Cleanup — so the MCP registry close must be wired into
 // the goroutine itself. These tests pin that wiring.
+
+// osExit is a package-level var and production never calls signal.Stop, so
+// every Start() in this package leaves a signal goroutine parked on the
+// signal package. Assigning the seam from inside a test therefore races with
+// those goroutines reading it. The seam is installed once, before any test
+// goroutine exists, and routed through an atomic pointer: tests swap the hook,
+// never the var. A nil hook means "exit is a no-op", which is also what keeps
+// a stray signal from killing the test binary.
+var pinExitHook atomic.Pointer[func(int)]
+
+func init() { osExit = pinRouteExit }
+
+func pinRouteExit(code int) {
+	if h := pinExitHook.Load(); h != nil {
+		(*h)(code)
+	}
+}
+
+// onExit installs an exit hook for the duration of t.
+func onExit(t *testing.T, hook func(code int)) {
+	t.Helper()
+	prev := pinExitHook.Swap(&hook)
+	t.Cleanup(func() { pinExitHook.Store(prev) })
+}
+
+// Start spawns the signal goroutine ~500 lines before the dream engine exists,
+// so the dream-cancel slot is shared by the boot goroutine (which writes it)
+// and the signal goroutine (which reads it). It must be late-wired like
+// supervisedClose/mcpExitClose: a plain captured var leaves the two goroutines
+// with no happens-before edge, and a mid-boot signal then cancels a
+// half-constructed cancelCtx. -race is the oracle for the first test; the
+// second pins the nil-slot path.
+func TestStartSignalAfterBootRereadsDreamSlot(t *testing.T) {
+	t.Setenv("HOME", pinHome(t, pinSettings))
+	t.Setenv("GBOT_PPROF_ADDR", "off")
+	port := freeTCPPort(t)
+	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+port)
+	startInTempProject(t)
+
+	handedOver.Store(false)
+	steppedDown.Store(false)
+	var exits atomic.Int32
+	onExit(t, func(code int) {
+		if code != 0 {
+			t.Errorf("signal exit code = %d, want 0", code)
+		}
+		exits.Add(1)
+	})
+
+	inst, err := Start(Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// DreamDone is created exactly where the slot is written: nil here means the
+	// boot never wrote it and the test would prove nothing.
+	if inst.DreamDone == nil {
+		t.Fatal("the boot never reached the dream-cancel wire")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("kill -INT: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for exits.Load() == 0 { // REAL-TIME: bounded poll — signal delivery has no channel to select on
+		if time.Now().After(deadline) { // REAL-TIME: bounded wait for signal delivery
+			t.Fatal("SIGINT never reached the exit seam")
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: signal delivery exposes no channel to select on
+	}
+	select {
+	case <-inst.DreamDone:
+	case <-time.After(5 * time.Second): // REAL-TIME: the cancel must stop the dream timer
+		t.Fatal("the signal path never cancelled the wired dream slot")
+	}
+	shutdownInstance(t, inst)
+}
+
+// A SIGINT that lands before the dream engine exists must skip the cancel step
+// instead of reading a func value the boot is still writing: the boot has to
+// survive it, finish, and still wire the slot.
+func TestStartSignalDuringBootSkipsUnwiredDreamSlot(t *testing.T) {
+	t.Setenv("HOME", pinHome(t, pinSettings))
+	t.Setenv("GBOT_PPROF_ADDR", "off")
+	port := freeTCPPort(t)
+	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+port)
+	startInTempProject(t)
+
+	handedOver.Store(false)
+	steppedDown.Store(false)
+	var exits atomic.Int32
+	onExit(t, func(code int) {
+		if code != 0 {
+			t.Errorf("signal exit code = %d, want 0", code)
+		}
+		exits.Add(1)
+	})
+	// The hammer starts before Start subscribes; without a guard channel the
+	// first SIGINT would take the default action and kill the test binary.
+	guard := make(chan os.Signal, 1)
+	signal.Notify(guard, syscall.SIGINT)
+	defer signal.Stop(guard)
+	stop := make(chan struct{})
+	hammerDone := make(chan struct{})
+	go func() {
+		defer close(hammerDone)
+		// Bounded and sparse: every registered channel receives every signal, so
+		// a long hammer would fan out to every other boot's parked goroutine and
+		// perturb sibling tests. Sparse shots cover the window between
+		// signal.Notify and the dream wire, and we stop at the first hit.
+		for range 6 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if exits.Load() > 0 {
+				return
+			}
+			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+				t.Errorf("kill -INT: %v", err)
+				return
+			}
+			time.Sleep(20 * time.Millisecond) // REAL-TIME: the signal must land inside the real boot window
+		}
+	}()
+	inst, err := Start(Options{NoTUI: true})
+	close(stop)
+	<-hammerDone
+	if err != nil {
+		t.Fatalf("Start with a mid-boot SIGINT: %v", err)
+	}
+	if inst == nil {
+		t.Fatal("Start returned a nil Instance after a mid-boot SIGINT")
+	}
+	if inst.DreamDone == nil {
+		t.Fatal("the mid-boot SIGINT stopped the boot from wiring the dream slot")
+	}
+	if exits.Load() == 0 {
+		t.Fatal("no SIGINT reached the exit seam — SIGINT is process-wide and signal.Notify is never stopped, so a non-zero count only proves at least one delivery reached some boot, not that the hammer landed inside this boot's window")
+	}
+	shutdownInstance(t, inst)
+}
 
 // signalExitActions must run the three pre-exit steps in this exact order:
 // dream cancel first (stops new ticks), the supervised WS close (1012 frame),
@@ -77,13 +222,14 @@ func TestHandleDaemonSignal_WiresSeamsInOrder(t *testing.T) {
 	t.Cleanup(func() { handedOver.Store(false); steppedDown.Store(false) })
 
 	var order []string
-	var sup, mcp atomic.Value
+	var sup, mcp, dream atomic.Value
 	sup.Store(func() { order = append(order, "ws") })
 	mcp.Store(func() { order = append(order, "mcp") })
+	dream.Store(context.CancelFunc(func() { order = append(order, "dream") }))
 	pidCalled := false
 	exited := interceptExit(t)
 
-	handleDaemonSignal(&sup, &mcp, func() { order = append(order, "dream") }, func() { pidCalled = true })
+	handleDaemonSignal(&sup, &mcp, &dream, func() { pidCalled = true })
 
 	want := []string{"dream", "ws", "mcp"}
 	if len(order) != len(want) {
@@ -111,11 +257,11 @@ func TestHandleDaemonSignal_EmptySeamsSkipCleanly(t *testing.T) {
 	handedOver.Store(false)
 	steppedDown.Store(false)
 	t.Cleanup(func() { handedOver.Store(false); steppedDown.Store(false) })
-	var sup, mcp atomic.Value
+	var sup, mcp, dream atomic.Value
 	pidCalled := false
 	exited := interceptExit(t)
 
-	handleDaemonSignal(&sup, &mcp, nil, func() { pidCalled = true })
+	handleDaemonSignal(&sup, &mcp, &dream, func() { pidCalled = true })
 
 	if !pidCalled {
 		t.Fatal("pidCleanup skipped with empty seams")
@@ -129,10 +275,11 @@ func TestHandleDaemonSignal_EmptySeamsSkipCleanly(t *testing.T) {
 	var nilFn func()
 	sup.Store(nilFn)
 	mcp.Store(nilFn)
+	dream.Store(context.CancelFunc(nil))
 	pidCalled = false
 	exited2 := interceptExit(t)
 
-	handleDaemonSignal(&sup, &mcp, nil, func() { pidCalled = true })
+	handleDaemonSignal(&sup, &mcp, &dream, func() { pidCalled = true })
 
 	if !pidCalled {
 		t.Fatal("pidCleanup skipped with typed-nil seams")
@@ -156,11 +303,11 @@ func TestHandleDaemonSignal_GateSkipsPidCleanup(t *testing.T) {
 			steppedDown.Store(false)
 			set()
 			t.Cleanup(func() { handedOver.Store(false); steppedDown.Store(false) })
-			var sup, mcp atomic.Value
+			var sup, mcp, dream atomic.Value
 			pidCalled := false
 			exited := interceptExit(t)
 
-			handleDaemonSignal(&sup, &mcp, nil, func() { pidCalled = true })
+			handleDaemonSignal(&sup, &mcp, &dream, func() { pidCalled = true })
 
 			if pidCalled {
 				t.Fatal("pidCleanup ran — it would delete the successor's PID file")

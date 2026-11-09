@@ -1544,6 +1544,7 @@ func TestHookOutcome_String(t *testing.T) {
 		outcome HookOutcome
 		want    string
 	}{
+		{HookOutcomeUnknown, "unknown"},
 		{HookOutcomeSuccess, "success"},
 		{HookOutcomeBlocking, "blocking"},
 		{HookOutcomeNonBlockingError, "non_blocking_error"},

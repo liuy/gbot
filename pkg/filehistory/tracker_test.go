@@ -1,6 +1,7 @@
 package filehistory
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2476,5 +2477,105 @@ func TestCopyFileData_DeepMkdirFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "copy backup") {
 		t.Errorf("error should mention copy backup, got: %v", err)
+	}
+}
+
+func TestTracker_SnapshotAndBackupShape(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(filepath.Join(dir, "fh"))
+	if info, err := os.Stat(tr.Dir()); err != nil {
+		t.Fatalf("tracker dir: %v", err)
+	} else if info.Mode().Perm() != 0o755 {
+		t.Errorf("tracker dir mode = %v, want 0755", info.Mode().Perm())
+	}
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := tr.TrackEdit(file); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	st := tr.State()
+	if len(st.Snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want 2 (TrackEdit opens one, MakeSnapshot adds the turn snapshot)", len(st.Snapshots))
+	}
+	snap := st.Snapshots[1]
+	if snap.MessageID != "msg-1" || snap.Timestamp.IsZero() {
+		t.Errorf("snapshot = %+v, want msg-1 and a timestamp", snap)
+	}
+	bk, ok := snap.TrackedFileBackups[file]
+	if !ok {
+		t.Fatalf("snapshot backups = %v, want an entry for the tracked file", snap.TrackedFileBackups)
+	}
+	if bk.Version != 1 || bk.BackupFileName == "" || bk.BackupTime.IsZero() {
+		t.Errorf("backup = %+v, want version 1 with a backup file name and time", bk)
+	}
+	if !st.TrackedFiles[file] {
+		t.Error("the edited file was not marked tracked")
+	}
+	if tr.HasChangesAtMessage("msg-1") {
+		t.Error("HasChangesAtMessage = true while the file still matches its backup")
+	}
+	if err := os.WriteFile(file, []byte("v2"), 0o644); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	if !tr.HasChangesAtMessage("msg-1") {
+		t.Error("HasChangesAtMessage = false after the tracked file changed")
+	}
+	changed, err := tr.Rewind("msg-1")
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if len(changed) != 1 || changed[0] != file {
+		t.Errorf("rewound files = %v, want [%s]", changed, file)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "v1" {
+		t.Errorf("file after rewind = %q (%v), want v1", data, err)
+	}
+}
+
+func TestTracker_MaxSnapshotsBoundary(t *testing.T) {
+	if MAX_SNAPSHOTS != 100 {
+		t.Errorf("MAX_SNAPSHOTS = %d, want 100", MAX_SNAPSHOTS)
+	}
+	dir := t.TempDir()
+	tr := NewTracker(filepath.Join(dir, "fh"))
+	file := filepath.Join(dir, "a.txt")
+	for i := 1; i <= MAX_SNAPSHOTS+1; i++ {
+		if err := os.WriteFile(file, []byte(strings.Repeat("x", i)), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := tr.TrackEdit(file); err != nil {
+			t.Fatalf("TrackEdit: %v", err)
+		}
+		if err := tr.MakeSnapshot(fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("MakeSnapshot: %v", err)
+		}
+	}
+	st := tr.State()
+	if len(st.Snapshots) != MAX_SNAPSHOTS {
+		t.Errorf("snapshots = %d, want the eviction to hold the list at %d", len(st.Snapshots), MAX_SNAPSHOTS)
+	}
+	if st.Snapshots[0].MessageID != "msg-2" {
+		t.Errorf("oldest retained snapshot = %q, want msg-2 (the first snapshot is evicted)", st.Snapshots[0].MessageID)
+	}
+}
+
+func TestGetBackupFileName_Format(t *testing.T) {
+	name := getBackupFileName("/tmp/x/y.png", 3)
+	base := filepath.Base(name)
+	if !strings.HasSuffix(base, "@v3") {
+		t.Errorf("backup name = %q, want it to end with @v3", base)
+	}
+	hashPart := strings.TrimSuffix(base, "@v3")
+	if len(hashPart) != 16 {
+		t.Errorf("hash part %q has %d chars, want 16", hashPart, len(hashPart))
+	}
+	if _, err := hex.DecodeString(hashPart); err != nil {
+		t.Errorf("hash part %q is not hex: %v", hashPart, err)
 	}
 }

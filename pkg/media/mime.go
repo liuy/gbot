@@ -79,7 +79,7 @@ var imageMagicSignatures = []struct {
 }
 
 // ExtFromMime returns the file extension (with leading dot) for a MIME type,
-// defaulting to ".bin". Port of openclaw src/media/mime.ts:getExtensionFromMime.
+// defaulting to DefaultExt. Port of openclaw src/media/mime.ts:getExtensionFromMime.
 // The MIME type is split on ";" and trimmed/lowercased so "image/png; charset=..."
 // collapses to "image/png".
 func ExtFromMime(mimeType string) string {
@@ -87,7 +87,7 @@ func ExtFromMime(mimeType string) string {
 	if ext, ok := mimeToExt[ct]; ok {
 		return ext
 	}
-	return ".bin"
+	return DefaultExt
 }
 
 // MimeFromExt returns the MIME type for a file extension (with leading dot),

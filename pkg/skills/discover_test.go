@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -356,5 +357,180 @@ func runGitCmd(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("git %v: %v", args, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Walk-up cache, gitignore skip, activation guards
+// ---------------------------------------------------------------------------
+
+func TestDiscoverSkillDirsForPaths_CacheHitKeepsWalkingUp(t *testing.T) {
+	cwd := t.TempDir()
+	deep := filepath.Join(cwd, "a", "b")
+	if err := os.MkdirAll(filepath.Join(cwd, "a", ".gbot", "skills"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	reg := NewRegistry(cwd)
+	reg.dynamicDirCache[filepath.Join(deep, ".gbot", "skills")] = true
+	got := reg.DiscoverSkillDirsForPaths([]string{filepath.Join(deep, "f.go")})
+	want := []string{filepath.Join(cwd, "a", ".gbot", "skills")}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("new dirs = %v, want %v (a cached miss must not stop the walk)", got, want)
+	}
+	if !reg.dynamicDirCache[want[0]] {
+		t.Error("the visited skill dir was not recorded in the negative cache")
+	}
+}
+
+func TestDiscoverSkillDirsForPaths_GitignoredDirDoesNotStopTheWalk(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	cwd := t.TempDir()
+	runGitCmd(t, cwd, "init", "-q")
+	if err := os.WriteFile(filepath.Join(cwd, ".gitignore"), []byte("sub/ignored\n"), 0o644); err != nil {
+		t.Fatalf("gitignore: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, "sub", "ignored", ".gbot", "skills"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, "sub", ".gbot", "skills"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	reg := NewRegistry(cwd)
+	got := reg.DiscoverSkillDirsForPaths([]string{filepath.Join(cwd, "sub", "ignored", "f.go")})
+	want := []string{filepath.Join(cwd, "sub", ".gbot", "skills")}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("new dirs = %v, want %v (the gitignored dir must not end the walk)", got, want)
+	}
+	recs := logs.find("skills: skipped gitignored dir")
+	if len(recs) != 1 {
+		t.Fatalf("gitignore skip logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["dir"] != filepath.Join(cwd, "sub", "ignored", ".gbot", "skills") {
+		t.Errorf("logged dir = %v, want the ignored skill dir", recs[0].attrs["dir"])
+	}
+}
+
+func TestAddSkillDirectories_EmptyLoadStaysSilent(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	cwd := t.TempDir()
+	reg := NewRegistry(cwd)
+	var fired int
+	reg.OnSkillsLoaded(func() { fired++ })
+	if err := reg.AddSkillDirectories([]string{filepath.Join(cwd, "missing")}); err != nil {
+		t.Fatalf("AddSkillDirectories: %v", err)
+	}
+	if fired != 0 {
+		t.Errorf("onSkillsLoaded fired %d times with no skills loaded, want 0", fired)
+	}
+	if got := logs.find("skills: dynamically discovered"); len(got) != 0 {
+		t.Errorf("empty discovery logged %d times, want 0", len(got))
+	}
+}
+
+func TestAddSkillDirectories_LogsAndFiresOnce(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".gbot", "skills")
+	if err := os.MkdirAll(filepath.Join(dir, "disc"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "---\ndescription: discovered skill\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "disc", "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	reg := NewRegistry(cwd)
+	var fired int
+	reg.OnSkillsLoaded(func() { fired++ })
+	if err := reg.AddSkillDirectories([]string{dir}); err != nil {
+		t.Fatalf("AddSkillDirectories: %v", err)
+	}
+	if fired != 1 {
+		t.Errorf("onSkillsLoaded fired %d times, want 1", fired)
+	}
+	recs := logs.find("skills: dynamically discovered")
+	if len(recs) != 1 {
+		t.Fatalf("discovery logged %d times, want 1", len(recs))
+	}
+	if n, _ := recs[0].attrs["count"].(int64); n != 1 {
+		t.Errorf("count attr = %v, want int64(1)", recs[0].attrs["count"])
+	}
+	if n, _ := recs[0].attrs["dirs"].(int64); n != 1 {
+		t.Errorf("dirs attr = %v, want int64(1)", recs[0].attrs["dirs"])
+	}
+}
+
+func TestActivateConditionalSkillsForPaths_Guards(t *testing.T) {
+	cwd := t.TempDir()
+	newReg := func() *Registry {
+		reg := NewRegistry(cwd)
+		reg.mu.Lock()
+		// A pathless conditional must not stop the scan of later skills.
+		reg.conditional["pathless"] = types.SkillCommand{Name: "pathless", Source: types.SkillSourceProject}
+		reg.conditional["go-skill"] = types.SkillCommand{Name: "go-skill", Paths: []string{"*.go"}}
+		reg.mu.Unlock()
+		return reg
+	}
+
+	// Empty file path: nothing can match an empty relative path, not even "*".
+	catchAll := func() *Registry {
+		reg := NewRegistry(cwd)
+		reg.mu.Lock()
+		reg.conditional["catch-all"] = types.SkillCommand{Name: "catch-all", Paths: []string{"*"}}
+		reg.mu.Unlock()
+		return reg
+	}
+	if got := catchAll().ActivateConditionalSkillsForPaths([]string{""}); len(got) != 0 {
+		t.Errorf("activation for an empty path = %v, want none", got)
+	}
+	// Path outside cwd must be rejected before pattern matching.
+	if got := newReg().ActivateConditionalSkillsForPaths([]string{"../outside/main.go"}); len(got) != 0 {
+		t.Errorf("activation for a path outside cwd = %v, want none", got)
+	}
+	// A rejected path must not end the scan of the remaining paths.
+	if got := newReg().ActivateConditionalSkillsForPaths([]string{"../outside/main.go", filepath.Join(cwd, "a.go")}); len(got) != 1 || got[0] != "go-skill" {
+		t.Errorf("activation with a leading out-of-cwd path = %v, want [go-skill]", got)
+	}
+	// One matching path activates each skill exactly once.
+	reg := newReg()
+	got := reg.ActivateConditionalSkillsForPaths([]string{filepath.Join(cwd, "a.go"), filepath.Join(cwd, "b.go")})
+	if len(got) != 1 || got[0] != "go-skill" {
+		t.Fatalf("activated = %v, want [go-skill] exactly once", got)
+	}
+	if !reg.activatedNames["go-skill"] {
+		t.Error("activatedNames was not marked for go-skill")
+	}
+	if reg.activatedNames["pathless"] {
+		t.Error("pathless conditional was marked activated")
+	}
+}
+
+func TestActivateConditionalSkillsForPaths_CallbackOnlyOnActivation(t *testing.T) {
+	cwd := t.TempDir()
+	fired := make(chan struct{}, 4)
+	newReg := func() *Registry {
+		reg := NewRegistry(cwd)
+		reg.mu.Lock()
+		reg.conditional["go-skill"] = types.SkillCommand{Name: "go-skill", Paths: []string{"*.go"}}
+		reg.mu.Unlock()
+		reg.OnSkillsLoaded(func() { fired <- struct{}{} })
+		return reg
+	}
+	reg := newReg()
+	if got := reg.ActivateConditionalSkillsForPaths([]string{filepath.Join(cwd, "main.rs")}); len(got) != 0 {
+		t.Fatalf("activated = %v, want none", got)
+	}
+	select {
+	case <-fired:
+		t.Error("onSkillsLoaded fired with nothing activated")
+	case <-time.After(200 * time.Millisecond):
+	}
+	reg2 := newReg()
+	if got := reg2.ActivateConditionalSkillsForPaths([]string{filepath.Join(cwd, "main.go")}); len(got) != 1 {
+		t.Fatalf("activated = %v, want [go-skill]", got)
+	}
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Error("onSkillsLoaded did not fire after an activation")
 	}
 }

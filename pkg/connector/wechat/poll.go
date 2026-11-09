@@ -116,22 +116,27 @@ func isStaleSession(ret, errcode int, errmsg string) bool {
 // individually (they represent distinct user turns).
 func (c *WeChatConnector) processBatch(ctx context.Context, msgs []Message) {
 	var mediaBlocks []types.ContentBlock
-	var mergedUserID string
-	var mergedToken string
+	// The buffered user and its context_token are one unit: a flush that
+	// cleared only one half records the previous user's token under the next
+	// user's merge.
+	type merge struct {
+		userID string
+		token  string
+	}
+	var merged merge
 
 	flush := func() {
 		if len(mediaBlocks) == 0 {
 			return
 		}
-		if mergedToken != "" {
-			c.setStateContextToken(mergedUserID, mergedToken)
+		if merged.token != "" {
+			c.setStateContextToken(merged.userID, merged.token)
 		}
 		prompt := mediaPrompt(len(mediaBlocks))
 		content := append(mediaBlocks, types.NewTextBlock(prompt))
-		c.enqueue(mergedUserID, prompt, content)
+		c.enqueue(merged.userID, prompt, content)
 		mediaBlocks = nil
-		mergedUserID = ""
-		mergedToken = ""
+		merged = merge{}
 	}
 
 	for _, msg := range msgs {
@@ -147,14 +152,14 @@ func (c *WeChatConnector) processBatch(ctx context.Context, msgs []Message) {
 		hasVoiceOnly := hasVoiceItem(msg.ItemList) && !hasNonVoiceMedia(msg.ItemList)
 		if c.mediaCache != nil && hasMedia(msg.ItemList) && !hasVoiceOnly {
 			if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
-				if mergedUserID != "" && mergedUserID != msg.FromUserID {
+				if merged.userID != "" && merged.userID != msg.FromUserID {
 					flush()
 				}
-				if mergedUserID == "" {
-					mergedUserID = msg.FromUserID
+				if merged.userID == "" {
+					merged.userID = msg.FromUserID
 				}
 				if msg.ContextToken != "" {
-					mergedToken = msg.ContextToken
+					merged.token = msg.ContextToken
 				}
 				mediaBlocks = append(mediaBlocks, block)
 			}

@@ -229,7 +229,12 @@ func JobEventEmitter(eng *Engine) func(types.QueryEventType, types.JobEvent) {
 	}
 }
 
-func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
+// WireEngine attaches the per-engine hooks CreateTools could not wire: the
+// notification sinks, the sub-agent engine injection, the REPL executors, and
+// (when the process has one) the MCP registry for agent-scoped servers.
+// It takes only that registry rather than the whole SharedDeps — every other
+// field is a CreateTools concern.
+func WireEngine(eng *Engine, refs ToolRefs, mcpReg *mcp.Registry) {
 	// One closure, two hook points. Registry-level OnNotify serves the jobs
 	// the registry notifies as its owner (after root binding, the session-root
 	// engine — e.g. Kill's killed notifications); the per-spawner Bash hook
@@ -285,15 +290,15 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).
-	if deps.McpReg != nil {
+	if mcpReg != nil {
 		refs.Agent.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
-			handle := deps.McpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
+			handle := mcpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
 			if handle == nil {
 				return nil, nil
 			}
 			mcpTools := make(map[string]tool.Tool)
 			for name, dt := range handle.Tools() {
-				mcpTools[name] = NewMCPTool(dt, deps.McpReg)
+				mcpTools[name] = NewMCPTool(dt, mcpReg)
 			}
 			return &agenttool.McpConnectResult{
 				Tools:   mcpTools,

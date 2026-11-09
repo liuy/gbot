@@ -1,9 +1,13 @@
 package permission
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -387,5 +391,135 @@ func TestLoadConfigInvalidAskRuleSkipped(t *testing.T) {
 	}
 	if rules[0].Value.ToolName != "Bash" {
 		t.Errorf("expected Bash rule, got %q", rules[0].Value.ToolName)
+	}
+}
+
+// permLogHandler captures slog records for the permission package tests.
+type permLogHandler struct {
+	mu   sync.Mutex
+	recs []permLogRec
+}
+
+type permLogRec struct {
+	level slog.Level
+	msg   string
+	attrs map[string]any
+}
+
+func (h *permLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *permLogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.recs = append(h.recs, permLogRec{level: r.Level, msg: r.Message, attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *permLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *permLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *permLogHandler) find(msg string) []permLogRec {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []permLogRec
+	for _, r := range h.recs {
+		if r.msg == msg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func capturePermLogs(t *testing.T) *permLogHandler {
+	t.Helper()
+	h := &permLogHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return h
+}
+
+func TestAppendRulesFromFile_SkipsInvalidAndLogsAllow(t *testing.T) {
+	logs := capturePermLogs(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{"permissions":{"deny":["Bash(rm *)","Read([)"],"ask":["Web"],"allow":["Bash(ls)","Read(*)"]}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rules := appendRulesFromFile(nil, path, sourceUser, dir)
+	if len(rules) != 2 {
+		t.Fatalf("rules = %d (%+v), want 2 (the traversal pattern must be skipped)", len(rules), rules)
+	}
+	if rules[0].Action != ActionDeny || rules[0].Value.ToolName != "Bash" {
+		t.Errorf("rules[0] = %+v, want the Bash deny rule", rules[0])
+	}
+	if rules[1].Action != ActionAsk || rules[1].Value.ToolName != "Web" {
+		t.Errorf("rules[1] = %+v, want the Web ask rule", rules[1])
+	}
+	if rules[0].ConfigRoot != dir || rules[0].Source != string(sourceUser) {
+		t.Errorf("rule provenance = %+v, want source %q and root %q", rules[0], sourceUser, dir)
+	}
+	recs := logs.find("skipping invalid deny rule")
+	if len(recs) != 1 {
+		t.Fatalf("invalid deny logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["rule"] != "Read([)" {
+		t.Errorf("rule attr = %v, want the traversal rule", recs[0].attrs["rule"])
+	}
+	if got := logs.find("gbot defaults allow; allow rule ignored"); len(got) != 2 {
+		t.Errorf("allow rules logged %d times, want 2", len(got))
+	}
+}
+
+func TestAppendRulesFromFile_SkipsInvalidAskRule(t *testing.T) {
+	logs := capturePermLogs(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{"permissions":{"ask":["Write([)"]}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rules := appendRulesFromFile(nil, path, sourceProject, dir)
+	if len(rules) != 0 {
+		t.Fatalf("rules = %+v, want none (the malformed pattern must be skipped)", rules)
+	}
+	if got := logs.find("skipping invalid ask rule"); len(got) != 1 {
+		t.Errorf("invalid ask logged %d times, want 1", len(got))
+	}
+}
+
+func TestAppendRulesFromFile_BadJSONAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := appendRulesFromFile(nil, bad, sourceUser, dir); len(got) != 0 {
+		t.Errorf("rules from malformed JSON = %d, want 0", len(got))
+	}
+	if got := appendRulesFromFile(nil, filepath.Join(dir, "missing.json"), sourceUser, dir); len(got) != 0 {
+		t.Errorf("rules from a missing file = %d, want 0", len(got))
+	}
+}
+
+func TestReadPermJSONFile_Errors(t *testing.T) {
+	if err := readPermJSONFile(filepath.Join(t.TempDir(), "nope.json"), &struct{}{}); err == nil {
+		t.Fatal("a missing settings file returned no error")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("missing-file error = %v, want it to wrap os.ErrNotExist", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(path, []byte("[]"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := readPermJSONFile(path, &struct{}{}); err == nil {
+		t.Error("a JSON array did not fail unmarshalling into a struct")
 	}
 }

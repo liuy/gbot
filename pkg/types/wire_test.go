@@ -1,6 +1,7 @@
 package types
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -263,5 +264,40 @@ func TestAgentMetaJobIDWire(t *testing.T) {
 	}
 	if missing.Agent != nil {
 		t.Errorf("agent-less frame grew meta: %+v", missing.Agent)
+	}
+}
+
+func TestPinNeedsStorageNull(t *testing.T) {
+	if needsStorageNull(json.RawMessage(`null`)) {
+		t.Error("literal null is valid JSON and must not be re-normalized")
+	}
+	if !needsStorageNull(json.RawMessage(``)) {
+		t.Error("blank must need storage null")
+	}
+	if !needsStorageNull(json.RawMessage(`{bad`)) {
+		t.Error("invalid JSON must need storage null")
+	}
+	if needsStorageNull(json.RawMessage(`{}`)) {
+		t.Error("valid object flagged")
+	}
+	if needsStorageNull(json.RawMessage(`[]`)) {
+		t.Error("valid array flagged")
+	}
+	if !isNullJSON(json.RawMessage(`  null  `)) {
+		t.Error("trimmed null not detected")
+	}
+	if isNullJSON(json.RawMessage(`nulll`)) {
+		t.Error("nulll misdetected")
+	}
+}
+
+func TestPinMarshalContentBlocksForStorage_Empty(t *testing.T) {
+	out, err := MarshalContentBlocksForStorage(nil)
+	if err != nil || !bytes.Equal(out, []byte("[]")) {
+		t.Errorf("nil blocks = %s err=%v, want []", out, err)
+	}
+	out2, err2 := MarshalContentBlocksForStorage([]ContentBlock{})
+	if err2 != nil || !bytes.Equal(out2, []byte("[]")) {
+		t.Errorf("empty blocks = %s err=%v, want []", out2, err2)
 	}
 }

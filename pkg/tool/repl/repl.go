@@ -105,6 +105,12 @@ func SetReplScripts(scripts []ReplScript) {
 	replScripts = scripts
 }
 
+// ReplScripts returns the harness scripts that new sessions will evaluate.
+// Exported so the plugin→REPL wiring done at startup is observable from
+// outside this package; the snapshot keeps a caller from mutating the live
+// slice.
+func ReplScripts() []ReplScript { return currentReplScripts() }
+
 // currentReplScripts returns a copy of the current harness scripts under the
 // read lock; the caller iterates its own snapshot.
 func currentReplScripts() []ReplScript {

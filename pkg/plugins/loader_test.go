@@ -12,6 +12,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1254,15 +1255,24 @@ func TestLoadAgents_DirAndNonMdSkipped(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(agentsDir, "subdir"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	// Non-.md file — should be skipped
-	if err := os.WriteFile(filepath.Join(agentsDir, "notes.txt"), []byte("not agent"), 0644); err != nil {
+	// A directory whose NAME ends in .md — ReadDir reports it as a dir.
+	if err := os.MkdirAll(filepath.Join(agentsDir, "subdir.md"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A valid agent body under the wrong extension — should be skipped.
+	valid := "---\nname: sneaky\ndescription: valid but wrong extension\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "notes.txt"), []byte(valid), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	plugin := &ResolvedPlugin{Name: "test", RootPath: root}
 	loaded := loadAgents(plugin)
 	if len(loaded) != 0 {
-		t.Errorf("agents count = %d, want 0 (dirs and non-.md skipped)", len(loaded))
+		names := make([]string, 0, len(loaded))
+		for _, a := range loaded {
+			names = append(names, a.AgentType)
+		}
+		t.Errorf("agents loaded = %v, want none (dirs and non-.md skipped)", names)
 	}
 }
 
@@ -1561,5 +1571,156 @@ func TestLoadProtocolsBranch(t *testing.T) {
 	}
 	if !strings.HasSuffix(loaded.Protocols[0].Path, "protocol.js") {
 		t.Errorf("Protocols[0].Path = %q, want it to end in protocol.js", loaded.Protocols[0].Path)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-piece loaders: skills, repl scripts, agents, MCP servers
+// ---------------------------------------------------------------------------
+
+func writePluginFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestLoadSkills_PluginDir(t *testing.T) {
+	root := t.TempDir()
+	writePluginFile(t, filepath.Join(root, "skills", "good", "SKILL.md"), "---\ndescription: good skill\n---\nbody\n")
+	writePluginFile(t, filepath.Join(root, "skills", "noskill", "README.md"), "nothing")
+	writePluginFile(t, filepath.Join(root, "skills", "stray.md"), "not a dir")
+	p := &ResolvedPlugin{Name: "plug", RootPath: root, Manifest: &PluginManifest{Name: "plug", Skills: "./skills"}}
+	got := loadSkills(p)
+	if len(got) != 1 || got[0].Name != "plug:good" {
+		t.Fatalf("skills = %+v, want only the plugin-prefixed skill plug:good", got)
+	}
+	if got[0].Source != types.SkillSourcePlugin {
+		t.Errorf("skill source = %v, want plugin", got[0].Source)
+	}
+	if loadSkills(&ResolvedPlugin{Name: "plug", RootPath: root}) != nil && len(loadSkills(&ResolvedPlugin{Name: "plug", RootPath: root})) != 0 {
+		t.Error("a plugin without a manifest must load no skills")
+	}
+	if n := len(loadSkills(&ResolvedPlugin{Name: "plug", RootPath: root, Manifest: &PluginManifest{Skills: "./missing"}})); n != 0 {
+		t.Errorf("skills from a missing dir = %d, want 0", n)
+	}
+}
+
+func TestLoadReplScripts_OnlyJSFiles(t *testing.T) {
+	logs := captureSlog(t)
+	root := t.TempDir()
+	writePluginFile(t, filepath.Join(root, "repl", "b_second.js"), "SECOND=1")
+	writePluginFile(t, filepath.Join(root, "repl", "a_first.js"), "FIRST=1")
+	writePluginFile(t, filepath.Join(root, "repl", "notjs.txt"), "x")
+	if err := os.MkdirAll(filepath.Join(root, "repl", "nested.js"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	p := &ResolvedPlugin{Name: "plug", RootPath: root, Manifest: &PluginManifest{Name: "plug", Repls: "./repl"}}
+	got := loadReplScripts(p)
+	if len(got) != 2 {
+		t.Fatalf("repl scripts = %d, want 2 (.js files only)", len(got))
+	}
+	// The count alone can't see a directory that got past the IsDir guard: it
+	// would fail ReadFile and be dropped. The warning is the observable half.
+	if strings.Contains(logs.String(), "plugins: read repl script") {
+		t.Errorf("a non-file entry was opened as a repl script; log:\n%s", logs.String())
+	}
+	if got[0].Name != "a_first.js" || got[1].Name != "b_second.js" {
+		t.Errorf("script order = %q, want sorted [a_first.js b_second.js]", []string{got[0].Name, got[1].Name})
+	}
+	if got[0].Plugin != "plug" || got[0].Source != "FIRST=1" {
+		t.Errorf("script[0] = %+v, want plugin plug and the file source", got[0])
+	}
+	if n := len(loadReplScripts(&ResolvedPlugin{Name: "plug", RootPath: root})); n != 0 {
+		t.Errorf("repl scripts without a manifest = %d, want 0", n)
+	}
+}
+
+func TestLoadAgents_FrontmatterAndFiltering(t *testing.T) {
+	root := t.TempDir()
+	writePluginFile(t, filepath.Join(root, "agents", "executor.md"),
+		"---\nname: executor\ndescription: runs tasks\nmodel: gpt-x\ntools: Read, Write\ndisallowedTools:\n  - Bash\nmaxTurns: 7\n---\nsystem prompt body\n")
+	writePluginFile(t, filepath.Join(root, "agents", "nodesc.md"), "---\nname: nodesc\n---\nbody\n")
+	writePluginFile(t, filepath.Join(root, "agents", "nofm.md"), "plain markdown")
+	writePluginFile(t, filepath.Join(root, "agents", "notes.txt"), "not markdown")
+	if err := os.MkdirAll(filepath.Join(root, "agents", "sub.md"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	p := &ResolvedPlugin{Name: "plug", RootPath: root, Manifest: &PluginManifest{Name: "plug"}}
+	got := loadAgents(p)
+	if len(got) != 1 {
+		t.Fatalf("agents = %d, want 1 (only the fully specified one)", len(got))
+	}
+	a := got[0]
+	if a.AgentType != "plug:executor" {
+		t.Errorf("AgentType = %q, want plug:executor", a.AgentType)
+	}
+	if a.Model != "gpt-x" || a.MaxTurns != 7 || a.Filename != "executor" {
+		t.Errorf("agent fields = model %q maxTurns %d file %q", a.Model, a.MaxTurns, a.Filename)
+	}
+	if len(a.Tools) != 1 || a.Tools[0] != "Read, Write" {
+		t.Errorf("Tools = %q, want the single comma string preserved", a.Tools)
+	}
+	if len(a.DisallowedTools) != 1 || a.DisallowedTools[0] != "Bash" {
+		t.Errorf("DisallowedTools = %q, want [Bash]", a.DisallowedTools)
+	}
+	if a.SystemPrompt() != "system prompt body" {
+		t.Errorf("SystemPrompt = %q", a.SystemPrompt())
+	}
+	if a.Source != types.AgentSourcePlugin || a.BaseDir != filepath.Join(root, "agents") {
+		t.Errorf("agent provenance = %v / %q", a.Source, a.BaseDir)
+	}
+}
+
+func TestParseStringOrArrayField_PluginFields(t *testing.T) {
+	if got := parseStringOrArrayField("a, b"); len(got) != 1 || got[0] != "a, b" {
+		t.Errorf("string field = %q, want the string kept whole", got)
+	}
+	if got := parseStringOrArrayField([]any{"x", 1, "y"}); len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Errorf("array field = %q, want [x y]", got)
+	}
+	if got := parseStringOrArrayField(nil); got != nil {
+		t.Errorf("nil field = %#v, want nil", got)
+	}
+	if got := parseStringOrArrayField(42); got != nil {
+		t.Errorf("numeric field = %#v, want nil", got)
+	}
+}
+
+func TestLoadMcpServers_ScopeAndEnv(t *testing.T) {
+	root := t.TempDir()
+	manifest := &PluginManifest{
+		Name: "plug",
+		McpServers: map[string]json.RawMessage{
+			"srv": json.RawMessage(`{"command":"node ${GBOT_PLUGIN_ROOT}/index.js","args":["--x"]}`),
+		},
+	}
+	p := &ResolvedPlugin{Name: "plug", RootPath: root, Manifest: manifest}
+	got := loadMcpServers(p)
+	if len(got) != 1 {
+		t.Fatalf("servers = %d, want 1", len(got))
+	}
+	sc, ok := got["plugin:plug:srv"]
+	if !ok {
+		t.Fatalf("server key = %q, want plugin:plug:srv (keys: %v)", "plugin:plug:srv", got)
+	}
+	if sc.Scope != mcp.ScopeDynamic || sc.PluginSource != "plugin:plug:srv" {
+		t.Errorf("scope = %v source = %q, want dynamic/plugin:plug:srv", sc.Scope, sc.PluginSource)
+	}
+	stdio, ok := sc.Config.(*mcp.StdioConfig)
+	if !ok {
+		t.Fatalf("config type = %T, want *mcp.StdioConfig", sc.Config)
+	}
+	if stdio.Command != "node "+filepath.Join(root, "index.js") || len(stdio.Args) != 1 || stdio.Args[0] != "--x" {
+		t.Errorf("stdio = %+v, want the substituted command and --x", stdio)
+	}
+	if stdio.Env[EnvVarPluginRoot] != root {
+		t.Errorf("plugin root env = %q, want %q", stdio.Env[EnvVarPluginRoot], root)
+	}
+	if n := len(loadMcpServers(&ResolvedPlugin{Name: "plug", RootPath: root})); n != 0 {
+		t.Errorf("servers without a manifest = %d, want 0", n)
 	}
 }

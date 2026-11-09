@@ -28,11 +28,11 @@ func ParseFlags(args []string) Options {
 			// the default port — the presence is the intent signal, so
 			// `-p 8765` counts the same as `-p 1234`.
 			opts.NoTUI = true
-			// Consume the next token as the port ONLY if it is not itself
-			// a flag: `-p -v` must stay verbose-and-default-port, and
+			// Consume the next token as the port ONLY if it is a port:
+			// `-p -v` must stay verbose-and-default-port, and
 			// `-p restart` (subcommand typo) must not become a listen
 			// address of ":restart".
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			if i+1 < len(args) && isPortNumber(args[i+1]) {
 				opts.WSPort = args[i+1]
 				i++
 			}
@@ -42,4 +42,11 @@ func ParseFlags(args []string) Options {
 		opts.Verbose = true
 	}
 	return opts
+}
+
+// isPortNumber guards the -p consumer: only digits are a port, so a flag
+// (`-p -v`) or a subcommand typo (`-p restart`) leaves the default in place
+// instead of becoming the listen address ":"+token.
+func isPortNumber(s string) bool {
+	return s != "" && strings.TrimLeft(s, "0123456789") == ""
 }

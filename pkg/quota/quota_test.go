@@ -1011,3 +1011,39 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+func TestPinClamp100(t *testing.T) {
+	cases := map[int]int{-5: 0, 0: 0, 1: 1, 50: 50, 100: 100, 101: 100, 1000: 100}
+	for in, want := range cases {
+		if got := clamp100(in); got != want {
+			t.Errorf("clamp100(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestPinDetect(t *testing.T) {
+	mk := func(name, u string) *config.Provider {
+		return &config.Provider{Name: name, URL: u, Keys: []string{"k"}}
+	}
+	if Detect(nil) != nil {
+		t.Error("nil provider produced a fetcher")
+	}
+	if Detect(&config.Provider{Name: "x", URL: "http://127.0.0.1:1"}) != nil {
+		t.Error("keyless provider produced a fetcher")
+	}
+	if Detect(mk("minimax-prod", "http://127.0.0.1:1")) == nil {
+		t.Error("minimax name not detected")
+	}
+	if Detect(mk("m", "http://minimax.example/api")) == nil {
+		t.Error("minimax host not detected")
+	}
+	if Detect(mk("zhipu-main", "http://127.0.0.1:1")) == nil {
+		t.Error("zhipu name not detected")
+	}
+	if Detect(mk("z", "https://z.ai/v1")) == nil {
+		t.Error("z.ai host not detected")
+	}
+	if Detect(mk("plain", "https://example.com")) != nil {
+		t.Error("unknown provider produced a fetcher")
+	}
+}

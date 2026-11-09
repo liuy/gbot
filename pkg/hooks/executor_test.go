@@ -293,3 +293,108 @@ func TestExecuteHook_StdoutJSONAdditionalContext(t *testing.T) {
 		t.Errorf("AdditionalContext = %q, want 'extra info'", result.AdditionalContext)
 	}
 }
+
+func TestExecuteHook_OutcomesAndFields(t *testing.T) {
+	e := &CommandExecutor{}
+	in := &HookInput{HookEventName: string(HookPreToolUse), ToolName: "Bash"}
+	res := e.ExecuteHook(context.Background(), "cat", in, 5*time.Second, nil)
+	if res.Outcome != HookOutcomeSuccess {
+		t.Fatalf("outcome = %v, want success (stderr=%q)", res.Outcome, res.Stderr)
+	}
+	if res.HookName != "cat" {
+		t.Errorf("HookName = %q, want the command", res.HookName)
+	}
+	if !strings.Contains(res.Stdout, `"hook_event_name":"PreToolUse"`) {
+		t.Errorf("stdout = %q, want the hook input JSON echoed back", res.Stdout)
+	}
+	res = e.ExecuteHook(context.Background(), "exit 2", in, 5*time.Second, nil)
+	if res.Outcome != HookOutcomeBlocking {
+		t.Errorf("exit 2 outcome = %v, want blocking", res.Outcome)
+	}
+	res = e.ExecuteHook(context.Background(), "echo oops >&2; exit 7", in, 5*time.Second, nil)
+	if res.Outcome != HookOutcomeNonBlockingError {
+		t.Errorf("exit 7 outcome = %v, want non-blocking error", res.Outcome)
+	}
+	if !strings.Contains(res.Stderr, "oops") {
+		t.Errorf("stderr = %q, want the command's stderr", res.Stderr)
+	}
+	res = e.ExecuteHook(context.Background(), "sleep 5", in, 50*time.Millisecond, nil)
+	if res.Outcome != HookOutcomeTimeout {
+		t.Errorf("timeout outcome = %v, want timeout", res.Outcome)
+	}
+	if res.HookName != "sleep 5" {
+		t.Errorf("timeout HookName = %q, want the command", res.HookName)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	res = e.ExecuteHook(ctx, "sleep 5", in, 5*time.Second, nil)
+	cancel()
+	if res.Outcome != HookOutcomeCancelled {
+		t.Errorf("cancelled outcome = %v, want cancelled (stderr=%q)", res.Outcome, res.Stderr)
+	}
+}
+
+func TestExecuteHook_InjectsExecutorAndExtraEnv(t *testing.T) {
+	e := &CommandExecutor{Env: []string{"GBOT_HOOK_BASE=one"}}
+	in := &HookInput{HookEventName: string(HookPreToolUse)}
+	res := e.ExecuteHook(context.Background(), "printf %s-%s \"$GBOT_HOOK_BASE\" \"$GBOT_HOOK_EXTRA\"", in, 5*time.Second, []string{"GBOT_HOOK_EXTRA=two"})
+	if res.Outcome != HookOutcomeSuccess {
+		t.Fatalf("outcome = %v (stderr=%q), want success", res.Outcome, res.Stderr)
+	}
+	if res.Stdout != "one-two" {
+		t.Errorf("stdout = %q, want one-two (both env sources must reach the child)", res.Stdout)
+	}
+	only := &CommandExecutor{Env: []string{"GBOT_HOOK_BASE=one"}}
+	res = only.ExecuteHook(context.Background(), `printf %s "$GBOT_HOOK_BASE"`, in, 5*time.Second, nil)
+	if res.Outcome != HookOutcomeSuccess || res.Stdout != "one" {
+		t.Errorf("executor-only env = (%q,%v), want one", res.Stdout, res.Outcome)
+	}
+	none := &CommandExecutor{}
+	res = none.ExecuteHook(context.Background(), `printf %s "$GBOT_HOOK_EXTRA"`, in, 5*time.Second, []string{"GBOT_HOOK_EXTRA=two"})
+	if res.Outcome != HookOutcomeSuccess || res.Stdout != "two" {
+		t.Errorf("extra-only env = (%q,%v), want two", res.Stdout, res.Outcome)
+	}
+	// Neither env source: cmd.Env must stay a copy of the parent environment,
+	// not the empty list an unconditional `append([]string{}, e.Env...)` gives.
+	// PATH is useless as the probe — bash substitutes a compiled-in default.
+	t.Setenv("GBOT_PIN_PARENT_ENV", "inherited")
+	res = none.ExecuteHook(context.Background(), `printf %s "$GBOT_PIN_PARENT_ENV"`, in, 5*time.Second, nil)
+	if res.Outcome != HookOutcomeSuccess || res.Stdout != "inherited" {
+		t.Errorf("no-source env hook = (%q,%v), want inherited — the child lost the parent env", res.Stdout, res.Outcome)
+	}
+}
+
+// The start-failure envelope is reachable, not environment luck: with PATH
+// pointing at an empty directory exec.LookPath("bash") fails, and ExecuteHook
+// must report a non-blocking error that names the hook.
+func TestExecuteHook_StartFailureReportsEnvelope(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	e := &CommandExecutor{}
+	result := e.ExecuteHook(context.Background(), "echo hello", &HookInput{}, 10*time.Second, nil)
+	if result.Outcome != HookOutcomeNonBlockingError {
+		t.Errorf("Outcome = %v, want HookOutcomeNonBlockingError when the interpreter cannot be found", result.Outcome)
+	}
+	if !strings.Contains(result.Stderr, "hooks: start command:") {
+		t.Errorf("Stderr = %q, want the start-command envelope", result.Stderr)
+	}
+	if result.HookName != "echo hello" {
+		t.Errorf("HookName = %q, want the command", result.HookName)
+	}
+}
+
+// ToolInput/ToolResponse are json.RawMessage, so a caller-supplied malformed
+// fragment makes json.Marshal(HookInput) itself fail: the marshal envelope is
+// reachable from the public API, no production seam needed.
+func TestExecuteHook_MarshalFailureReportsEnvelope(t *testing.T) {
+	e := &CommandExecutor{}
+	result := e.ExecuteHook(context.Background(), "cat", &HookInput{ToolInput: json.RawMessage("{")}, 5*time.Second, nil)
+	if result.Outcome != HookOutcomeNonBlockingError {
+		t.Errorf("Outcome = %v, want HookOutcomeNonBlockingError for an unserializable HookInput", result.Outcome)
+	}
+	if !strings.Contains(result.Stderr, "hooks: marshal input:") {
+		t.Errorf("Stderr = %q, want the marshal-input envelope", result.Stderr)
+	}
+	if result.HookName != "cat" {
+		t.Errorf("HookName = %q, want the command", result.HookName)
+	}
+}

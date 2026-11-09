@@ -494,6 +494,7 @@ func TestHookOutputParseContinue(t *testing.T) {
 
 func TestHookOutcomeString(t *testing.T) {
 	cases := map[HookOutcome]string{
+		HookOutcomeUnknown:          "unknown",
 		HookOutcomeSuccess:          "success",
 		HookOutcomeBlocking:         "blocking",
 		HookOutcomeNonBlockingError: "non_blocking_error",
@@ -504,6 +505,12 @@ func TestHookOutcomeString(t *testing.T) {
 		if got := outcome.String(); got != want {
 			t.Errorf("HookOutcome(%d).String() = %q, want %q", outcome, got, want)
 		}
+	}
+	// The zero value must be Unknown, not Success: an Outcome nobody assigned
+	// has to be visible as a gap instead of reading as a passing hook.
+	var r HookResult
+	if r.Outcome != HookOutcomeUnknown || HookOutcome(0) != HookOutcomeUnknown {
+		t.Errorf("zero-value Outcome = %d (%q), want Unknown", r.Outcome, r.Outcome.String())
 	}
 }
 
@@ -583,8 +590,8 @@ func TestTimeoutConstants(t *testing.T) {
 
 func TestHookResultZeroValue(t *testing.T) {
 	var r HookResult
-	if r.Outcome != HookOutcomeSuccess {
-		t.Errorf("zero HookResult.Outcome = %d, want HookOutcomeSuccess (0)", r.Outcome)
+	if r.Outcome != HookOutcomeUnknown {
+		t.Errorf("zero HookResult.Outcome = %d (%q), want HookOutcomeUnknown (0)", r.Outcome, r.Outcome.String())
 	}
 	if r.Stdout != "" {
 		t.Errorf("zero HookResult.Stdout = %q, want empty", r.Stdout)
@@ -594,5 +601,17 @@ func TestHookResultZeroValue(t *testing.T) {
 	}
 	if r.HookName != "" {
 		t.Errorf("zero HookResult.HookName = %q, want empty", r.HookName)
+	}
+}
+
+func TestTimeoutForHook_Boundaries(t *testing.T) {
+	if got := TimeoutForHook(1, HookPreToolUse); got != time.Second {
+		t.Errorf("TimeoutForHook(1) = %v, want 1s", got)
+	}
+	if got := TimeoutForHook(0, HookPreToolUse); got != timeoutForEvent(HookPreToolUse) {
+		t.Errorf("TimeoutForHook(0) = %v, want the event default %v", got, timeoutForEvent(HookPreToolUse))
+	}
+	if got := TimeoutForHook(-3, HookPreToolUse); got != timeoutForEvent(HookPreToolUse) {
+		t.Errorf("TimeoutForHook(-3) = %v, want the event default", got)
 	}
 }

@@ -3,6 +3,7 @@ package reload
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -661,5 +662,584 @@ func TestReload_ReportsPluginMcpRow(t *testing.T) {
 	}
 	if found.Note != "1 added · 0 removed · 0 changed" {
 		t.Errorf("row note = %q, want the 1-added summary", found.Note)
+	}
+}
+
+// Pin tests for reload.go mutation sweep; assertions are exact so a single
+// changed byte flips the test. Mutant line:mutator pairs are in the sweep
+// ledger. Fixtures reuse the reloadTestEnv harness from reload_test.go.
+
+const pinSettings = `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"t/m"}}`
+
+// Phase-0 hooks parse abort: exact envelope fields.
+func TestPinReload_AbortsOnBadHooksJSON(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	writeSettingsFile(t, env.home, `{"hooks":"@@@not-json@@@","providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"t/m"}}`)
+	rep := env.orchestrator().Reload(context.Background())
+	if rep.Applied {
+		t.Fatal("reload applied despite unparseable hooks")
+	}
+	if rep.Phase != 0 {
+		t.Errorf("Phase = %d, want 0", rep.Phase)
+	}
+	if !strings.HasPrefix(rep.Err, "settings hooks:") {
+		t.Errorf("Err = %q, want 'settings hooks:' prefix", rep.Err)
+	}
+	if len(rep.Files) != 1 {
+		t.Fatalf("Files = %+v, want one row", rep.Files)
+	}
+	row := rep.Files[0]
+	if row.Status != StatusFailed {
+		t.Errorf("row.Status = %q, want failed", row.Status)
+	}
+	if row.Path != displaySettingsPath() {
+		t.Errorf("row.Path = %q, want %q", row.Path, displaySettingsPath())
+	}
+	if row.ErrLine == "" {
+		t.Error("row.ErrLine empty, want the parse error")
+	}
+	if rep.Counts.Failed != 1 {
+		t.Errorf("Counts.Failed = %d, want 1", rep.Counts.Failed)
+	}
+	if rep.LastReloadAt.IsZero() {
+		t.Error("LastReloadAt zero on abort, want a timestamp")
+	}
+}
+
+// CreateAllProviders and ResolvePrimary aborts carry the same envelope.
+func TestPinReload_AbortsOnBadProviders(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	writeSettingsFile(t, env.home, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["$PIN_NO_SUCH_KEY"],"models":{"m":{}}}],"model":{"default":"t/m"}}`)
+	rep := env.orchestrator().Reload(context.Background())
+	if rep.Applied || rep.Phase != 0 {
+		t.Fatalf("Applied=%v Phase=%d, want abort at phase 0", rep.Applied, rep.Phase)
+	}
+	if !strings.Contains(rep.Err, "no providers could be created") {
+		t.Errorf("Err = %q, want the providers error", rep.Err)
+	}
+	if len(rep.Files) != 1 || rep.Files[0].Status != StatusFailed || rep.Files[0].Path != displaySettingsPath() {
+		t.Errorf("Files = %+v, want one failed settings row", rep.Files)
+	}
+
+	writeSettingsFile(t, env.home, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"ghost/m"}}`)
+	rep2 := env.orchestrator().Reload(context.Background())
+	if rep2.Applied || rep2.Phase != 0 {
+		t.Fatalf("Applied=%v Phase=%d, want abort at phase 0 for a bad default model", rep2.Applied, rep2.Phase)
+	}
+	if !strings.Contains(rep2.Err, "ghost") {
+		t.Errorf("Err = %q, want the resolve error naming ghost", rep2.Err)
+	}
+	if len(rep2.Files) != 1 || rep2.Files[0].Status != StatusFailed || rep2.Files[0].Path != displaySettingsPath() || rep2.Files[0].ErrLine == "" {
+		t.Errorf("Files = %+v, want one failed settings row with ErrLine", rep2.Files)
+	}
+}
+
+// Single-flight refusal: exact envelope with a live LastReloadAt.
+func TestPinReload_SingleFlightEnvelope(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	orch.mu.Lock()
+	defer orch.mu.Unlock()
+	rep := orch.Reload(context.Background())
+	if rep.Applied {
+		t.Fatal("concurrent reload applied")
+	}
+	if rep.Phase != 0 {
+		t.Errorf("Phase = %d, want 0", rep.Phase)
+	}
+	if rep.Err != "reload already in progress" {
+		t.Errorf("Err = %q, want the single-flight refusal", rep.Err)
+	}
+	if rep.LastReloadAt.IsZero() {
+		t.Error("LastReloadAt zero on refusal, want a timestamp")
+	}
+}
+
+// A successful reload stamps LastReloadAt, phase 4, applied, and swaps every
+// env field the holder exposes.
+func TestPinReload_SuccessEnvelopeAndEnvSwap(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	oldEnv := env.holder.Load()
+	orch := env.orchestrator()
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if rep.Phase != 4 {
+		t.Errorf("Phase = %d, want 4", rep.Phase)
+	}
+	if rep.LastReloadAt.IsZero() {
+		t.Error("LastReloadAt zero on success, want a timestamp")
+	}
+	if rep.Err != "" {
+		t.Errorf("Err = %q, want empty on success", rep.Err)
+	}
+	newEnv := env.holder.Load()
+	if newEnv == oldEnv {
+		t.Fatal("holder still holds the pre-reload env")
+	}
+	if newEnv.Cfg == nil || newEnv.ProviderMap == nil || newEnv.Provider == nil ||
+		newEnv.Model != "m" || newEnv.PrimaryProviderCfg == nil || newEnv.ModelThinking == nil {
+		t.Errorf("swapped env incomplete: %+v", newEnv)
+	}
+	if newEnv.McpReg != oldEnv.McpReg {
+		t.Error("swapped env lost the live McpReg (in-place reconcile)")
+	}
+	if orch.Env() != newEnv {
+		t.Error("Orchestrator.Env() does not reflect the swap")
+	}
+}
+
+// Mid-flight settings change guard aborts at phase 1 with the note.
+func TestPinReload_MidFlightGuardEnvelope(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	orch.afterValidate = func() {
+		writeSettingsFile(t, env.home, pinSettings+"\n")
+	}
+	rep := orch.Reload(context.Background())
+	if rep.Applied || rep.Phase != 1 {
+		t.Fatalf("Applied=%v Phase=%d, want abort at phase 1", rep.Applied, rep.Phase)
+	}
+	if !strings.Contains(rep.Err, "changed during reload") {
+		t.Errorf("Err = %q, want the mid-flight refusal", rep.Err)
+	}
+	if len(rep.Files) != 1 || rep.Files[0].Status != StatusFailed || rep.Files[0].Note == "" {
+		t.Errorf("Files = %+v, want one failed row with a note", rep.Files)
+	}
+}
+
+// The skills-failure path appends the exact failed row and keeps counts.
+func TestPinReload_SkillsFailureRow(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	orch.loadSkillsFn = func() error { return errors.New("pin: skills down") }
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("skills failure aborted the reload: %+v", rep)
+	}
+	var row *FileEntry
+	for i := range rep.Files {
+		if rep.Files[i].Status == StatusFailed {
+			row = &rep.Files[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("no failed row for the skills failure: %+v", rep.Files)
+	}
+	if !strings.HasSuffix(row.Path, filepath.Join(".gbot", "skills")) {
+		t.Errorf("row.Path = %q, want the .gbot/skills home path", row.Path)
+	}
+	if row.ErrLine != "pin: skills down" {
+		t.Errorf("row.ErrLine = %q, want pin: skills down", row.ErrLine)
+	}
+	if rep.Counts.Failed != 1 {
+		t.Errorf("Counts.Failed = %d, want 1", rep.Counts.Failed)
+	}
+}
+
+// Permission rules in user settings build a checker on the swapped env.
+func TestPinReload_PermissionCheckerBuilt(t *testing.T) {
+	env := newReloadTestEnv(t, `{"permissions":{"ask":["Bash(git push *)"]},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"t/m"}}`)
+	rep := env.orchestrator().Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if env.holder.Load().PermissionChecker == nil {
+		t.Fatal("PermissionChecker nil after reload despite rules in settings")
+	}
+}
+
+func TestPinReload_NoRulesNoChecker(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	rep := env.orchestrator().Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if pc := env.holder.Load().PermissionChecker; pc != nil {
+		t.Errorf("PermissionChecker = %v, want nil without rules", pc)
+	}
+}
+
+// First MCP server after an MCP-less start: the swapped env gains a registry
+// and the MCP row reports the add.
+func TestPinReload_FirstServerBuildsRegistry(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	// .mcp.json in the project dir gives allServers one entry while the
+	// startup env has no registry.
+	writeFileT(t, filepath.Join(env.work, ".mcp.json"), `{"mcpServers":{"pinsrv":{"command":"/bin/true"}}}`)
+	rep := env.orchestrator().Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if env.holder.Load().McpReg == nil {
+		t.Fatal("swapped env has no McpReg despite a first server")
+	}
+	if rep.Counts.Reloaded < 1 {
+		t.Errorf("Counts.Reloaded = %d, want >=1 (settings + MCP rows)", rep.Counts.Reloaded)
+	}
+	var mcpRow *FileEntry
+	for i := range rep.Files {
+		if rep.Files[i].Path == "MCP" {
+			mcpRow = &rep.Files[i]
+		}
+	}
+	if mcpRow == nil {
+		t.Fatalf("no MCP row: %+v", rep.Files)
+	}
+	if mcpRow.Status != StatusReloaded {
+		t.Errorf("MCP row.Status = %q, want reloaded", mcpRow.Status)
+	}
+	if !strings.Contains(mcpRow.Note, "1 added") {
+		t.Errorf("MCP row.Note = %q, want '1 added'", mcpRow.Note)
+	}
+	if !strings.Contains(mcpRow.Note, "0 removed") {
+		t.Errorf("MCP row.Note = %q, want '0 removed'", mcpRow.Note)
+	}
+}
+
+// The second reload with no changes reports no MCP row and unchanged counts.
+func TestPinReload_SecondCycleUnchanged(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	if rep := orch.Reload(context.Background()); !rep.Applied {
+		t.Fatalf("first reload failed: %+v", rep)
+	}
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("second reload failed: %+v", rep)
+	}
+	for _, f := range rep.Files {
+		if f.Path == "MCP" {
+			t.Errorf("unchanged cycle emitted an MCP row: %+v", f)
+		}
+		if f.Status == StatusReloaded {
+			t.Errorf("unchanged cycle reported reloaded row: %+v", f)
+		}
+	}
+	if rep.Counts.Reloaded != 0 {
+		t.Errorf("Counts.Reloaded = %d, want 0", rep.Counts.Reloaded)
+	}
+}
+
+// Phase 4 refreshes every top-level engine and stamps the counter.
+func TestPinReload_RefreshesEnginesCounter(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	eng := newReloadEngine(t, env)
+	env.engineMgr.Add(&engine.EngineViewState{Engine: eng, ID: "main", Name: "Main"})
+	before := len(env.engineMgr.List())
+	if before != 1 {
+		t.Fatalf("test env engines = %d, want 1", before)
+	}
+	rep := env.orchestrator().Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if rep.EnginesRefreshed != before {
+		t.Errorf("EnginesRefreshed = %d, want %d", rep.EnginesRefreshed, before)
+	}
+}
+
+// display helpers are the wui/TUI surface contract.
+func TestPinDisplayPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := displaySettingsPath(); !strings.HasSuffix(got, filepath.Join(".gbot", "settings.json")) {
+		t.Errorf("displaySettingsPath = %q", got)
+	}
+	if got := displayHomePath(filepath.Join("a", "b")); got != filepath.Join("~", "a", "b") {
+		t.Errorf("displayHomePath rel = %q, want ~/a/b", got)
+	}
+	if got := displayPath(filepath.Join(home, "x", "y")); got != filepath.Join("~", "x", "y") {
+		t.Errorf("displayPath under home = %q, want ~/x/y", got)
+	}
+	if got := displayPath("/abs/elsewhere"); got != "/abs/elsewhere" {
+		t.Errorf("displayPath abs = %q", got)
+	}
+	if got := displayPluginPath(filepath.Join(home, "plugins", "p"), "skills"); !strings.HasSuffix(got, filepath.Join("~", "plugins", "p", "skills")) {
+		t.Errorf("displayPluginPath = %q", got)
+	}
+}
+
+// A plugin whose manifest carries hooks/skills/agents/repls produces rows on
+// first reload and none on the second.
+func TestPinReload_PluginRowsLifecycle(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	env.writePlugin(t, "pinplug", map[string]string{
+		"plugin.json":         `{"name":"pinplug","version":"1","skills":"./skills/","repls":"./repl/"}`,
+		"hooks/hooks.json":    `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+		"skills/pin/SKILL.md": `---\nname: pin\n---\nbody\n`,
+		"agents/pin.md":       `---\nname: pin\n---\nbody\n`,
+		"repl/pin.js":         "var x = 1",
+	})
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("first reload failed: %+v", rep)
+	}
+	var sawHooks, sawSkills, sawAgents, sawRepl, sawMcp bool
+	for _, f := range rep.Files {
+		switch {
+		case strings.HasSuffix(f.Path, filepath.Join("pinplug", "hooks", "hooks.json")):
+			sawHooks = true
+			if f.Status != StatusReloaded || f.Note == "" {
+				t.Errorf("hooks row = %+v, want reloaded with note", f)
+			}
+		case strings.HasSuffix(f.Path, filepath.Join("pinplug", "skills")+string(os.PathSeparator)):
+			sawSkills = true
+		case strings.HasSuffix(f.Path, filepath.Join("pinplug", "agents")+string(os.PathSeparator)):
+			sawAgents = true
+		case strings.HasSuffix(f.Path, filepath.Join("pinplug", "repl")+string(os.PathSeparator)):
+			sawRepl = true
+		case f.Path == "MCP":
+			sawMcp = true
+		}
+	}
+	if !sawHooks || !sawSkills || !sawAgents || !sawRepl {
+		t.Errorf("plugin rows incomplete: hooks=%v skills=%v agents=%v repl=%v files=%+v", sawHooks, sawSkills, sawAgents, sawRepl, rep.Files)
+	}
+	if sawMcp {
+		t.Errorf("MCP row emitted for a plugin without servers: %+v", rep.Files)
+	}
+
+	rep2 := orch.Reload(context.Background())
+	if !rep2.Applied {
+		t.Fatalf("second reload failed: %+v", rep2)
+	}
+	pluginRows := 0
+	for _, f := range rep2.Files {
+		if !strings.Contains(f.Path, "pinplug") {
+			continue
+		}
+		pluginRows++
+		if f.Status != StatusUnchanged {
+			t.Errorf("unchanged plugin row not marked unchanged: %+v", f)
+		}
+	}
+	if pluginRows == 0 {
+		t.Errorf("second cycle dropped all plugin rows: %+v", rep2.Files)
+	}
+}
+
+// The settings diff note carries joined leaf changes.
+func TestPinReload_SettingsDiffNote(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	if rep := orch.Reload(context.Background()); !rep.Applied {
+		t.Fatalf("first reload failed: %+v", rep)
+	}
+	writeSettingsFile(t, env.home, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k2"],"models":{"m":{}}}],"model":{"default":"t/m"}}`)
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("second reload failed: %+v", rep)
+	}
+	var row *FileEntry
+	for i := range rep.Files {
+		if rep.Files[i].Path == displaySettingsPath() {
+			row = &rep.Files[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("no settings row: %+v", rep.Files)
+	}
+	if row.Status != StatusReloaded {
+		t.Errorf("settings row.Status = %q, want reloaded", row.Status)
+	}
+	if !strings.Contains(row.Note, "keys") {
+		t.Errorf("settings row.Note = %q, want the keys leaf change", row.Note)
+	}
+	if !rep.SettingsChanged {
+		t.Error("SettingsChanged false despite a settings diff")
+	}
+}
+
+// A dropped .mcp.json server aborts phase 1 with the exact row.
+func TestPinReload_DroppedMcpRowExact(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	o := env.orchestrator()
+	mcpPath := filepath.Join(env.work, ".mcp.json")
+	writeFileT(t, mcpPath, `{"mcpServers":{"s":"not-an-object"}}`)
+	rep := o.Reload(context.Background())
+	if rep.Applied {
+		t.Fatal("reload applied despite a dropped server")
+	}
+	if rep.Phase != 1 {
+		t.Fatalf("Phase = %d, want 1", rep.Phase)
+	}
+	if len(rep.Files) != 1 {
+		t.Fatalf("Files = %+v, want exactly the dropped-server row", rep.Files)
+	}
+	row := rep.Files[0]
+	if row.Path != "mcpServers.s" {
+		t.Errorf("row.Path = %q, want the mcpServers.s validation pointer", row.Path)
+	}
+	if row.Status != StatusFailed {
+		t.Errorf("row.Status = %q, want failed", row.Status)
+	}
+	if row.ErrLine == "" {
+		t.Error("row.ErrLine empty, want the validation message")
+	}
+	if rep.Counts.Failed != 1 {
+		t.Errorf("Counts.Failed = %d, want 1", rep.Counts.Failed)
+	}
+}
+
+// A plugin-pieces load failure aborts with the generic "plugins" row.
+func TestPinReload_PluginScanFailureRow(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	blocker := filepath.Join(env.plugins, "blocker")
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{deps: Deps{WorkingDir: env.work, ProjectDir: env.work, PluginsDir: blocker, Hooks: env.hookSys, SkillReg: env.skillReg, Env: env.holder}}
+	o.loadSkillsFn = func() error { return env.skillReg.Load() }
+	rep := o.Reload(context.Background())
+	if rep.Applied {
+		t.Fatal("reload applied despite a plugin scan failure")
+	}
+	if rep.Phase != 1 {
+		t.Fatalf("Phase = %d, want 1", rep.Phase)
+	}
+	if len(rep.Files) != 1 || rep.Files[0].Path != "plugins" || rep.Files[0].Status != StatusFailed {
+		t.Errorf("Files = %+v, want the generic plugins row", rep.Files)
+	}
+}
+
+// Phase 4 skips nil-engine view states without breaking the counter.
+func TestPinReload_NilEngineViewStateSkipped(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	eng := newReloadEngine(t, env)
+	env.engineMgr.Add(&engine.EngineViewState{ID: "ghost"}) // nil Engine
+	env.engineMgr.Add(&engine.EngineViewState{Engine: eng, ID: "main", Name: "Main"})
+	rep := env.orchestrator().Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("reload failed: %+v", rep)
+	}
+	if rep.EnginesRefreshed != 1 {
+		t.Errorf("EnginesRefreshed = %d, want 1 (nil view state skipped, real engine refreshed)", rep.EnginesRefreshed)
+	}
+}
+
+// Changing BOTH settings scopes produces the note from the changed scope
+// (user first, project fallback) and the changed fallback note.
+func TestPinReload_ProjectSettingsDiffNote(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	if rep := orch.Reload(context.Background()); !rep.Applied {
+		t.Fatalf("first reload failed: %+v", rep)
+	}
+	// Project-only change: note comes from the project diff.
+	writeFileT(t, filepath.Join(env.work, ".gbot", "settings.json"), `{"permissions":{"ask":["Read(*)"]}}`)
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("project reload failed: %+v", rep)
+	}
+	var row *FileEntry
+	for i := range rep.Files {
+		if rep.Files[i].Path == displaySettingsPath() {
+			row = &rep.Files[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("no settings row: %+v", rep.Files)
+	}
+	if row.Status != StatusReloaded {
+		t.Errorf("row.Status = %q, want reloaded", row.Status)
+	}
+	if !strings.Contains(row.Note, "permissions") {
+		t.Errorf("row.Note = %q, want the permissions leaf", row.Note)
+	}
+	if row.NoteKey != "newSessionsOnly" {
+		t.Errorf("row.NoteKey = %q, want newSessionsOnly", row.NoteKey)
+	}
+
+	// A byte change with no JSON leaf diff falls back to "changed".
+	writeFileT(t, filepath.Join(env.work, ".gbot", "settings.json"), "{\n\"permissions\":{\"ask\":[\"Read(*)\"]}\n}")
+	rep2 := orch.Reload(context.Background())
+	if !rep2.Applied {
+		t.Fatalf("formatting reload failed: %+v", rep2)
+	}
+	for _, f := range rep2.Files {
+		if f.Path == displaySettingsPath() {
+			if f.Status != StatusReloaded || f.Note != "changed" {
+				t.Errorf("formatting-only row = %+v, want reloaded/changed", f)
+			}
+		}
+	}
+}
+
+// Unchanged cycles count every plugin row as unchanged.
+func TestPinReload_SecondCycleCountsUnchanged(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	env.writePlugin(t, "pinplug", map[string]string{
+		"plugin.json": `{"name":"pinplug","version":"1","repls":"./repl/"}`,
+		"repl/p.js":   "var x = 1",
+	})
+	if rep := orch.Reload(context.Background()); !rep.Applied {
+		t.Fatalf("first reload failed: %+v", rep)
+	}
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("second reload failed: %+v", rep)
+	}
+	if rep.Counts.Reloaded != 0 {
+		t.Errorf("Counts.Reloaded = %d, want 0 on the unchanged cycle", rep.Counts.Reloaded)
+	}
+	// settings + prompt + skills + repl rows ride every cycle as unchanged.
+	if rep.Counts.Unchanged != 4 {
+		t.Errorf("Counts.Unchanged = %d, want 4 (settings, prompt, skills, repl): %+v", rep.Counts.Unchanged, rep.Files)
+	}
+}
+
+// MCP rows across a server lifecycle: add → no-row unchanged → change note.
+func TestPinReload_McpRowLifecycle(t *testing.T) {
+	env := newReloadTestEnv(t, pinSettings)
+	orch := env.orchestrator()
+	mcpPath := filepath.Join(env.work, ".mcp.json")
+
+	writeFileT(t, mcpPath, `{"mcpServers":{"pinsrv":{"command":"/bin/sleep","args":["1"]}}}`)
+	rep := orch.Reload(context.Background())
+	if !rep.Applied {
+		t.Fatalf("add reload failed: %+v", rep)
+	}
+	var note string
+	for _, f := range rep.Files {
+		if f.Path == "MCP" {
+			note = f.Note
+		}
+	}
+	if !strings.Contains(note, "1 added") || !strings.Contains(note, "0 removed") || !strings.Contains(note, "0 changed") {
+		t.Fatalf("add note = %q, want '1 added · 0 removed · 0 changed'", note)
+	}
+
+	// Unchanged cycle: NO MCP row at all.
+	rep2 := orch.Reload(context.Background())
+	if !rep2.Applied {
+		t.Fatalf("unchanged reload failed: %+v", rep2)
+	}
+	for _, f := range rep2.Files {
+		if f.Path == "MCP" {
+			t.Fatalf("unchanged cycle emitted an MCP row: %+v", f)
+		}
+	}
+
+	// Changed server: note reports the change.
+	writeFileT(t, mcpPath, `{"mcpServers":{"pinsrv":{"command":"/bin/sleep","args":["2"]}}}`)
+	rep3 := orch.Reload(context.Background())
+	if !rep3.Applied {
+		t.Fatalf("change reload failed: %+v", rep3)
+	}
+	note3 := ""
+	for _, f := range rep3.Files {
+		if f.Path == "MCP" {
+			note3 = f.Note
+		}
+	}
+	if !strings.Contains(note3, "1 changed") {
+		t.Fatalf("change note = %q, want '1 changed'", note3)
 	}
 }

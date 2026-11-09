@@ -590,12 +590,11 @@ func New(p *Params) *Engine {
 // aborting is an explicit user action, so its bare-text persist is an
 // accepted cost for keeping the message runnable.
 func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
+	// Backstop only: every production caller passes a Priority explicitly
+	// (PriorityNext, or PriorityLater for post-query work). The per-mode
+	// split this replaces assigned the same value on both sides.
 	if item.Priority == "" {
-		if item.Mode == types.ItemModePrompt {
-			item.Priority = types.PriorityNext
-		} else {
-			item.Priority = types.PriorityNext
-		}
+		item.Priority = types.PriorityNext
 	}
 	e.attachments.Enqueue(item)
 	p := item.Value
@@ -1191,7 +1190,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		subEng.SetProvider(subProvider)
 	}
 
-	WireEngine(subEng, subRefs, *e.sharedDeps)
+	WireEngine(subEng, subRefs, e.sharedDeps.McpReg)
 
 	// Root-table routing: the sub's Agent tool is re-pointed at THIS engine's
 	// table, so every background spawn by this sub — at any depth — lands in

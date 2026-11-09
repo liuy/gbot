@@ -110,6 +110,9 @@ func TestParseFlags_PortImpliesNoTUI(t *testing.T) {
 		{"--port long form", []string{"--port", "9"}, true, "9", false},
 		{"verbose alone stays TUI", []string{"-v"}, false, "8765", false},
 		{"-p followed by a flag keeps default port", []string{"-p", "-v"}, true, "8765", false},
+		{"-p followed by a subcommand keeps default port", []string{"-p", "restart"}, true, "8765", false},
+		{"-p followed by a host:port keeps default port", []string{"-p", "127.0.0.1:9"}, true, "8765", false},
+		{"-p followed by an empty token keeps default port", []string{"-p", ""}, true, "8765", false},
 		{"daemon is NoTUI and isolated", []string{"-d"}, true, "8765", true},
 	}
 	for _, tc := range cases {
@@ -130,5 +133,29 @@ func TestParseFlags_PortImpliesNoTUI(t *testing.T) {
 	// `-p -v` must keep Verbose — the flag after -p is not its port.
 	if opts := ParseFlags([]string{"-p", "-v"}); !opts.Verbose {
 		t.Error("-v after bare -p must still register as Verbose")
+	}
+}
+
+func TestParseFlags_PortAndVerbose(t *testing.T) {
+	t.Setenv("GBOT_VERBOSE", "")
+	got := ParseFlags([]string{"-p", "1234", "-v"})
+	if got.WSPort != "1234" || !got.NoTUI || !got.Verbose || got.DaemonMode {
+		t.Errorf("ParseFlags(-p 1234 -v) = %+v, want port 1234, no TUI, verbose", got)
+	}
+	got = ParseFlags([]string{"-p", "-v"})
+	if got.WSPort != "8765" || !got.NoTUI || !got.Verbose {
+		t.Errorf("ParseFlags(-p -v) = %+v, want the default port kept and verbose", got)
+	}
+	got = ParseFlags([]string{"-d"})
+	if !got.DaemonMode || !got.NoTUI || got.Verbose {
+		t.Errorf("ParseFlags(-d) = %+v, want daemon and no TUI", got)
+	}
+	t.Setenv("GBOT_VERBOSE", "1")
+	got = ParseFlags(nil)
+	if !got.Verbose {
+		t.Error("GBOT_VERBOSE must turn verbosity on")
+	}
+	if got.WSPort != "8765" {
+		t.Errorf("default WSPort = %q, want 8765", got.WSPort)
 	}
 }

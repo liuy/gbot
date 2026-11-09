@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,5 +266,160 @@ func TestMatchFilePathNoConfigRootPatternError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pattern match error") {
 		t.Errorf("expected pattern match error, got: %v", err)
+	}
+}
+
+func TestMatchFilePath_PatternsAndErrors(t *testing.T) {
+	root := t.TempDir()
+	rule := func(pattern string) Rule {
+		p := pattern
+		return Rule{Value: RuleValue{ToolName: "Read", RuleContent: &p}, Action: ActionDeny, ConfigRoot: root}
+	}
+	for _, tc := range []struct {
+		pattern, path string
+		want          bool
+	}{
+		{"src/**", "src/a/b.go", true},
+		{"src/**", "other/a.go", false},
+		{"*.go", "a.go", true},
+		{"*.go", "src/a.go", false},
+		{"secret.txt", "secret.txt", true},
+		{"./secret.txt", "secret.txt", true},
+	} {
+		got, err := MatchFilePath(rule(tc.pattern), tc.path)
+		if err != nil {
+			t.Errorf("MatchFilePath(%q,%q): %v", tc.pattern, tc.path, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("MatchFilePath(%q,%q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
+		}
+	}
+	if _, err := MatchFilePath(rule("src/**"), "../outside"); err == nil ||
+		!strings.Contains(err.Error(), "..") {
+		t.Errorf("traversal path error = %v, want a traversal rejection", err)
+	}
+	if ok, err := MatchFilePath(rule("["), "a.go"); err == nil ||
+		!strings.HasPrefix(err.Error(), "pattern match error: ") {
+		t.Errorf("bad pattern error = %v (matched=%v), want the pattern-match envelope", err, ok)
+	}
+}
+
+func TestIsDangerousFilePath_Table(t *testing.T) {
+	for _, p := range []string{".bashrc", "/home/u/.bashrc", ".git/config", "/x/.git/hooks/pre-push", ".mcp.json", ".vscode/settings.json", ".git"} {
+		if !IsDangerousFilePath(p) {
+			t.Errorf("IsDangerousFilePath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"main.go", "src/.gitignore", "README.md"} {
+		if IsDangerousFilePath(p) {
+			t.Errorf("IsDangerousFilePath(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestValidateFilePattern_BadPattern(t *testing.T) {
+	if err := ValidateFilePattern("src/**"); err != nil {
+		t.Errorf("ValidateFilePattern(src/**) = %v, want nil", err)
+	}
+	err := ValidateFilePattern("[")
+	if err == nil || !strings.HasPrefix(err.Error(), `invalid file pattern "[": `) {
+		t.Errorf("ValidateFilePattern([) = %v, want the invalid-pattern envelope", err)
+	}
+	if !errors.Is(err, err) {
+		t.Error("errors.Is broken for the pattern error")
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("pattern error %q does not wrap the matcher error", err.Error())
+	}
+}
+
+func TestNormalizePathAndSegments(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"./a/b", "a/b"},
+		{"a//b", "a/b"},
+		{"/a/b", "/a/b"},
+		{"", "."},
+		// Clean must run before the "./" strip: otherwise a ".." or "."
+		// segment survives and the matcher compares a different path.
+		{"./a/../b", "b"},
+		{"a/./b", "a/b"},
+	} {
+		if got := normalizePath(tc.in); got != tc.want {
+			t.Errorf("normalizePath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := splitPathSegments(""); len(got) != 0 {
+		t.Errorf("splitPathSegments(\"\") = %q, want empty", got)
+	}
+	if got := splitPathSegments("a/b"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("splitPathSegments(a/b) = %q, want [a b]", got)
+	}
+	// Backslash is a separator too (Windows-authored rules), and the leading
+	// "/" must be dropped or every absolute path gains an empty first segment.
+	if got := splitPathSegments(`/a\b`); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf(`splitPathSegments(\a\b) = %q, want [a b]`, got)
+	}
+	if got := splitPathSegments("/a/b"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("splitPathSegments(/a/b) = %q, want [a b] (no empty leading segment)", got)
+	}
+	if !containsPathTraversal("a/../b") || containsPathTraversal("a/b") {
+		t.Error("containsPathTraversal misclassified")
+	}
+}
+
+func TestIsDangerousFilePath_RelativeAndEmpty(t *testing.T) {
+	for _, p := range []string{"./.bashrc", "./.git/config", ".//.bashrc"} {
+		if !IsDangerousFilePath(p) {
+			t.Errorf("IsDangerousFilePath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"", "/", "//"} {
+		if IsDangerousFilePath(p) {
+			t.Errorf("IsDangerousFilePath(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestMatchFilePath_ResolvesSymlinks(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "a.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	p := "real/*"
+	rule := Rule{Value: RuleValue{ToolName: "Read", RuleContent: &p}, Action: ActionDeny, ConfigRoot: root}
+	ok, err := MatchFilePath(rule, "link/a.go")
+	if err != nil {
+		t.Fatalf("MatchFilePath via symlink: %v", err)
+	}
+	if !ok {
+		t.Error("a symlinked path did not resolve to the denied pattern")
+	}
+	// A path whose ancestors do not exist must still be matchable (fail-secure).
+	ok, err = MatchFilePath(rule, "real/new-file.go")
+	if err != nil {
+		t.Fatalf("MatchFilePath for a new file: %v", err)
+	}
+	if !ok {
+		t.Error("a not-yet-existing path under a denied pattern did not match")
+	}
+}
+
+func TestMatchFilePath_PatternErrorWraps(t *testing.T) {
+	p := "["
+	rule := Rule{Value: RuleValue{ToolName: "Read", RuleContent: &p}, Action: ActionDeny, ConfigRoot: t.TempDir()}
+	_, err := MatchFilePath(rule, "a.go")
+	if err == nil {
+		t.Fatal("a malformed pattern returned no error")
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("pattern error %q does not wrap the matcher error", err.Error())
 	}
 }

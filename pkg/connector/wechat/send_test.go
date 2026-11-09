@@ -132,6 +132,50 @@ func TestSendFile_File(t *testing.T) {
 	if item.FileItem.Len != "500" {
 		t.Errorf("Len = %q, want '500' (plaintext size as string)", item.FileItem.Len)
 	}
+	// The media reference is what the WeChat client actually downloads with.
+	if item.FileItem.Media == nil {
+		t.Fatal("FileItem.Media is nil")
+	}
+	if item.FileItem.Media.EncryptQueryParam != "download-param-abc" {
+		t.Errorf("FileItem.Media.EncryptQueryParam = %q, want download-param-abc",
+			item.FileItem.Media.EncryptQueryParam)
+	}
+}
+
+// SendFile must hand its own ctx to both seams (they are the cancellation
+// handle for a stuck upload) and keep the cause reachable through %w, so a
+// caller can errors.Is a transport failure.
+func TestSendFile_CarriesContextAndWrapsCause(t *testing.T) {
+	t.Parallel()
+	type ctxKey struct{}
+	cause := errors.New("upstream refused")
+	var uploadCtx, sendCtx context.Context
+	c := &WeChatConnector{
+		client:       &http.Client{},
+		state:        &State{AccountID: "bot"},
+		activeUserID: "user",
+		uploadFn: func(ctx context.Context, client *http.Client, baseURL, token, toUserID,
+			filePath string, mediaType int) (*UploadedFileInfo, error) {
+			uploadCtx = ctx
+			return &UploadedFileInfo{AesKey: "k", DownloadEncryptedQueryParam: "dl", FileSize: 1, FileSizeCiphertext: 2}, nil
+		},
+		sendItemFn: func(ctx context.Context, client *http.Client, baseURL, token,
+			fromUser, toUser string, item Item, contextToken, clientID string) error {
+			sendCtx = ctx
+			return cause
+		},
+	}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "mark")
+	err := c.SendFile(ctx, "/tmp/doc.pdf", "")
+	if uploadCtx == nil || uploadCtx.Value(ctxKey{}) != "mark" {
+		t.Errorf("uploadFn ctx = %v, want the caller's ctx", uploadCtx)
+	}
+	if sendCtx == nil || sendCtx.Value(ctxKey{}) != "mark" {
+		t.Errorf("sendItemFn ctx = %v, want the caller's ctx", sendCtx)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("error = %v, want it to wrap the sendItemFn cause with %%w", err)
+	}
 }
 
 func TestSendFile_CaptionIgnored_SingleCall(t *testing.T) {
@@ -168,13 +212,14 @@ func TestSendFile_NoActiveUser(t *testing.T) {
 
 func TestSendFile_UploadError(t *testing.T) {
 	t.Parallel()
+	cause := errors.New("cdn unreachable")
 	c := &WeChatConnector{
 		client:       &http.Client{},
 		state:        &State{AccountID: "bot"},
 		activeUserID: "user",
 		uploadFn: func(ctx context.Context, client *http.Client, baseURL, token, toUserID,
 			filePath string, mediaType int) (*UploadedFileInfo, error) {
-			return nil, errors.New("cdn unreachable")
+			return nil, cause
 		},
 		sendItemFn: func(ctx context.Context, client *http.Client, baseURL, token,
 			fromUser, toUser string, item Item, contextToken, clientID string) error {
@@ -188,6 +233,9 @@ func TestSendFile_UploadError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "upload") {
 		t.Errorf("error = %q, want 'upload'", err.Error())
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("error = %v, want it to wrap the upload cause with %%w", err)
 	}
 }
 

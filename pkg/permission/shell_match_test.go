@@ -191,3 +191,70 @@ func TestCompileWildcardPatternEscapedStarAndWildcard(t *testing.T) {
 		t.Error(`ParseShellRule("echo\\**") should not match "echohello" (missing literal *)`)
 	}
 }
+
+func TestParseShellRule_FieldsAndMatching(t *testing.T) {
+	wild := ParseShellRule("git *")
+	if wild.Type != ShellRuleWildcard {
+		t.Errorf("wildcard rule type = %v, want ShellRuleWildcard", wild.Type)
+	}
+	if wild.Pattern != "git *" {
+		t.Errorf("wildcard Pattern = %q, want %q", wild.Pattern, "git *")
+	}
+	if wild.re == nil {
+		t.Fatal("wildcard rule has no compiled regex")
+	}
+	exact := ParseShellRule("git status")
+	if exact.Type != ShellRuleExact {
+		t.Errorf("exact rule type = %v, want ShellRuleExact", exact.Type)
+	}
+	if exact.Pattern != "git status" || exact.re != nil {
+		t.Errorf("exact rule = %+v, want Pattern git status and no regex", exact)
+	}
+	// A wildcard rule with no compiled regex must fail secure (no match).
+	broken := ShellRule{Type: ShellRuleWildcard, Pattern: "git *"}
+	if MatchShellCommand(broken, "git push") {
+		t.Error("an uncompiled wildcard rule matched")
+	}
+	unknown := ShellRule{Type: ShellRuleType(7), Pattern: "x"}
+	if MatchShellCommand(unknown, "x") {
+		t.Error("an unknown rule type matched")
+	}
+}
+
+func TestHasWildcards_EscapedStarsAreNotWildcards(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"ls *", true},
+		{`ls \*`, false},
+		{`*`, true},
+		{`\*`, false},
+		{`\\*`, true},
+		{`a\*b`, false},
+		{`a*b`, true},
+		{`no wildcards`, false},
+	} {
+		if got := HasWildcards(tc.in); got != tc.want {
+			t.Errorf("HasWildcards(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchWildcardPattern_StarEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, input string
+		want           bool
+	}{
+		{"git *", "git push", true},
+		{"git *", "gitpush", false},
+		{`a\*b`, "a*b", true},
+		{`a\*b`, "axxb", false},
+		{"*", "anything", true},
+		{"a\\\\b", `a\b`, true},
+	} {
+		if got := MatchWildcardPattern(tc.pattern, tc.input); got != tc.want {
+			t.Errorf("MatchWildcardPattern(%q,%q) = %v, want %v", tc.pattern, tc.input, got, tc.want)
+		}
+	}
+}

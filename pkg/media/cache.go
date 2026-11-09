@@ -106,13 +106,18 @@ func (s *Store) Close() {
 	}
 }
 
+// DefaultExt is the extension used when a caller gives none. Single source for
+// every media fallback (Store.Path, saveReader, ExtFromMime) so a cached file's
+// suffix can never disagree with itself.
+const DefaultExt = ".bin"
+
 // Path returns the would-be cache path for data with the given extension,
 // without writing the file. Useful for testing dedup and for callers that want
 // to predict the destination. ext must include the leading dot (".png"); an
-// empty ext falls back to ".bin".
+// empty ext falls back to DefaultExt.
 func (s *Store) Path(cat Category, data []byte, ext string) string {
 	if ext == "" {
-		ext = ".bin"
+		ext = DefaultExt
 	}
 	sum := sha256.Sum256(data)
 	// sum[:8] = first 8 bytes → 16 hex chars, matching the goal's "sha256[:16]"
@@ -129,7 +134,7 @@ var ErrTooLarge = errors.New("media: exceeds size limit")
 // Save writes data to {root}/{category}/{sha256[:16]}.{ext} and returns the
 // absolute path. If the file already exists (same content hash), it is NOT
 // rewritten — the existing path is returned, preserving the original mtime
-// (dedup). ext must include the leading dot (".png"); empty falls back to ".bin".
+// (dedup). ext must include the leading dot (".png"); empty falls back to DefaultExt.
 // Writes are atomic: data lands in a temp file then os.Rename into place, so a
 // crash never leaves a partial cache file.
 func (s *Store) Save(cat Category, data []byte, ext string) (string, error) {
@@ -148,7 +153,7 @@ func (s *Store) SaveReader(cat Category, ext string, r io.Reader, maxBytes int64
 // saveReader is the shared streaming core behind Save and SaveReader.
 func (s *Store) saveReader(cat Category, ext string, r io.Reader, maxBytes int64) (string, int64, error) {
 	if ext == "" {
-		ext = ".bin"
+		ext = DefaultExt
 	}
 	dir := filepath.Join(s.RootDir, string(cat))
 	// The final name is unknown until the hash completes, so the temp is

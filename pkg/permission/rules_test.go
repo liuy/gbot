@@ -202,3 +202,61 @@ func TestParseRuleValueCloseParenBeforeOpen(t *testing.T) {
 		t.Errorf("expected nil RuleContent, got %v", *rv.RuleContent)
 	}
 }
+
+func TestParseRuleValue_MalformedAndEscapes(t *testing.T) {
+	content := func(s string) *string { p := &s; return p }
+	cases := []struct {
+		in        string
+		tool      string
+		ruleValue *string
+	}{
+		{"Bash", "Bash", nil},
+		{"Bash(ls *)", "Bash", content("ls *")},
+		{"Bash()", "Bash", nil},
+		{"Bash(*)", "Bash", nil},
+		{"(x)", "(x)", nil},
+		{"Bash(a\\(b)", "Bash", content("a(b")},
+		{"Bash(a\\)b)", "Bash", content("a)b")},
+		{`Bash\\(x)`, `Bash\\`, content("x")},
+		{"Bash(a(b)c)", "Bash", content("a(b)c")},
+		{"Bash(a\\)", "Bash(a\\)", nil},
+		{"Bash(", "Bash(", nil},
+		{"Bash)x(", "Bash)x(", nil},
+		{"x)y(", "x)y(", nil},
+		{"Bash(x)y", "Bash(x)y", nil},
+		{"\\(a)", "\\(a)", nil},
+		{"Bash(\\\\)", "Bash", content("\\")},
+	}
+	for _, tc := range cases {
+		got := ParseRuleValue(tc.in)
+		if got.ToolName != tc.tool {
+			t.Errorf("ParseRuleValue(%q).ToolName = %q, want %q", tc.in, got.ToolName, tc.tool)
+		}
+		switch {
+		case tc.ruleValue == nil && got.RuleContent != nil:
+			t.Errorf("ParseRuleValue(%q).RuleContent = %q, want nil", tc.in, *got.RuleContent)
+		case tc.ruleValue != nil && got.RuleContent == nil:
+			t.Errorf("ParseRuleValue(%q).RuleContent = nil, want %q", tc.in, *tc.ruleValue)
+		case tc.ruleValue != nil && *got.RuleContent != *tc.ruleValue:
+			t.Errorf("ParseRuleValue(%q).RuleContent = %q, want %q", tc.in, *got.RuleContent, *tc.ruleValue)
+		}
+	}
+}
+
+func TestEscapeUnescapeRuleContent(t *testing.T) {
+	for _, s := range []string{`plain`, `a(b)c`, `a\)b`, `\`, `\\`, `a\\b(c)`} {
+		esc := EscapeRuleContent(s)
+		if got := UnescapeRuleContent(esc); got != s {
+			t.Errorf("round-trip %q → %q → %q", s, esc, got)
+		}
+	}
+	if got := EscapeRuleContent(`a(b`); got != `a\(b` {
+		t.Errorf("EscapeRuleContent = %q, want %q", got, `a\(b`)
+	}
+	if got := RuleValueToString(RuleValue{ToolName: "Bash", RuleContent: new("ls *")}); got != "Bash(ls *)" {
+		t.Errorf("RuleValueToString = %q, want Bash(ls *)", got)
+	}
+	if got := RuleValueToString(RuleValue{ToolName: "Bash"}); got != "Bash" {
+		t.Errorf("RuleValueToString bare = %q, want Bash", got)
+	}
+}

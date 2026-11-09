@@ -23,6 +23,10 @@ func mcpCloseFromHolder(h *reload.EnvHolder) func() {
 		// registry a late reload built (after an MCP-less startup) is
 		// closed too.
 		if reg := h.Load().McpReg; reg != nil {
+			// Currently unreachable: mcp.Registry.Close's closeInner returns nil
+			// on both exits and drops per-server Close errors in a select. The
+			// envelope stays on purpose — the day closeInner propagates those
+			// errors, deleting this would swallow them silently at exit.
 			if err := reg.Close(); err != nil {
 				slog.Warn("cleanup: mcp registry close", "error", err)
 			}

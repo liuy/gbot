@@ -682,3 +682,56 @@ func TestMaybeResize_GifPassthrough(t *testing.T) {
 			res.Dimensions.OriginalWidth, res.Dimensions.OriginalHeight)
 	}
 }
+
+// The 132 size-gate comparisons must not be mutated to skip the compression
+// ladder: for alpha-bearing PNGs the ladder's palettized refit differs byte-
+// The 132 size-gate comparisons must not be mutated to skip the
+// compression ladder: for alpha-bearing PNGs the ladder's palettized
+// refit differs byte-wise from any resample path (CatmullRom
+// premultiplies NRGBA through RGBA, altering semitransparent pixels
+// even at 1:1 scale). Opaque fixtures byte-match across paths and
+// cannot see the difference. The >= mutants flip only at exactly
+// ImageMaxWidth/Height, so each strip pins one comparison; strips stay
+// thin to keep the CPU cost negligible under full-load check.
+func TestPinResizer_AlphaStripsTakePalettizedRefit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w, h int
+	}{
+		{"width-boundary", 2000, 8},
+		{"height-boundary", 8, 2000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := image.NewNRGBA(image.Rect(0, 0, tc.w, tc.h))
+			x := uint32(0x9E3779B9)
+			for i := range img.Pix {
+				x ^= x << 13
+				x ^= x >> 17
+				x ^= x << 5
+				img.Pix[i] = byte(x >> 16)
+			}
+			for i := 3; i < len(img.Pix); i += 4 {
+				img.Pix[i] |= 1
+			}
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, img); err != nil {
+				t.Fatal(err)
+			}
+			raw := buf.Bytes()
+			pal, ok := tryEncodePngPalettizedFromBytes(raw)
+			if !ok {
+				t.Fatal("palettized encode of alpha strip fixture failed")
+			}
+			res, err := MaybeResizeAndDownsampleImageBufferWithBudget(raw, len(raw), "png", len(pal))
+			if err != nil {
+				t.Fatalf("alpha strip ladder errored: %v", err)
+			}
+			if res.MediaType != "png" {
+				t.Errorf("MediaType = %q, want png (palettized refit)", res.MediaType)
+			}
+			if !bytes.Equal(res.Buffer, pal) {
+				t.Errorf("alpha strip took a non-palettized path: got %d bytes, want the %d-byte refit", len(res.Buffer), len(pal))
+			}
+		})
+	}
+}

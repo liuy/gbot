@@ -61,11 +61,12 @@ func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	proc.HideWindow(cmd)
 
-	// Set environment: inherit parent + inject extra vars + plugin extraEnv.
-	if len(e.Env) > 0 || len(extraEnv) > 0 {
-		cmd.Env = append(cmd.Environ(), e.Env...)
-		cmd.Env = append(cmd.Env, extraEnv...)
-	}
+	// Assigning cmd.Env is the one decision that can strip the parent
+	// environment (os/exec inherits only while cmd.Env stays nil), so it is
+	// unconditional and always starts from cmd.Environ() — there is no branch
+	// left that could hand the child the injected vars alone.
+	cmd.Env = append(cmd.Environ(), e.Env...)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	// Pipe stdin for hook input JSON.
 	stdin, err := cmd.StdinPipe()

@@ -462,6 +462,14 @@ func pickMediaItem(items []Item) *Item {
 
 // Documents are parsed inline via fileread; zero-value block on failure degrades to text-only.
 func (c *WeChatConnector) downloadMedia(ctx context.Context, items []Item) types.ContentBlock {
+	if ctx == nil {
+		// Name the real cause instead of letting http.NewRequestWithContext
+		// fail deep in the fetch: without this the message degrades to text
+		// under a generic "download failed" line and the caller's nil ctx
+		// never surfaces.
+		slog.Error("wechat: downloadMedia called with nil context, degrading to text-only")
+		return types.ContentBlock{}
+	}
 	if c.mediaCache == nil {
 		return types.ContentBlock{}
 	}
@@ -534,11 +542,9 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 	}
 	// Preserve the original filename extension — round-tripping through
 	// MimeFromExt→ExtFromMime loses types like .pptx/.docx that are in the
-	// forward map but not the reverse map, collapsing them to .bin.
+	// forward map but not the reverse map, collapsing them to .bin. A missing
+	// extension is left to media.Store.Save, which owns the DefaultExt fallback.
 	ext := filepath.Ext(f.FileName)
-	if ext == "" {
-		ext = ".bin"
-	}
 	path, err := c.mediaCache.Save(media.CategoryDocument, data, ext)
 	if err != nil {
 		slog.Warn("wechat: file cache save failed, falling back to text-only", "error", err)

@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -596,5 +597,187 @@ func TestExtractContentPatternCheckContentAskButNoAskRules(t *testing.T) {
 	got := ExtractContentPattern("TestTool_AskNoRules", json.RawMessage(`{}`), contentRules)
 	if got != "" {
 		t.Errorf("got %q, want empty string when CheckContent returns ask but no ask rules exist", got)
+	}
+}
+
+func TestDefaultAllowDecisionValue(t *testing.T) {
+	if DefaultAllow.Action != ActionAllow {
+		t.Errorf("DefaultAllow.Action = %q, want allow", DefaultAllow.Action)
+	}
+	if DefaultAllow.Message != "" || DefaultAllow.Rule != nil || DefaultAllow.ContentRules != nil {
+		t.Errorf("DefaultAllow = %+v, want only the action set", DefaultAllow)
+	}
+}
+
+func TestCheckBashPermission_WrappersAndXargs(t *testing.T) {
+	content := func(s string) *string { p := &s; return p }
+	deny := Rule{Value: RuleValue{ToolName: "Bash", RuleContent: content("rm *")}, Action: ActionDeny, Source: "user"}
+	ask := Rule{Value: RuleValue{ToolName: "Bash", RuleContent: content("git push*")}, Action: ActionAsk, Source: "user"}
+	rules := []Rule{deny, ask}
+	for _, cmd := range []string{"rm -rf /", "FOO=1 rm -rf /", "timeout 5 rm -rf /"} {
+		action, rule, err := CheckBashPermission(cmd, rules)
+		if err != nil {
+			t.Errorf("CheckBashPermission(%q): %v", cmd, err)
+			continue
+		}
+		if action != ActionDeny || rule == nil || rule.Value.RuleContent == nil || *rule.Value.RuleContent != "rm *" {
+			t.Errorf("CheckBashPermission(%q) = (%q,%v), want deny by the rm rule", cmd, action, rule)
+		}
+	}
+	action, rule, err := CheckBashPermission("git push origin main", rules)
+	if err != nil || action != ActionAsk || rule == nil {
+		t.Errorf("git push = (%q,%v,%v), want ask by a rule", action, rule, err)
+	}
+	action, rule, err = CheckBashPermission("ls -la", rules)
+	if err != nil || action != ActionAllow || rule != nil {
+		t.Errorf("ls = (%q,%v,%v), want allow with no rule", action, rule, err)
+	}
+	// xargs must not smuggle a denied command past the matcher.
+	action, _, err = CheckBashPermission("echo rm | xargs rm", rules)
+	if err != nil {
+		t.Fatalf("xargs command: %v", err)
+	}
+	if action != ActionDeny {
+		t.Errorf("xargs-wrapped deny command action = %q, want deny", action)
+	}
+	_, _, err = CheckBashPermission("if true; then", rules)
+	if err == nil || !strings.HasPrefix(err.Error(), "shell parse error: ") {
+		t.Errorf("unparsable command error = %v, want the shell-parse envelope", err)
+	}
+}
+
+func TestCheckFilePermission_DangerousAndRules(t *testing.T) {
+	content := func(s string) *string { p := &s; return p }
+	rules := []Rule{{Value: RuleValue{ToolName: "Edit", RuleContent: content("src/**")}, Action: ActionAsk, Source: "user"}}
+	action, rule, err := CheckFilePermission("src/a.go", rules)
+	if err != nil || action != ActionAsk || rule == nil {
+		t.Errorf("src/a.go = (%q,%v,%v), want ask by a rule", action, rule, err)
+	}
+	action, rule, err = CheckFilePermission("other/a.go", rules)
+	if err != nil || action != ActionAllow || rule != nil {
+		t.Errorf("other/a.go = (%q,%v,%v), want allow", action, rule, err)
+	}
+	action, rule, err = CheckFilePermission(".git/config", rules)
+	if err != nil || action != ActionAsk || rule != nil {
+		t.Errorf(".git/config = (%q,%v,%v), want ask with no rule (danger-file guard)", action, rule, err)
+	}
+}
+
+func TestExtractHelpers(t *testing.T) {
+	if got := ExtractBashCommand(json.RawMessage(`{"command":"ls -la"}`)); got != "ls -la" {
+		t.Errorf("ExtractBashCommand = %q, want ls -la", got)
+	}
+	if got := ExtractBashCommand(json.RawMessage(`{"cmd":1}`)); got != "" {
+		t.Errorf("ExtractBashCommand on a non-string = %q, want empty", got)
+	}
+	if got := ExtractBashCommand(json.RawMessage(`not json`)); got != "" {
+		t.Errorf("ExtractBashCommand on bad JSON = %q, want empty", got)
+	}
+	if got := ExtractFilePath(json.RawMessage(`{"file_path":"/tmp/a.go"}`)); got != "/tmp/a.go" {
+		t.Errorf("ExtractFilePath = %q", got)
+	}
+	if got := ExtractFilePath(json.RawMessage(`[1]`)); got != "" {
+		t.Errorf("ExtractFilePath on an array = %q, want empty", got)
+	}
+	content := func(s string) *string { p := &s; return p }
+	RegisterContentChecker("ProbeTool", func(_ json.RawMessage, rules []Rule) RuleAction {
+		for _, r := range rules {
+			if r.Action == ActionDeny {
+				return ActionDeny
+			}
+		}
+		for _, r := range rules {
+			if r.Action == ActionAsk {
+				return ActionAsk
+			}
+		}
+		return ActionAllow
+	})
+	rules := []Rule{
+		{Value: RuleValue{ToolName: "ProbeTool", RuleContent: content("rm *")}, Action: ActionDeny},
+		{Value: RuleValue{ToolName: "ProbeTool", RuleContent: content("git *")}, Action: ActionAsk},
+	}
+	if got := ExtractContentPattern("ProbeTool", json.RawMessage(`{"command":"git push"}`), rules[1:]); got != "ProbeTool(git *)" {
+		t.Errorf("ExtractContentPattern = %q, want the first ask rule rendered", got)
+	}
+	if got := ExtractContentPattern("ProbeTool", json.RawMessage(`{"command":"git push"}`), nil); got != "" {
+		t.Errorf("ExtractContentPattern with no rules = %q, want empty", got)
+	}
+	if got := ExtractContentPattern("UnregisteredTool", json.RawMessage(`{"command":"git push"}`), rules); got != "" {
+		t.Errorf("ExtractContentPattern for an unregistered tool = %q, want empty", got)
+	}
+	if got := CheckContent("ProbeTool", json.RawMessage(`{"command":"git push"}`), rules[:1]); got != ActionDeny {
+		t.Errorf("CheckContent = %q, want deny", got)
+	}
+}
+
+func TestMatchToolWildcard_Table(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, tool string
+		want          bool
+	}{
+		{"*", "Bash", true},
+		{"Web", "Web", true},
+		{"Web", "Grep", false},
+		{"mcp__*", "mcp__github__create", true},
+		{"mcp__*", "Bash", false},
+		{"mcp__github__*", "mcp__github__x", true},
+		{"*Edit", "NotebookEdit", false},
+	} {
+		if got := matchToolWildcard(tc.pattern, tc.tool); got != tc.want {
+			t.Errorf("matchToolWildcard(%q,%q) = %v, want %v", tc.pattern, tc.tool, got, tc.want)
+		}
+	}
+}
+
+func TestMCPInfoFromString_Shape(t *testing.T) {
+	info := MCPInfoFromString("mcp__github__create_issue")
+	if info == nil || info.Server != "github" || info.Tool != "create_issue" {
+		t.Fatalf("MCPInfoFromString = %+v, want github/create_issue", info)
+	}
+	if got := MCPInfoFromString("mcp__github"); got != nil {
+		t.Errorf("MCPInfoFromString(mcp__github) = %+v, want nil", got)
+	}
+	if got := MCPInfoFromString("Bash"); got != nil {
+		t.Errorf("MCPInfoFromString(Bash) = %+v, want nil", got)
+	}
+	if got := MCPInfoFromString("mcp____"); got == nil || got.Server != "" || got.Tool != "" {
+		t.Errorf("MCPInfoFromString(mcp____) = %+v, want empty server and tool", got)
+	}
+}
+
+func TestAuditLog_SanitizesAndCarriesRule(t *testing.T) {
+	logs := capturePermLogs(t)
+	content := func(s string) *string { p := &s; return p }
+	rule := &Rule{Value: RuleValue{ToolName: "Bash", RuleContent: content("rm *")}, Action: ActionDeny, Source: "user"}
+	auditLog("deny", "Bash", "rm -rf /\nsecond line", rule)
+	recs := logs.find("permission decision")
+	if len(recs) != 1 {
+		t.Fatalf("decision logged %d times, want 1", len(recs))
+	}
+	r := recs[0]
+	if r.level != slog.LevelWarn {
+		t.Errorf("level = %v, want WARN", r.level)
+	}
+	if r.attrs["action"] != "deny" || r.attrs["tool"] != "Bash" {
+		t.Errorf("attrs = %v, want action deny and tool Bash", r.attrs)
+	}
+	detail, _ := r.attrs["detail"].(string)
+	if detail != `rm -rf /\nsecond line` {
+		t.Errorf("detail = %q, want the newline escaped", detail)
+	}
+	if r.attrs["rule_source"] != "user" || r.attrs["rule_action"] != "deny" {
+		t.Errorf("rule attrs = %v/%v, want user/deny", r.attrs["rule_source"], r.attrs["rule_action"])
+	}
+	auditLog("allow", "Gre\nen", "de\ntail", nil)
+	recs = logs.find("permission decision")
+	if len(recs) != 2 {
+		t.Fatalf("decision logged %d times, want 2", len(recs))
+	}
+	if got, _ := recs[1].attrs["tool"].(string); got != `Gre\nen` {
+		t.Errorf("tool attr = %q, want the sanitized tool name", got)
+	}
+	if _, ok := recs[1].attrs["rule_source"]; ok {
+		t.Error("a rule-less decision logged rule provenance")
 	}
 }

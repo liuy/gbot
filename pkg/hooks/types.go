@@ -177,11 +177,16 @@ type HookOutput struct {
 type HookOutcome int
 
 const (
-	HookOutcomeSuccess          HookOutcome = iota // exit 0
-	HookOutcomeBlocking                            // exit 2 (TS: blocking error)
-	HookOutcomeNonBlockingError                    // exit other non-zero
-	HookOutcomeTimeout                             // exceeded timeout
-	HookOutcomeCancelled                           // context cancelled
+	// Unknown holds the zero value deliberately: a HookResult whose Outcome
+	// was never set must not read as Success. The wire never carries these
+	// numbers (HookResult has no JSON tags and no consumer outside pkg/
+	// compares them), so the order is free to change.
+	HookOutcomeUnknown          HookOutcome = iota
+	HookOutcomeSuccess                      // exit 0
+	HookOutcomeBlocking                     // exit 2 (TS: blocking error)
+	HookOutcomeNonBlockingError             // exit other non-zero
+	HookOutcomeTimeout                      // exceeded timeout
+	HookOutcomeCancelled                    // context cancelled
 )
 
 // String returns a human-readable name for the outcome.

@@ -83,7 +83,7 @@ func buildPerEngineHarness(t *testing.T, hookSystem *hooks.Hooks, tag string, re
 		TaskList:      tl,
 	})
 	eng.SetSharedDeps(&deps)
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 	return eng, refs.REPL
 }
@@ -226,7 +226,7 @@ func TestIntegration_PerEngine_ReentrantToolCallSkipsInnerJsHook(t *testing.T) {
 		TaskList:      tl,
 	})
 	t.Cleanup(func() { eng.Close() })
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	runQuery(t, eng)
@@ -528,7 +528,7 @@ func TestIntegration_PerEngine_PermissionRequestFromHookToolNoDeadlock(t *testin
 		TaskList:          tl,
 	})
 	eng.SetSharedDeps(&deps)
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	done := make(chan QueryResult, 1)

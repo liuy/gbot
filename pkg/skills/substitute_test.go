@@ -3,6 +3,8 @@ package skills
 import (
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -401,5 +403,113 @@ func TestReplaceShorthandIndexed_FollowedByWord(t *testing.T) {
 	result := SubstituteArguments(content, "foo bar", nil, true)
 	if !strings.Contains(result, "$1abc") {
 		t.Errorf("$1abc should not be replaced, got %q", result)
+	}
+}
+
+// An empty entry in argumentNames must be skipped outright: without the guard
+// the code substitutes the literal "${}" placeholder with a positional value.
+func TestSubstituteArguments_EmptyNameSkipped(t *testing.T) {
+	t.Parallel()
+	got := SubstituteArguments("a${}b $one", "x y", []string{"", "one"}, false)
+	if got != "a${}b y" {
+		t.Errorf("SubstituteArguments = %q, want %q (empty name must not substitute)", got, "a${}b y")
+	}
+}
+
+// replaceNamedArg must keep scanning after the first hit: a break at the loop
+// head leaves every later $name in place.
+func TestSubstituteArguments_RepeatedNamedArgs(t *testing.T) {
+	t.Parallel()
+	got := SubstituteArguments("$a-$a-$b", "1 2", []string{"a", "b"}, false)
+	if got != "1-1-2" {
+		t.Errorf("SubstituteArguments = %q, want 1-1-2 (every occurrence replaced)", got)
+	}
+}
+
+// The word-char class after $name decides whether the token is the name or a
+// longer identifier. Each class boundary is pinned with a byte that sits just
+// outside it: widening a class (e.g. "any byte >= 'a'") changes one of these.
+func TestSubstituteArguments_NamedArgWordBoundaryClasses(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"$a{t}", "1{t}"}, // '{' is above 'z'
+		{"$a]b", "1]b"},   // ']' is above 'A' but not an upper letter
+		{"$a:b", "1:b"},   // ':' is above '0' but not a digit
+		{"$a0", "$a0"},    // '0' is the low digit edge
+		{"$a9", "$a9"},    // '9' is the high digit edge
+		{"$a_b", "$a_b"},  // '_' is a word char
+		{"$aZ", "$aZ"},    // an upper letter is a word char
+		{"$a-b", "1-b"},   // '-' is not a word char
+	}
+	for _, tc := range cases {
+		if got := SubstituteArguments(tc.in, "1", []string{"a"}, false); got != tc.want {
+			t.Errorf("SubstituteArguments(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// Skipping a non-standalone $name must not end the scan: the next
+	// occurrence still has to be substituted.
+	if got := SubstituteArguments("$a_ $a", "1", []string{"a"}, false); got != "$a_ 1" {
+		t.Errorf("SubstituteArguments($a_ $a) = %q, want \"$a_ 1\"", got)
+	}
+}
+
+// Same for the shorthand scan: a skipped $Nabc must not stop the scan.
+func TestSubstituteArguments_ShorthandSkipKeepsScanning(t *testing.T) {
+	t.Parallel()
+	if got := SubstituteArguments("$1abc $0", "x y", nil, false); got != "$1abc x" {
+		t.Errorf("SubstituteArguments($1abc $0) = %q, want \"$1abc x\"", got)
+	}
+}
+
+// $ARGUMENTS[N] with N == len(parsedArgs) is out of bounds and must resolve to
+// "": widening the check to <= reads past the slice.
+func TestSubstituteArguments_ArgumentsIndexAtLen(t *testing.T) {
+	t.Parallel()
+	got := SubstituteArguments("x$ARGUMENTS[1]y", "only", nil, false)
+	if got != "xy" {
+		t.Errorf("SubstituteArguments = %q, want %q (index == len is out of bounds)", got, "xy")
+	}
+}
+
+// Tabs, newlines and CRs separate arguments just like spaces, and a run of
+// separators must not emit empty arguments.
+func TestParseArguments_AllSeparators(t *testing.T) {
+	t.Parallel()
+	got := ParseArguments("a \t\n\rb\t ")
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("ParseArguments = %q, want [a b] (tab/newline/CR separate; no empty args)", got)
+	}
+}
+
+// Array-form names: non-strings, blanks and digit-only entries are dropped, and
+// every entry must be examined — a break at the loop head keeps only the first.
+func TestParseArgumentNames_ArrayFiltering(t *testing.T) {
+	t.Parallel()
+	got := ParseArgumentNames([]any{"one", 7, "", "9", "two"})
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("ParseArgumentNames = %q, want [one two]", got)
+	}
+}
+
+// More typed args than names must return the empty hint, not slice past the end
+// of argNames.
+func TestGenerateProgressiveArgumentHint_MoreTypedThanNamed(t *testing.T) {
+	t.Parallel()
+	if got := GenerateProgressiveArgumentHint([]string{"a"}, []string{"x", "y"}); got != "" {
+		t.Errorf("hint = %q, want \"\" (typed args exceed names)", got)
+	}
+}
+
+// ArgNames: no arguments is nil (callers branch on nil), and every argument
+// name must be copied in order.
+func TestArgNames_EmptyAndMultiple(t *testing.T) {
+	t.Parallel()
+	if got := ArgNames(&types.SkillCommand{}); got != nil {
+		t.Errorf("ArgNames with no arguments = %v, want nil", got)
+	}
+	cmd := &types.SkillCommand{Arguments: []types.SkillArgument{{Name: "one"}, {Name: "two"}}}
+	got := ArgNames(cmd)
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("ArgNames = %q, want [one two]", got)
 	}
 }

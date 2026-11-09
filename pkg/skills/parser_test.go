@@ -641,3 +641,109 @@ Body`
 		t.Errorf("Type = %q, want %q (default for all skills)", skill.Type, "prompt")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Field-parser boundaries
+// ---------------------------------------------------------------------------
+
+func TestParseSkill_SourceDirFromFilePath(t *testing.T) {
+	for _, tt := range []struct{ path, want string }{
+		{"SKILL.md", ""},
+		{"/SKILL.md", ""},
+		{"/a/b/SKILL.md", "/a/b"},
+	} {
+		cmd := ParseSkill("s", tt.path, "---\ndescription: d\n---\nbody\n", types.SkillSourceProject)
+		if cmd == nil {
+			t.Fatalf("ParseSkill(%q) = nil", tt.path)
+		}
+		if cmd.SourceDir != tt.want {
+			t.Errorf("SourceDir for %q = %q, want %q", tt.path, cmd.SourceDir, tt.want)
+		}
+	}
+}
+
+func TestExtractDescriptionFromMarkdown_SkipsBlankAndHeadingLines(t *testing.T) {
+	if got := extractDescriptionFromMarkdown("\n\n#   Real title\nbody", "fallback"); got != "Real title" {
+		t.Errorf("description = %q, want %q", got, "Real title")
+	}
+	if got := extractDescriptionFromMarkdown("\n\n   \n", "fallback"); got != "fallback" {
+		t.Errorf("description for blank content = %q, want the fallback", got)
+	}
+}
+
+func TestParseAllowedTools_TrimsAndDropsBlanks(t *testing.T) {
+	got := parseAllowedTools(" Read , ,Write ")
+	if len(got) != 2 || got[0] != "Read" || got[1] != "Write" {
+		t.Errorf("allowed-tools = %q, want [Read Write]", got)
+	}
+	if got := parseAllowedTools(""); got != nil {
+		t.Errorf("allowed-tools for an empty string = %#v, want nil", got)
+	}
+	if got := parseAllowedTools("Read"); len(got) != 1 || got[0] != "Read" {
+		t.Errorf("allowed-tools for a single name = %q, want [Read]", got)
+	}
+	if got := parseAllowedTools(42); got != nil {
+		t.Errorf("allowed-tools for a non-string = %#v, want nil", got)
+	}
+}
+
+func TestToSkillArguments_SingleAndEmpty(t *testing.T) {
+	got := toSkillArguments([]string{"one"})
+	if len(got) != 1 || got[0].Name != "one" {
+		t.Fatalf("arguments = %#v, want one argument named \"one\"", got)
+	}
+	if got := toSkillArguments(nil); got != nil {
+		t.Errorf("arguments for no names = %#v, want nil", got)
+	}
+}
+
+func TestParseShell_InvalidValueWarnsOnlyWhenNonEmpty(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	if got := parseShell("zsh"); got != nil {
+		t.Errorf("parseShell(zsh) = %q, want nil", *got)
+	}
+	recs := logs.find("skills: invalid shell value, defaulting to bash")
+	if len(recs) != 1 {
+		t.Fatalf("invalid shell logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["value"] != "zsh" {
+		t.Errorf("value attr = %v, want zsh", recs[0].attrs["value"])
+	}
+	if got := parseShell(""); got != nil {
+		t.Errorf("parseShell(\"\") = %q, want nil", *got)
+	}
+	if got := logs.find("skills: invalid shell value, defaulting to bash"); len(got) != 1 {
+		t.Errorf("empty shell value logged %d total, want the single earlier record", len(got))
+	}
+	if got := parseShell("bash"); got == nil || *got != "bash" {
+		t.Errorf("parseShell(bash) = %v, want bash", got)
+	}
+}
+
+func TestParseSkillPaths_DropsBlanksAndMatchAlls(t *testing.T) {
+	for _, tt := range []struct {
+		in   any
+		want []string
+	}{
+		{"*", nil},
+		{"**", nil},
+		{"src/**", []string{"src"}},
+		{",*.go,", []string{"*.go"}},
+		{"*,*.go", []string{"*.go"}},
+		{[]any{"**", "a/*.ts"}, []string{"a/*.ts"}},
+		{nil, nil},
+		{42, nil},
+	} {
+		got := parseSkillPaths(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("parseSkillPaths(%#v) = %#v, want %#v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("parseSkillPaths(%#v) = %#v, want %#v", tt.in, got, tt.want)
+				break
+			}
+		}
+	}
+}

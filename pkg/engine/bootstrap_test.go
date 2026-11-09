@@ -226,7 +226,7 @@ func TestWireEngine_BashRegOnNotifyWired(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	if refs.BashReg.OnNotify == nil {
 		t.Fatal("BashReg.OnNotify should be wired by WireEngine")
@@ -265,7 +265,7 @@ func TestWireEngine_ProducerOrigins(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	if _, err := refs.Agent.Call(context.Background(),
@@ -310,7 +310,7 @@ func TestWireEngine_AgentNotifyFnWired(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	// Set a system prompt so the sysPromptFn returns something
 	eng.SetSystemPrompt("test prompt")
@@ -326,7 +326,7 @@ func TestWireEngine_AgentFactoryWired(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	// Verify ToolMapFn returns non-empty tools after wiring
 	toolMapFn := refs.Reg.ToolMapFn()
@@ -341,7 +341,7 @@ func TestWireEngine_REPLExecutorWired(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	// Verify REPL tool is functional (non-nil)
 	if refs.REPL == nil {
@@ -368,7 +368,7 @@ func TestWireEngine_NilMcpReg_NoPanic(t *testing.T) {
 	defer eng.Close()
 
 	// Should not panic with nil McpReg
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 }
 
 func TestWireEngine_NilHooks_NoPanic(t *testing.T) {
@@ -389,7 +389,7 @@ func TestWireEngine_NilHooks_NoPanic(t *testing.T) {
 	defer eng.Close()
 
 	// Should not panic with nil Hooks (RunAgent fires SubagentStart)
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +442,7 @@ func TestWireEngine_AgentNotifyCallbackEnqueues(t *testing.T) {
 	deps, refs, eng := newTestDepsAndRefs(t)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetSystemPrompt("sys")
 
 	// The agent notify callback is the first arg to SetNotifyFn.
@@ -478,7 +478,7 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	// Trigger the factory via AgentTool.Run
@@ -526,7 +526,7 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	// Trigger factory with fork=true (which sets opts.ForkMessages via callFork)
@@ -605,7 +605,7 @@ func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -656,7 +656,7 @@ func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	// The Agent tool's factory calls eng.RunAgent, whose root-table re-point
 	// reads toolRefs — WireEngine alone leaves it empty (production wiring
 	// always pairs the two).
@@ -711,7 +711,7 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 
 	refs.Reg.MustRegister(engTestTool)
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	// The REPL executor calls eng.ExecuteTool. Verify it's wired by executing REPL code.
 	replInput, _ := json.Marshal(map[string]any{
@@ -791,7 +791,7 @@ func TestWireEngine_AgentFactory_GeneralSpawn(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	// Plain spawn through the wired Agent tool: no fork messages, no caller
@@ -866,7 +866,7 @@ func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	agentInput, _ := json.Marshal(map[string]any{
@@ -911,7 +911,7 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 		McpReg:     mcpReg,
 	}
 	refs := CreateTools(deps, tl)
-	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect (SetEngine accepts nil)
+	WireEngine(nil, refs, deps.McpReg) // nil eng — only SetMcpConnect side effect (SetEngine accepts nil)
 
 	// Verify mcpConnect was set, then invoke it to exercise the closure body.
 	mcpFn := refs.Agent.McpConnectFn()
@@ -966,7 +966,7 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	// Verify the McpConnect callback was registered on the agent.
@@ -1034,7 +1034,7 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 
 	// Trigger the factory — SubagentStart hook should fire and inject context.
@@ -1167,7 +1167,7 @@ func TestAgentBackgroundSubagentEndToEnd(t *testing.T) {
 	})
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 	// The notification auto-turn requires a non-empty system prompt
 	// (startProcessAttachmentsIfIdle bails on empty).
@@ -1283,9 +1283,9 @@ func TestCreateTools_WithSessionRootRefs_BindsRootRegistries(t *testing.T) {
 	// recipient. Created before the job cleanups below: t.Cleanup is LIFO, so
 	// the jobs get killed while the engines are still alive to receive it.
 	rootEng := newWiredTestEngine(t)
-	WireEngine(rootEng, root, deps)
+	WireEngine(rootEng, root, deps.McpReg)
 	subEng := newWiredTestEngine(t)
-	WireEngine(subEng, sub, deps)
+	WireEngine(subEng, sub, deps.McpReg)
 
 	bashTool, ok := sub.Reg.Lookup("Bash")
 	if !ok {
@@ -1471,7 +1471,7 @@ func TestWireEngine_SetsBashJobNotify(t *testing.T) {
 	t.Parallel()
 	deps, refs, eng := newTestDepsAndRefs(t)
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	if refs.BashReg.OnNotify == nil {
 		t.Fatal("BashReg.OnNotify should be wired by WireEngine")
@@ -1500,7 +1500,7 @@ func TestWireEngine_SubPrivateTableNotManagerReachable(t *testing.T) {
 
 	subRefs := CreateTools(deps, task.NewList(""), WithSessionRootRefs(&rootRefs))
 	subEng := newWiredTestEngine(t)
-	WireEngine(subEng, subRefs, deps)
+	WireEngine(subEng, subRefs, deps.McpReg)
 
 	subID := spawnHoldingAgent(t, subRefs.Agent.Registry())
 	subRefs.Agent.SetRegistry(rootRefs.Agent.Registry())
@@ -1620,7 +1620,7 @@ func TestWireEngine_McpConnectBuildsAdaptersFromRefs(t *testing.T) {
 		McpReg:     registry,
 	}
 	refs := CreateTools(deps, tl)
-	WireEngine(nil, refs, deps)
+	WireEngine(nil, refs, deps.McpReg)
 
 	mcpFn := refs.Agent.McpConnectFn()
 	if mcpFn == nil {
@@ -1695,7 +1695,7 @@ func TestWireEngine_REPLToolListerBlanksFailedDescriptions(t *testing.T) {
 	})
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 
 	replInput, _ := json.Marshal(map[string]any{
 		"code": `const b = ALL_TOOLS.find(t => t.name === "DescErr");` +
@@ -1748,7 +1748,7 @@ func TestWireEngine_ForkSpawnInheritsParentSystemPrompt(t *testing.T) {
 	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 	const parentPrompt = "parent-system-prompt-7f3"
 	eng.SetSystemPrompt(parentPrompt)

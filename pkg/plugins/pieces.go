@@ -95,10 +95,10 @@ func loadPiecesOne(plugin *ResolvedPlugin) (*PluginPieces, error) {
 	if plugin.Manifest != nil && len(plugin.Manifest.McpServers) > 0 {
 		pluginData := PluginDataDir(plugin.Name)
 		for serverName, rawMsg := range plugin.Manifest.McpServers {
-			raw, err := json.Marshal(rawMsg)
-			if err != nil {
-				return nil, &FileError{Path: filepath.Join(plugin.RootPath, "plugin.json"), Err: fmt.Errorf("re-marshal server %q: %w", serverName, err)}
-			}
+			// RawMessage.MarshalJSON copies its bytes verbatim, so this
+			// re-marshal has no failure path (the manifest values come from
+			// json.Unmarshal and are valid JSON by construction).
+			raw, _ := json.Marshal(rawMsg)
 			expanded := substitutePluginVars(string(raw), plugin.RootPath, pluginData, CacheDir())
 			srvCfg, err := mcp.UnmarshalServerConfig(json.RawMessage(expanded))
 			if err != nil {

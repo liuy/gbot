@@ -116,3 +116,37 @@ func TestSupervisedStepdown_TTLNeverClobbersSuccessor(t *testing.T) {
 		t.Errorf("successor's PID file clobbered: %q", string(data))
 	}
 }
+
+func TestPidReclaimTTLPinned(t *testing.T) {
+	if pidReclaimTTL != 60*time.Second {
+		t.Errorf("pidReclaimTTL = %v, want 60s (the replacement boots in ~1s)", pidReclaimTTL)
+	}
+}
+
+func TestSupervisedStepdown(t *testing.T) {
+	dir := t.TempDir()
+	steppedDown.Store(false)
+	t.Cleanup(func() { steppedDown.Store(false) })
+	released := 0
+	busy := func() wui.BusyReport {
+		return wui.BusyReport{Busy: true, Items: []wui.BusyItem{{Kind: "query", Engine: "agent-1"}}}
+	}
+	ok, report := supervisedStepdown(busy, func() { released++ }, dir)
+	if !ok || len(report.Items) != 1 {
+		t.Errorf("busy stepdown = (%v, %v), want refused with the busy items", ok, report)
+	}
+	if released != 0 {
+		t.Errorf("release calls while busy = %d, want 0", released)
+	}
+	if steppedDown.Load() {
+		t.Error("a refused stepdown must not mark this process stepped down")
+	}
+	idle := func() wui.BusyReport { return wui.BusyReport{} }
+	ok, _ = supervisedStepdown(idle, func() { released++ }, dir)
+	if ok || released != 1 {
+		t.Errorf("idle stepdown = (%v, %d release calls), want accepted and one release", ok, released)
+	}
+	if !steppedDown.Load() {
+		t.Error("an accepted stepdown must mark this process stepped down")
+	}
+}

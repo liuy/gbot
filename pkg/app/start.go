@@ -63,7 +63,7 @@ func buildModelThinking(cfg *config.Config) map[string]llm.Effort {
 // gate, then exit through the osExit seam. Extracted so the seam loads and
 // the gate are unit-testable — the goroutine itself only adds the signal
 // wait; verified live by the manual kill -TERM/kill -9 post-install smoke.
-func handleDaemonSignal(supervisedClose, mcpExitClose *atomic.Value, dreamCancel context.CancelFunc, pidCleanup func()) {
+func handleDaemonSignal(supervisedClose, mcpExitClose, dreamCancelSlot *atomic.Value, pidCleanup func()) {
 	mcpClose := func() {}
 	if f, ok := mcpExitClose.Load().(func()); ok && f != nil {
 		mcpClose = f
@@ -72,6 +72,10 @@ func handleDaemonSignal(supervisedClose, mcpExitClose *atomic.Value, dreamCancel
 		if f, ok := supervisedClose.Load().(func()); ok && f != nil {
 			f()
 		}
+	}
+	var dreamCancel context.CancelFunc
+	if f, ok := dreamCancelSlot.Load().(context.CancelFunc); ok && f != nil {
+		dreamCancel = f
 	}
 	signalExitActions(dreamCancel, closeWS, mcpClose)
 	if !handedOver.Load() && !steppedDown.Load() {
@@ -139,9 +143,15 @@ func Start(opts Options) (*Instance, error) {
 	// through this seam. os.Exit skips Instance.Cleanup, so without this a
 	// SIGTERM/SIGINT exit leaks every stdio server process tree.
 	var mcpExitClose atomic.Value // func()
+	// Late-wired like the two above, and for a sharper reason: dreamCancel is
+	// assigned ~500 lines into the boot while this goroutine is already live.
+	// Capturing the plain var lets a boot-time SIGINT read a func value the
+	// boot is still writing and cancel a half-constructed cancelCtx; the slot
+	// gives the two goroutines an edge and a clean nil until the Store.
+	var dreamCancelSlot atomic.Value // context.CancelFunc
 	go func() {
 		<-sigCh
-		handleDaemonSignal(&supervisedClose, &mcpExitClose, dreamCancel, pidCleanup)
+		handleDaemonSignal(&supervisedClose, &mcpExitClose, &dreamCancelSlot, pidCleanup)
 	}()
 
 	logLevel := slog.LevelInfo
@@ -170,12 +180,17 @@ func Start(opts Options) (*Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(providerMap) == 0 {
-		return nil, fmt.Errorf("no API key configured. Set providers[].keys in ~/.gbot/settings.json")
-	}
+	// No empty-map guard here: CreateAllProviders already fails with
+	// "no providers could be created" when it ends up with zero providers,
+	// so a nil error implies a non-empty map.
 
 	provider, model, primaryProviderCfg, err := resolvePrimaryProvider(cfg, providerMap)
 	if err != nil {
+		// Live, not redundant with the check above: a provider can be
+		// configured (so ResolveModel picks it) yet have no usable key, and
+		// be skipped by CreateAllProviders while a sibling provider keeps the
+		// map non-empty. Falling through here would hand a nil
+		// primaryProviderCfg to ResolveContext below.
 		return nil, err
 	}
 
@@ -210,10 +225,11 @@ func Start(opts Options) (*Instance, error) {
 	if loadedPlugins != nil {
 		pluginServers = loadedPlugins.McpServers
 	}
-	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{}, pluginServers)
-	if err != nil {
-		slog.Warn("main: MCP initialization failed", "error", err)
-	}
+	// LoadAndConnectMCP never returns a non-nil error: bad server configs are
+	// logged at the source and per-server connect failures land in the
+	// returned registry. The error return stays for the reload path's
+	// signature, so there is no guard to write here.
+	mcpRegistry, _ := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{}, pluginServers)
 
 	contextWindow := primaryProviderCfg.ResolveContext(model)
 	maxTokens := primaryProviderCfg.ResolveMaxTokens(model)
@@ -497,7 +513,7 @@ func Start(opts Options) (*Instance, error) {
 		newEng.SetOnClose(func(sessionID string) {
 			refs.REPL.CleanSession(sessionID)
 		})
-		engine.WireEngine(newEng, refs, deps)
+		engine.WireEngine(newEng, refs, deps.McpReg)
 		// The voice block is user-facing only. The factory also re-creates
 		// every PERSISTED engine on startup (restore.go), and the wechat
 		// connector's engines ("wechat-<account>") are text channels — the
@@ -631,6 +647,7 @@ func Start(opts Options) (*Instance, error) {
 
 		dreamCtx, dreamCancelFn := context.WithCancel(context.Background())
 		dreamCancel = dreamCancelFn
+		dreamCancelSlot.Store(dreamCancelFn)
 		dreamDone = make(chan struct{})
 		_, idle, cooldown, _ := cfg.Dream.Defaults()
 		go func() {
@@ -672,8 +689,10 @@ func Start(opts Options) (*Instance, error) {
 			daemonMode:         opts.DaemonMode,
 			env:                holder,
 		}); err != nil {
+			// Live guard: startWeChatConnector fails only when the engine
+			// vanished between create and lookup (concurrent TUI "remove
+			// engine"). One bad account must not stop the others.
 			slog.Warn("wechat: start connector failed", "account_id", state.AccountID, "error", err)
-			continue
 		}
 	}
 	if len(states) > 0 {
@@ -967,25 +986,9 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		InputModalities:   nil,
 	})
 	dreamEng.SetToolRefs(dreamRefs)
-	engine.WireEngine(dreamEng, dreamRefs, engine.SharedDeps{
-		WorkingDir: d.WorkingDir,
-		SkillReg:   nil,
-		McpReg:     nil,
-		Hooks:      nil,
-		Cfg:        d.Cfg,
-		Providers:  d.ProviderMap,
-		LSPReg:     nil,
-		WSRegistry: nil,
-		ShortStore: d.Store,
-		// Kept identical to the CreateTools literal above: the two literals
-		// describe one engine. The table is discovered through mgr.engines +
-		// SetToolRefs via the CreateTools literal's EngineMgr (it feeds the
-		// message resolver); since WireEngine stopped touching EngineMgr, this
-		// literal's EngineMgr is dead weight — kept only so the literals stay
-		// in sync.
-		EngineMgr: d.EngineMgr,
-		IDMinter:  d.IDMinter,
-	})
+	// No MCP registry for the dream engine: it never forks agents or runs
+	// skills, so there are no agent-scoped MCP servers to connect.
+	engine.WireEngine(dreamEng, dreamRefs, nil)
 	dreamEng.SetSystemPrompt(dream.SystemPrompt)
 	dreamEng.SetOnClose(func(sessionID string) {
 		dreamRefs.BashReg.CleanupCompleted()

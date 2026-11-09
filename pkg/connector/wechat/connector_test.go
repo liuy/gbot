@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +15,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
@@ -1112,6 +1117,49 @@ func TestStartStop_Lifecycle(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not return within 5s")
+	}
+}
+
+// Stop's pollWg.Wait must genuinely block on the running loops: without it,
+// SaveState would race the poll loop's in-flight state writes. The fake
+// getUpdates ignores ctx on purpose, so only the Wait can hold Stop open.
+func TestStop_WaitsForInFlightPollLoop(t *testing.T) {
+	c := New(nil, hub.NewHub())
+	c.client = &http.Client{}
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	c.getUpdatesFn = func(ctx context.Context, client *http.Client, baseURL, token, syncBuf string,
+		timeout time.Duration) (*GetUpdatesResponse, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil, errors.New("pin: released")
+	}
+	if err := c.Start(context.Background(), &State{AccountID: "wait@im.bot", Token: "t", BaseURL: "http://127.0.0.1:1"}, t.TempDir()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-entered
+
+	stopped := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the poll loop was still inside getUpdatesFn — pollWg.Wait did not wait")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return after the poll loop was released")
+	}
+	if calls.Load() == 0 {
+		t.Error("poll loop never entered getUpdatesFn, so the wait was never exercised")
 	}
 }
 
@@ -3064,4 +3112,1073 @@ func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
 
 	// Clean up
 	eng.Close()
+}
+
+// ---------------------------------------------------------------------------
+// New — every wiring statement and cache must survive construction
+// ---------------------------------------------------------------------------
+
+func TestNew_WiresEveryHook(t *testing.T) {
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider:   &blockingEngineMock{release: make(chan struct{})},
+		Model:      "test-model",
+		Dispatcher: h,
+	})
+	t.Cleanup(eng.Close)
+	c := New(eng, h)
+	if c.engine != eng {
+		t.Error("engine field not set by New")
+	}
+	if c.hub != h {
+		t.Error("hub field not set by New")
+	}
+	if c.client == nil {
+		t.Error("client not set by New")
+	}
+	if cap(c.inboundCh) != 100 {
+		t.Errorf("inboundCh cap = %d, want 100", cap(c.inboundCh))
+	}
+	if c.dedup == nil {
+		t.Error("dedup not initialized by New")
+	}
+	if c.typingCache == nil {
+		t.Error("typingCache not initialized by New")
+	}
+	if c.MediaCache() == nil {
+		t.Error("mediaCache nil after successful media.New")
+	}
+	if c.sendToUserFn == nil {
+		t.Error("sendToUserFn not wired by New")
+	}
+	if c.sendMsgFn == nil {
+		t.Error("sendMsgFn not wired by New")
+	}
+	if c.sendItemFn == nil {
+		t.Error("sendItemFn not wired by New")
+	}
+	if c.uploadFn == nil {
+		t.Error("uploadFn not wired by New")
+	}
+	if c.queryFn == nil {
+		t.Error("queryFn not wired by New")
+	}
+	if c.queryWithContentFn == nil {
+		t.Error("queryWithContentFn not wired by New")
+	}
+	if c.getUpdatesFn == nil {
+		t.Error("getUpdatesFn not wired by New")
+	}
+	if c.isBusyFn == nil {
+		t.Error("isBusyFn not wired by New")
+	}
+	if c.isBusyFn() {
+		t.Error("isBusyFn true on a fresh engine")
+	}
+	// New must subscribe to the hub, otherwise no engine event ever reaches
+	// the connector.
+	h.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "z"})
+	if c.textBuffer.Len() != 1 {
+		t.Errorf("textBuffer len = %d after hub dispatch, want 1 (connector not subscribed)", c.textBuffer.Len())
+	}
+}
+
+func TestNew_MediaCacheDisabledWhenInitFails(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	t.Setenv("HOME", "/proc/gbot-sweep-unwritable-home")
+	c := New(nil, hub.NewHub())
+	if c.MediaCache() != nil {
+		t.Error("mediaCache set even though media.New failed")
+	}
+	recs := logs.find("wechat: media cache init failed, media attachments disabled")
+	if len(recs) != 1 {
+		t.Fatalf("media-cache failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].level != slog.LevelWarn {
+		t.Errorf("log level = %v, want WARN", recs[0].level)
+	}
+	if recs[0].attrs["error"] == nil {
+		t.Error("media-cache failure log carries no error attr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Start / Stop — typing API wiring, project dir, loop drain, state save
+// ---------------------------------------------------------------------------
+
+func TestStart_WiresTypingAPIFromState(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	var paths []string
+	var auths []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/" + EPGetConfig:
+			_, _ = w.Write([]byte(`{"ret":0,"typing_ticket":"tkt-7"}`))
+		case "/" + EPSendTyping:
+			if !strings.Contains(string(body), `"typing_ticket":"tkt-7"`) {
+				t.Errorf("sendtyping payload = %s, want ticket tkt-7 from getconfig", body)
+			}
+			_, _ = w.Write([]byte(`{"ret":0}`))
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			_, _ = w.Write([]byte(`{"ret":0}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(nil, hub.NewHub())
+	c.client = srv.Client()
+	c.getUpdatesFn = func(ctx context.Context, _ *http.Client, _, _, _ string, _ time.Duration) (*GetUpdatesResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	dir := t.TempDir()
+	state := &State{AccountID: "acct@im.bot", Token: "tok-1", BaseURL: srv.URL}
+	if err := c.Start(context.Background(), state, dir); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := logs.find("wechat: connector started"); len(got) != 1 {
+		t.Errorf("start logged %d times, want 1", len(got))
+	}
+	c.startTyping(context.Background(), "userA")
+	mu.Lock()
+	gotPaths, gotAuths := append([]string(nil), paths...), append([]string(nil), auths...)
+	mu.Unlock()
+	wantPaths := []string{"/" + EPGetConfig, "/" + EPSendTyping}
+	if len(gotPaths) != 2 || gotPaths[0] != wantPaths[0] || gotPaths[1] != wantPaths[1] {
+		t.Fatalf("typing requests = %v, want %v", gotPaths, wantPaths)
+	}
+	for i, a := range gotAuths {
+		if a != "Bearer tok-1" {
+			t.Errorf("request %d Authorization = %q, want %q", i, a, "Bearer tok-1")
+		}
+	}
+	c.Stop()
+	if _, err := os.Stat(StateFilePath(dir, "acct@im.bot")); err != nil {
+		t.Errorf("state file after Stop: %v", err)
+	}
+}
+
+func TestStop_WaitsForLoopsBeforeReturning(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logs := sweepCaptureLogs(t)
+		c := &WeChatConnector{
+			hub:         hub.NewHub(),
+			client:      &http.Client{},
+			inboundCh:   make(chan inboundMessage, 4),
+			typingCache: newTypingTicketCache(time.Minute),
+		}
+		var pollSawCancel atomic.Bool
+		entered := make(chan struct{})
+		var enterOnce sync.Once
+		c.getUpdatesFn = func(ctx context.Context, _ *http.Client, _, _, _ string, _ time.Duration) (*GetUpdatesResponse, error) {
+			enterOnce.Do(func() { close(entered) })
+			<-ctx.Done()
+			pollSawCancel.Store(true)
+			return nil, ctx.Err()
+		}
+		dir := t.TempDir()
+		if err := c.Start(context.Background(), &State{AccountID: "acct@im.bot"}, dir); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		<-entered
+		c.Stop()
+		if !pollSawCancel.Load() {
+			t.Error("Stop returned before the poll loop observed cancellation (pollWg.Wait skipped)")
+		}
+		if got := logs.find("wechat: connector stopped"); len(got) != 1 {
+			t.Errorf("stop logged %d times, want 1", len(got))
+		}
+		if _, err := os.Stat(StateFilePath(dir, "acct@im.bot")); err != nil {
+			t.Errorf("state file after Stop: %v", err)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Handle — query-start reset, thinking floor/accumulation, toolName delete
+// ---------------------------------------------------------------------------
+
+func TestHandle_QueryStartResetsStatsAndFlushClock(t *testing.T) {
+	c := &WeChatConnector{hub: hub.NewHub(), typingCache: newTypingTicketCache(time.Minute)}
+	c.thinkingSecs = 5
+	c.searchCount = 2
+	c.fileCount = 3
+	c.cmdCount = 4
+	c.agentCount = 5
+	c.Handle(types.QueryEvent{Type: types.EventQueryStart})
+	if c.lastFlush.IsZero() {
+		t.Error("lastFlush still zero after EventQueryStart")
+	}
+	if c.searchCount != 0 {
+		t.Errorf("searchCount = %d after EventQueryStart, want 0", c.searchCount)
+	}
+	if c.fileCount != 0 {
+		t.Errorf("fileCount = %d after EventQueryStart, want 0", c.fileCount)
+	}
+	if c.cmdCount != 0 {
+		t.Errorf("cmdCount = %d after EventQueryStart, want 0", c.cmdCount)
+	}
+	if c.agentCount != 0 {
+		t.Errorf("agentCount = %d after EventQueryStart, want 0", c.agentCount)
+	}
+	if c.thinkingSecs != 0 {
+		t.Errorf("thinkingSecs = %v after EventQueryStart, want 0", c.thinkingSecs)
+	}
+}
+
+func TestHandle_ThinkingEndFloorAndAccumulate(t *testing.T) {
+	c := &WeChatConnector{hub: hub.NewHub(), typingCache: newTypingTicketCache(time.Minute)}
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 50 * time.Millisecond}})
+	if c.thinkingSecs != 0.1 {
+		t.Errorf("thinkingSecs = %v after 50ms, want the 0.1s floor", c.thinkingSecs)
+	}
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 2 * time.Second}})
+	if c.thinkingSecs != 2.1 {
+		t.Errorf("thinkingSecs = %v after a second 2s turn, want 2.1 (accumulate, not overwrite)", c.thinkingSecs)
+	}
+}
+
+func TestHandle_ToolEndDeletesNameSoRepeatEndsDoNotDoubleCount(t *testing.T) {
+	c := &WeChatConnector{hub: hub.NewHub(), typingCache: newTypingTicketCache(time.Minute)}
+	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"}})
+	c.Handle(types.QueryEvent{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1"}})
+	c.Handle(types.QueryEvent{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1"}})
+	if c.cmdCount != 1 {
+		t.Errorf("cmdCount = %d after two ToolEnd for one ToolUseID, want 1", c.cmdCount)
+	}
+	if len(c.toolNames) != 0 {
+		t.Errorf("toolNames still holds %d entries after ToolEnd, want 0", len(c.toolNames))
+	}
+}
+
+func TestHandle_TextEndSeparatesDeltasWithBlankLine(t *testing.T) {
+	var sent []string
+	c := &WeChatConnector{
+		hub:          hub.NewHub(),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "user1",
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sent = append(sent, text)
+			return nil
+		},
+	}
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "a"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "b"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	c.flushBuffer()
+	if len(sent) != 1 {
+		t.Fatalf("sends = %d, want 1", len(sent))
+	}
+	if sent[0] != "a\n\nb" {
+		t.Errorf("flushed text = %q, want %q", sent[0], "a\n\nb")
+	}
+}
+
+// ctxSpyTypingAPI records the context of every call so a nil-ctx mutation in
+// Handle's typing path is observable.
+type ctxSpyTypingAPI struct {
+	mu    sync.Mutex
+	calls []context.Context
+}
+
+func (m *ctxSpyTypingAPI) record(ctx context.Context) {
+	m.mu.Lock()
+	m.calls = append(m.calls, ctx)
+	m.mu.Unlock()
+}
+
+func (m *ctxSpyTypingAPI) getConfig(ctx context.Context, userID, _ string) (string, error) {
+	m.record(ctx)
+	return "ticket-" + userID, nil
+}
+
+func (m *ctxSpyTypingAPI) sendTyping(ctx context.Context, _ string, _ string, _ int) error {
+	m.record(ctx)
+	return nil
+}
+
+func (m *ctxSpyTypingAPI) contexts() []context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]context.Context(nil), m.calls...)
+}
+
+func TestHandle_QueryEndErrorPaths(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	type send struct {
+		ctx    context.Context
+		userID string
+		text   string
+	}
+	newC := func(typing typingAPI) (*WeChatConnector, *[]send) {
+		out := &[]send{}
+		c := &WeChatConnector{
+			hub:          hub.NewHub(),
+			typingCache:  newTypingTicketCache(time.Minute),
+			activeUserID: "user1",
+			typingAPI:    typing,
+			sendToUserFn: func(ctx context.Context, userID, text string) error {
+				*out = append(*out, send{ctx: ctx, userID: userID, text: text})
+				return nil
+			},
+		}
+		return c, out
+	}
+
+	// Error + active user: the failure is sent verbatim with a live context.
+	c, out := newC(&ctxSpyTypingAPI{})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("boom")})
+	if len(*out) != 1 {
+		t.Fatalf("sends after QueryEnd{Error} = %d, want 1", len(*out))
+	}
+	if (*out)[0].text != "⚠️ Error: boom" {
+		t.Errorf("error text = %q, want %q", (*out)[0].text, "⚠️ Error: boom")
+	}
+	if (*out)[0].ctx == nil {
+		t.Error("sendToUserFn received a nil context")
+	}
+
+	// No error: nothing is sent even with an active user, and the
+	// notification-failure log stays silent on a successful send.
+	c2, out2 := newC(nil)
+	c2.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	if len(*out2) != 0 {
+		t.Errorf("sends after QueryEnd without error = %d, want 0", len(*out2))
+	}
+	if got := logs.find("wechat: send error message failed"); len(got) != 0 {
+		t.Errorf("successful notification logged %d failures, want 0", len(got))
+	}
+
+	// Error without an active user: no recipient, so no send.
+	c3, out3 := newC(nil)
+	c3.activeUserID = ""
+	c3.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("boom")})
+	if len(*out3) != 0 {
+		t.Errorf("sends after QueryEnd{Error} with no active user = %d, want 0", len(*out3))
+	}
+
+	// A failing error-notification is logged.
+	c4, _ := newC(nil)
+	c4.sendToUserFn = func(_ context.Context, _, _ string) error { return errors.New("rate limited") }
+	c4.Handle(types.QueryEvent{Type: types.EventQueryEnd, Error: errors.New("boom")})
+	if got := logs.find("wechat: send error message failed"); len(got) != 1 {
+		t.Errorf("failed error-notification logged %d times, want 1", len(got))
+	}
+
+	// QueryEnd must stop the typing indicator with a live context.
+	spy := &ctxSpyTypingAPI{}
+	c5, _ := newC(spy)
+	c5.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	ctxs := spy.contexts()
+	if len(ctxs) != 2 {
+		t.Fatalf("typing calls = %d, want 2 (getconfig + sendTyping stop)", len(ctxs))
+	}
+	for i, ctx := range ctxs {
+		if ctx == nil {
+			t.Errorf("typing call %d received a nil context", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// flushBuffer: empty guard, failure retention, success reset
+// ---------------------------------------------------------------------------
+
+func TestFlushBuffer_EmptyHeaderAndTextSendsNothing(t *testing.T) {
+	var calls int
+	c := &WeChatConnector{
+		hub:          hub.NewHub(),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "user1",
+		sendToUserFn: func(_ context.Context, _, _ string) error {
+			calls++
+			return nil
+		},
+	}
+	c.flushBuffer()
+	if calls != 0 {
+		t.Errorf("flush of an empty buffer sent %d messages, want 0", calls)
+	}
+}
+
+func TestFlushBuffer_SendFailureKeepsEverything(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	c := &WeChatConnector{
+		hub:          hub.NewHub(),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "user1",
+		sendToUserFn: func(_ context.Context, _, _ string) error { return errors.New("rate limited") },
+	}
+	c.textBuffer.WriteString("body")
+	c.searchCount = 3
+	before := time.Unix(1, 0) // far in the past: the 5s flush window is open
+	c.lastFlush = before
+	c.flushBuffer()
+	if got := logs.find("wechat: flush failed, retaining buffer"); len(got) != 1 {
+		t.Errorf("flush failure logged %d times, want 1", len(got))
+	}
+	if c.textBuffer.String() != "body" {
+		t.Errorf("textBuffer = %q after failed flush, want it retained", c.textBuffer.String())
+	}
+	if c.searchCount != 3 {
+		t.Errorf("searchCount = %d after failed flush, want 3 (counters retained)", c.searchCount)
+	}
+	if !c.lastFlush.Equal(before) {
+		t.Errorf("lastFlush = %v after failed flush, want it unchanged", c.lastFlush)
+	}
+}
+
+func TestFlushBuffer_SuccessAdvancesClockAndClearsState(t *testing.T) {
+	var got []struct {
+		ctx  context.Context
+		text string
+	}
+	c := &WeChatConnector{
+		hub:          hub.NewHub(),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "user1",
+		sendToUserFn: func(ctx context.Context, _, text string) error {
+			got = append(got, struct {
+				ctx  context.Context
+				text string
+			}{ctx: ctx, text: text})
+			return nil
+		},
+	}
+	c.textBuffer.WriteString("body")
+	c.agentCount = 2
+	c.lastFlush = time.Unix(1, 0) // far in the past: a stale clock must be replaced
+	c.flushBuffer()
+	if len(got) != 1 {
+		t.Fatalf("sends = %d, want 1", len(got))
+	}
+	if got[0].text != "⬡ 代理 2次\n\nbody" {
+		t.Errorf("sent = %q, want header + body", got[0].text)
+	}
+	if got[0].ctx == nil {
+		t.Error("flush sent with a nil context")
+	}
+	if c.textBuffer.Len() != 0 {
+		t.Errorf("textBuffer len = %d after successful flush, want 0", c.textBuffer.Len())
+	}
+	if c.agentCount != 0 {
+		t.Errorf("agentCount = %d after successful flush, want 0", c.agentCount)
+	}
+	if time.Since(c.lastFlush) > time.Minute {
+		t.Errorf("lastFlush = %v, want it advanced to now", c.lastFlush)
+	}
+}
+
+func TestFlushBuffer_NoActiveUserResetsState(t *testing.T) {
+	c := &WeChatConnector{hub: hub.NewHub(), typingCache: newTypingTicketCache(time.Minute)}
+	c.textBuffer.WriteString("stale")
+	c.cmdCount = 4
+	c.flushBuffer()
+	if c.textBuffer.Len() != 0 {
+		t.Errorf("textBuffer len = %d with no active user, want 0", c.textBuffer.Len())
+	}
+	if c.cmdCount != 0 {
+		t.Errorf("cmdCount = %d with no active user, want 0", c.cmdCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sendWeChatReply / sendWeChatReplyErr / Send
+// ---------------------------------------------------------------------------
+
+func TestSendWeChatReply_LogsSendFailure(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	var gotCtx context.Context
+	c := &WeChatConnector{
+		hub:         hub.NewHub(),
+		typingCache: newTypingTicketCache(time.Minute),
+		sendToUserFn: func(ctx context.Context, userID, _ string) error {
+			gotCtx = ctx
+			if userID != "user1" {
+				t.Errorf("send userID = %q, want user1", userID)
+			}
+			return errors.New("send failed")
+		},
+	}
+	c.sendWeChatReply(context.Background(), "user1", "hello")
+	if gotCtx == nil {
+		t.Error("sendToUserFn received a nil context")
+	}
+	recs := logs.find("wechat: send reply failed")
+	if len(recs) != 1 {
+		t.Fatalf("send failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].level != slog.LevelError {
+		t.Errorf("log level = %v, want ERROR", recs[0].level)
+	}
+}
+
+func TestSendWeChatReplyErr_PassesContextAndReturnsChunkError(t *testing.T) {
+	var ctxs []context.Context
+	c := &WeChatConnector{
+		hub:         hub.NewHub(),
+		typingCache: newTypingTicketCache(time.Minute),
+		sendToUserFn: func(ctx context.Context, _, _ string) error {
+			ctxs = append(ctxs, ctx)
+			return errors.New("boom")
+		},
+	}
+	err := c.sendWeChatReplyErr(context.Background(), "user1", "hello")
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("sendWeChatReplyErr = %v, want boom", err)
+	}
+	if len(ctxs) != 1 {
+		t.Fatalf("sendToUserFn calls = %d, want 1", len(ctxs))
+	}
+	if ctxs[0] == nil {
+		t.Error("sendToUserFn received a nil context")
+	}
+}
+
+func TestSend_PassesContextToSender(t *testing.T) {
+	var got context.Context
+	c := New(nil, hub.NewHub())
+	c.sendToUserFn = func(ctx context.Context, userID, text string) error {
+		got = ctx
+		if userID != "user@im" || text != "hi" {
+			t.Errorf("send got (%q,%q), want (user@im,hi)", userID, text)
+		}
+		return nil
+	}
+	if err := c.Send("user@im", "hi"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got == nil {
+		t.Error("Send passed a nil context to sendToUserFn")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveState — nil-state unlock and write-failure log
+// ---------------------------------------------------------------------------
+
+func TestSaveState_NilStateReleasesMutex(t *testing.T) {
+	c := New(nil, hub.NewHub())
+	c.state = nil
+	c.SaveState()
+	if !c.stateMu.TryLock() {
+		t.Fatal("SaveState with nil state left the state mutex locked")
+	}
+	c.stateMu.Unlock()
+}
+
+func TestSaveState_WriteFailureIsLogged(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	c := New(nil, hub.NewHub())
+	c.state = &State{AccountID: "acct@im.bot", Token: "tok"}
+	c.projectDir = "/proc/gbot-sweep-unwritable"
+	c.SaveState()
+	recs := logs.find("wechat: save state failed")
+	if len(recs) != 1 {
+		t.Fatalf("save failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["account_id"] != "acct@im.bot" {
+		t.Errorf("account_id attr = %v, want acct@im.bot", recs[0].attrs["account_id"])
+	}
+	if recs[0].attrs["error"] == nil {
+		t.Error("save failure log carries no error attr")
+	}
+}
+
+func TestSafeID_LengthBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want string
+	}{
+		{"abcdefgh", "abcdefgh"},
+		{"abcdefghi", "abcdefgh"},
+		{"abcdefghij", "abcdefgh"},
+	} {
+		if got := safeID(tt.in); got != tt.want {
+			t.Errorf("safeID(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pickMediaItem — each conjunct of the type/holder/downloadable guards
+// ---------------------------------------------------------------------------
+
+func TestPickMediaItem_Guards(t *testing.T) {
+	dl := &MediaRef{FullURL: "https://example.com/m"}
+	cases := []struct {
+		name  string
+		items []Item
+		want  bool
+	}{
+		{"text item carrying an image holder", []Item{{Type: ItemText, ImageItem: &MediaItemHolder{Media: dl}}}, false},
+		{"image item with a non-downloadable media ref", []Item{{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{}}}}, false},
+		{"text item carrying a file holder", []Item{{Type: ItemText, FileItem: &FileItem{Media: dl}}}, false},
+		{"file item with a non-downloadable media ref", []Item{{Type: ItemFile, FileItem: &FileItem{Media: &MediaRef{}}}}, false},
+		{"text item carrying a voice holder", []Item{{Type: ItemText, VoiceItem: &VoiceItem{Media: dl, Text: "t"}}}, false},
+		{"text item carrying a silent voice holder", []Item{{Type: ItemText, VoiceItem: &VoiceItem{Media: dl}}}, false},
+		{"voice item with a transcription", []Item{{Type: ItemVoice, VoiceItem: &VoiceItem{Media: dl, Text: "spoken"}}}, false},
+		{"voice item with a non-downloadable media ref", []Item{{Type: ItemVoice, VoiceItem: &VoiceItem{}}}, false},
+		{"downloadable image", []Item{{Type: ItemImage, ImageItem: &MediaItemHolder{Media: dl}}}, true},
+	}
+	for _, tc := range cases {
+		got := pickMediaItem(tc.items)
+		if tc.want {
+			if got == nil || got.Type != tc.items[0].Type {
+				t.Errorf("%s: pickMediaItem = %+v, want the item", tc.name, got)
+			}
+			continue
+		}
+		if got != nil {
+			t.Errorf("%s: pickMediaItem = %+v, want nil", tc.name, got)
+		}
+	}
+}
+
+func TestPickMediaItem_NilHoldersDoNotPanic(t *testing.T) {
+	for _, it := range []Item{
+		{Type: ItemImage},
+		{Type: ItemFile},
+		{Type: ItemVoice},
+		{Type: ItemVideo},
+	} {
+		if got := pickMediaItem([]Item{it}); got != nil {
+			t.Errorf("type %d with nil holder: pickMediaItem = %+v, want nil", it.Type, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// downloadMedia — unsupported kinds are logged, not silently dropped
+// ---------------------------------------------------------------------------
+
+func TestDownloadMedia_VideoAndVoiceAreLogged(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	c, _ := newMediaTestConnector(t)
+	dl := &MediaRef{FullURL: "https://example.com/m"}
+	video := c.downloadMedia(context.Background(), []Item{{Type: ItemVideo, VideoItem: &MediaItemHolder{Media: dl}}})
+	if video.Type != "" {
+		t.Errorf("video block type = %q, want empty", video.Type)
+	}
+	if got := logs.find("wechat: video media download not supported, skipping"); len(got) != 1 {
+		t.Errorf("video skip logged %d times, want 1", len(got))
+	}
+	voice := c.downloadMedia(context.Background(), []Item{{Type: ItemVoice, VoiceItem: &VoiceItem{Media: dl}}})
+	if voice.Type != "" {
+		t.Errorf("voice block type = %q, want empty", voice.Type)
+	}
+	if got := logs.find("wechat: voice media download not supported, skipping"); len(got) != 1 {
+		t.Errorf("voice skip logged %d times, want 1", len(got))
+	}
+}
+
+func TestDownloadMedia_NoCacheReturnsEmptyBlock(t *testing.T) {
+	c, _ := newMediaTestConnector(t)
+	c.mediaCache = nil
+	logs := sweepCaptureLogs(t)
+	block := c.downloadMedia(context.Background(), []Item{{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: "https://x"}}}})
+	if block.Type != "" {
+		t.Errorf("block type = %q with no cache, want empty", block.Type)
+	}
+	if len(logs.recs) != 0 {
+		t.Errorf("logs with no cache = %d, want 0", len(logs.recs))
+	}
+}
+
+// A nil ctx must fail at the boundary, not inside the fetch:
+// http.NewRequestWithContext rejects it and the message would degrade to text
+// under a misleading "download failed" line.
+func TestDownloadMedia_NilContextFailsLoudly(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	c, _ := newMediaTestConnector(t)
+	// The unset Context is the case under test: downloadMedia must name it at
+	// the boundary instead of letting the fetch fail deep down.
+	var ctx context.Context
+	block := c.downloadMedia(ctx, []Item{{Type: ItemFile, FileItem: &FileItem{Media: &MediaRef{FullURL: "https://example.invalid/x"}}}})
+	if block.Type != "" {
+		t.Errorf("block type = %q with nil ctx, want empty", block.Type)
+	}
+	if got := len(logs.find("wechat: downloadMedia called with nil context, degrading to text-only")); got != 1 {
+		t.Errorf("nil-ctx error logs = %d, want 1", got)
+	}
+	if got := len(logs.find("wechat: file download failed, falling back to text-only")); got != 0 {
+		t.Errorf("nil ctx reached the fetch: %d download-failure logs, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// downloadImage / downloadFile — every degradation path is logged
+// ---------------------------------------------------------------------------
+
+func mediaServer(t *testing.T, status int, body []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestDownloadImage_DownloadFailureDegradesToText(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusInternalServerError, []byte("nope"))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadImage(context.Background(), &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL}})
+	if block.Type != "" {
+		t.Errorf("block type = %q after download failure, want empty", block.Type)
+	}
+	if got := logs.find("wechat: image download failed, falling back to text-only"); len(got) != 1 {
+		t.Errorf("download failure logged %d times, want 1", len(got))
+	}
+	if len(logs.find("wechat: downloaded media is not a recognized image format, skipping")) != 0 {
+		t.Error("download failure also logged the wrong-format path")
+	}
+}
+
+func TestDownloadImage_UnrecognizedBytesAreLogged(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, []byte("plain text, not an image"))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadImage(context.Background(), &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL}})
+	if block.Type != "" {
+		t.Errorf("block type = %q for non-image bytes, want empty", block.Type)
+	}
+	recs := logs.find("wechat: downloaded media is not a recognized image format, skipping")
+	if len(recs) != 1 {
+		t.Fatalf("wrong-format log = %d, want 1", len(recs))
+	}
+	if n, _ := recs[0].attrs["len"].(int64); n != 24 {
+		t.Errorf("len attr = %v, want int64(24)", recs[0].attrs["len"])
+	}
+}
+
+func TestDownloadImage_CacheSaveFailureIsLogged(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, realPNGBytes)
+	c, store := newMediaTestConnector(t)
+	imgDir := filepath.Join(store.RootDir, string(media.CategoryImage))
+	if err := os.Chmod(imgDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(imgDir, 0o755) })
+	block := c.downloadImage(context.Background(), &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL}})
+	if block.Type != "" {
+		t.Errorf("block type = %q after cache save failure, want empty", block.Type)
+	}
+	if got := logs.find("wechat: image cache save failed, falling back to text-only"); len(got) != 1 {
+		t.Errorf("cache save failure logged %d times, want 1", len(got))
+	}
+}
+
+func TestDownloadImage_HappyPathReturnsBase64PNG(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, realPNGBytes)
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadImage(context.Background(), &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL}})
+	if block.Type != types.ContentTypeImage {
+		t.Fatalf("block type = %q, want image", block.Type)
+	}
+	if block.Source == nil || block.Source.MediaType != "image/png" {
+		t.Fatalf("block source = %+v, want image/png", block.Source)
+	}
+	for _, r := range logs.recs {
+		if r.level >= slog.LevelWarn {
+			t.Errorf("happy path logged %v %q", r.level, r.msg)
+		}
+	}
+}
+
+func TestDownloadFile_DownloadFailureDegradesToText(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusBadGateway, []byte("nope"))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "notes.txt"})
+	if block.Type != "" {
+		t.Fatalf("block type = %q after download failure, want empty", block.Type)
+	}
+	if got := logs.find("wechat: file download failed, falling back to text-only"); len(got) != 1 {
+		t.Errorf("download failure logged %d times, want 1", len(got))
+	}
+}
+
+func TestDownloadFile_ExtensionAndNameFallbacks(t *testing.T) {
+	srv := mediaServer(t, http.StatusOK, []byte("report body"))
+	c, _ := newMediaTestConnector(t)
+
+	noExt := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "report"})
+	if noExt.Type != types.ContentTypeText {
+		t.Fatalf("block type = %q, want text", noExt.Type)
+	}
+	saved := savedPathFromDocBlock(noExt.Text)
+	// The connector has no ".bin" fallback of its own: the suffix must come
+	// from media's single default, so a change there lands here too.
+	if filepath.Ext(saved) != media.DefaultExt {
+		t.Errorf("saved path = %q, want media.DefaultExt (%q)", saved, media.DefaultExt)
+	}
+	if !strings.Contains(noExt.Text, "[Document: report saved at ") {
+		t.Errorf("no-ext block = %q, want the original filename in the header", noExt.Text)
+	}
+
+	anonymous := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: ""})
+	if anonymous.Type != types.ContentTypeText {
+		t.Fatalf("block type = %q, want text", anonymous.Type)
+	}
+	stored := filepath.Base(savedPathFromDocBlock(anonymous.Text))
+	if stored == "" {
+		t.Fatalf("anonymous block = %q, want a saved-at path", anonymous.Text)
+	}
+	if !strings.Contains(anonymous.Text, "[Document: "+stored+" saved at ") {
+		t.Errorf("anonymous block = %q, want the stored basename %q as the document name", anonymous.Text, stored)
+	}
+}
+
+func savedPathFromDocBlock(text string) string {
+	_, after, ok := strings.Cut(text, "saved at ")
+	if !ok {
+		return ""
+	}
+	rest := after
+	if before, _, ok := strings.Cut(rest, "]"); ok {
+		return before
+	}
+	return rest
+}
+
+func TestDownloadFile_CacheSaveFailureIsLogged(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, []byte("body"))
+	c, store := newMediaTestConnector(t)
+	docDir := filepath.Join(store.RootDir, string(media.CategoryDocument))
+	if err := os.Chmod(docDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(docDir, 0o755) })
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "doc.txt"})
+	if block.Type != "" {
+		t.Fatalf("block type = %q after cache save failure, want empty", block.Type)
+	}
+	if got := logs.find("wechat: file cache save failed, falling back to text-only"); len(got) != 1 {
+		t.Errorf("cache save failure logged %d times, want 1", len(got))
+	}
+}
+
+func TestDownloadFile_ParseFailureSendsPathFallback(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, []byte("binary\x00payload"))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "thing.bin"})
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block type = %q, want text", block.Type)
+	}
+	text := block.Text
+	if !strings.HasPrefix(text, "[Document: thing.bin saved at ") || strings.Contains(text, "\nbinary") {
+		t.Errorf("fallback text = %q, want the path-only fallback", text)
+	}
+	parsed := logs.find("wechat: document parsed inline")
+	if len(parsed) != 0 {
+		t.Errorf("unparseable document logged %d inline parses, want 0", len(parsed))
+	}
+	if got := logs.find("wechat: document parse failed, sending path as fallback"); len(got) != 1 {
+		t.Errorf("parse failure logged %d times, want 1", len(got))
+	}
+}
+
+func TestDownloadFile_ParsedInlineIncludesContent(t *testing.T) {
+	srv := mediaServer(t, http.StatusOK, []byte("hello document"))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "note.txt"})
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block = %+v, want a text block", block)
+	}
+	if !strings.Contains(block.Text, "hello document") {
+		t.Errorf("block text = %q, want the parsed document content", block.Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractText — conjunct guards on text items, quote refs, voice fallback
+// ---------------------------------------------------------------------------
+
+func TestExtractText_Guards(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []Item
+		want  string
+	}{
+		{"text item with nil holder", []Item{{Type: ItemText}}, ""},
+		{"non-text item carrying a text holder", []Item{{Type: ItemVoice, TextItem: &TextItem{Text: "x"}}}, ""},
+		{"voice item with nil holder", []Item{{Type: ItemVoice}}, ""},
+		{"voice item with empty transcription", []Item{{Type: ItemVoice, VoiceItem: &VoiceItem{Text: ""}}}, ""},
+		{"non-voice item carrying a transcription", []Item{{Type: ItemFile, VoiceItem: &VoiceItem{Text: "spoken"}}}, ""},
+		{"quote with neither title nor referenced text", []Item{{Type: ItemText, TextItem: &TextItem{Text: "mine"},
+			RefMsg: &RefMsg{MessageItem: &Item{Type: ItemText, TextItem: &TextItem{Text: ""}}}}}, "mine"},
+	}
+	for _, tc := range cases {
+		if got := extractText(tc.items); got != tc.want {
+			t.Errorf("%s: extractText = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestExtractText_QuoteMediaTypesAllUseTheMediaPrefix(t *testing.T) {
+	for _, refType := range []int{ItemImage, ItemVideo, ItemFile, ItemVoice} {
+		items := []Item{{Type: ItemText, TextItem: &TextItem{Text: "mine"},
+			RefMsg: &RefMsg{MessageItem: &Item{Type: refType}}}}
+		got := extractText(items)
+		if got != "[引用媒体]\nmine" {
+			t.Errorf("refType %d: extractText = %q, want %q", refType, got, "[引用媒体]\nmine")
+		}
+		titled := []Item{{Type: ItemText, TextItem: &TextItem{Text: "mine"},
+			RefMsg: &RefMsg{Title: "photo", MessageItem: &Item{Type: refType}}}}
+		if got := extractText(titled); got != "[引用媒体: photo]\nmine" {
+			t.Errorf("refType %d titled: extractText = %q, want %q", refType, got, "[引用媒体: photo]\nmine")
+		}
+	}
+}
+
+func TestExtractText_QuoteTitleOnlyStillFormats(t *testing.T) {
+	items := []Item{{Type: ItemText, TextItem: &TextItem{Text: "mine"},
+		RefMsg: &RefMsg{Title: "the title", MessageItem: &Item{Type: ItemText, TextItem: &TextItem{Text: ""}}}}}
+	got := extractText(items)
+	if got != "[引用: the title]\nmine" {
+		t.Errorf("extractText = %q, want %q", got, "[引用: the title]\nmine")
+	}
+}
+
+// cancelProbeProvider parks inside Stream until its context is cancelled, so a
+// queryFn that drops the caller's context becomes a hang instead of a cancel.
+type cancelProbeProvider struct{ entered chan struct{} }
+
+func (p *cancelProbeProvider) Name() string { return "cancel-probe" }
+
+func (p *cancelProbeProvider) Complete(ctx context.Context, _ *llm.Request) (*llm.Response, error) {
+	close(p.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *cancelProbeProvider) Stream(ctx context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	close(p.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// eventPipe forwards hub events to a channel for bounded waits.
+type eventPipe struct{ ch chan types.QueryEvent }
+
+func (e eventPipe) Handle(ev hub.Event) {
+	select {
+	case e.ch <- ev:
+	default:
+	}
+}
+
+func TestNew_QueryFnHonoursCallerContext(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*WeChatConnector, context.Context)
+	}{
+		{"queryFn", func(c *WeChatConnector, ctx context.Context) { c.queryFn(ctx, "hello", "sys") }},
+		{"queryWithContentFn", func(c *WeChatConnector, ctx context.Context) {
+			c.queryWithContentFn(ctx, []types.ContentBlock{types.NewTextBlock("hello")}, "sys")
+		}},
+	}
+	for _, tc := range cases {
+		h := hub.NewHub()
+		events := make(chan types.QueryEvent, 64)
+		h.Subscribe(eventPipe{ch: events})
+		prov := &cancelProbeProvider{entered: make(chan struct{})}
+		eng := engine.New(&engine.Params{Provider: prov, Model: "test-model", Dispatcher: h})
+		t.Cleanup(eng.Close)
+		c := New(eng, h)
+		ctx, cancel := context.WithCancel(context.Background())
+		tc.call(c, ctx)
+		select {
+		case <-prov.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never dispatched a query to the engine", tc.name)
+		}
+		cancel()
+		var ended *types.QueryEvent
+		deadline := time.After(5 * time.Second)
+		for ended == nil {
+			select {
+			case ev := <-events:
+				if ev.Type == types.EventQueryEnd {
+					ended = &ev
+				}
+			case <-deadline:
+				t.Fatalf("%s: cancelling the caller context never ended the query", tc.name)
+			}
+		}
+		if ended.Error == nil {
+			t.Errorf("%s: QueryEnd after cancel has Error = nil, want a cancellation error", tc.name)
+		}
+	}
+}
+
+func TestHandle_TypingRefreshRequiresActiveUser(t *testing.T) {
+	spy := &ctxSpyTypingAPI{}
+	c := &WeChatConnector{
+		hub:               hub.NewHub(),
+		typingCache:       newTypingTicketCache(time.Minute),
+		typingAPI:         spy,
+		lastTypingRefresh: time.Unix(1, 0), // far in the past: the 5s refresh gate is open
+	}
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+	if got := spy.contexts(); len(got) != 0 {
+		t.Fatalf("typing refreshed with no active user: %d calls, want 0", len(got))
+	}
+	c.activeUserID = "user1"
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "y"})
+	ctxs := spy.contexts()
+	if len(ctxs) != 2 {
+		t.Fatalf("typing calls = %d, want 2 (getconfig + sendTyping)", len(ctxs))
+	}
+	for i, ctx := range ctxs {
+		if ctx == nil {
+			t.Errorf("typing call %d received a nil context", i)
+		}
+	}
+}
+
+func TestDownloadFile_LargeDocumentKeepsFullContent(t *testing.T) {
+	var sb strings.Builder
+	for i := range 8000 {
+		fmt.Fprintf(&sb, "line %04d payload for the cap probe\n", i)
+	}
+	srv := mediaServer(t, http.StatusOK, []byte(sb.String()))
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "big.txt"})
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block type = %q, want text", block.Type)
+	}
+	if !strings.Contains(block.Text, "line 7999 payload for the cap probe") {
+		t.Errorf("large document block truncated: last line missing from %d bytes of text", len(block.Text))
+	}
+}
+
+func TestDownloadFile_EmptyDocumentUsesPathFallback(t *testing.T) {
+	logs := sweepCaptureLogs(t)
+	srv := mediaServer(t, http.StatusOK, nil)
+	c, _ := newMediaTestConnector(t)
+	block := c.downloadFile(context.Background(), &FileItem{Media: &MediaRef{FullURL: srv.URL}, FileName: "empty.txt"})
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block type = %q, want text", block.Type)
+	}
+	if !strings.HasPrefix(block.Text, "[Document: empty.txt saved at ") {
+		t.Errorf("empty document block = %q, want the path-only fallback", block.Text)
+	}
+	if got := logs.find("wechat: document parse returned empty content, sending path as fallback"); len(got) != 1 {
+		t.Errorf("empty-content path logged %d times, want 1", len(got))
+	}
 }

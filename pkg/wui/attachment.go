@@ -41,7 +41,7 @@ func preserveDocExt(name string) string {
 	if e := filepath.Ext(name); e != "" {
 		return e
 	}
-	return ".bin"
+	return media.DefaultExt
 }
 
 // attachmentIDRe is the grammar every minted id satisfies. Kept strict on the

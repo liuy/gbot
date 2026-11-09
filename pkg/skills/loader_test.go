@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -757,5 +759,226 @@ func TestRegisterPluginSkills_VisibleInSkillTool(t *testing.T) {
 	}
 	if skill.Name != "test-plugin:autopilot" {
 		t.Errorf("FindSkill name = %q, want %q", skill.Name, "test-plugin:autopilot")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Load routing, tool visibility filters, dir walk, size cap
+// ---------------------------------------------------------------------------
+
+func writeSkill(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+func TestLoad_ConditionalRoutingRespectsActivation(t *testing.T) {
+	cwd := t.TempDir()
+	skillsDir := filepath.Join(cwd, ".gbot", "skills")
+	writeSkill(t, skillsDir, "cond", "---\ndescription: conditional\npaths:\n  - \"*.go\"\n---\nbody\n")
+	writeSkill(t, skillsDir, "plain", "---\ndescription: plain\n---\nbody\n")
+
+	reg := NewRegistry(cwd)
+	if err := reg.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := reg.conditional["cond"]; !ok {
+		t.Error("a skill with paths frontmatter was not routed to conditional")
+	}
+	if _, ok := reg.conditional["plain"]; ok {
+		t.Error("a skill without paths frontmatter was routed to conditional")
+	}
+	names := map[string]bool{}
+	for _, s := range reg.GetAllSkills() {
+		names[s.Name] = true
+	}
+	if names["cond"] {
+		t.Error("the conditional skill leaked into the loaded set")
+	}
+	if !names["plain"] {
+		t.Error("the unconditional skill is missing from the loaded set")
+	}
+
+	// An already-activated skill must stay in the loaded set after a reload.
+	reg2 := NewRegistry(cwd)
+	reg2.activatedNames["cond"] = true
+	if err := reg2.Load(); err != nil {
+		t.Fatalf("Load after activation: %v", err)
+	}
+	if _, ok := reg2.conditional["cond"]; ok {
+		t.Error("an activated skill was routed back to conditional")
+	}
+	found := false
+	for _, s := range reg2.GetAllSkills() {
+		if s.Name == "cond" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the activated skill is missing from the loaded set")
+	}
+}
+
+func TestGetSkillToolSkills_Filters(t *testing.T) {
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "not-prompt", Type: "local", LoadedFrom: "skills"},
+		{Name: "model-disabled", Type: "prompt", DisableModelInvocation: true, LoadedFrom: "skills"},
+		{Name: "from-bundled", Type: "prompt", LoadedFrom: "bundled"},
+		{Name: "from-plugin", Type: "prompt", LoadedFrom: "plugin"},
+		{Name: "mcp-with-desc", Type: "prompt", LoadedFrom: "mcp", HasUserSpecifiedDesc: true},
+		{Name: "mcp-with-when", Type: "prompt", LoadedFrom: "mcp", WhenToUse: "when asked"},
+		{Name: "mcp-bare", Type: "prompt", LoadedFrom: "mcp"},
+	}
+	reg.mu.Unlock()
+	got := reg.GetSkillToolSkills()
+	want := []string{"from-bundled", "from-plugin", "mcp-with-desc", "mcp-with-when"}
+	if len(got) != len(want) {
+		t.Fatalf("visible skills = %d (%v), want %d %v", len(got), skillNames(got), len(want), want)
+	}
+	for i := range want {
+		if got[i].Name != want[i] {
+			t.Errorf("visible[%d] = %q, want %q (order: %v)", i, got[i].Name, want[i], skillNames(got))
+		}
+	}
+}
+
+func TestLoadManagedSkills_EnvOverrideAndDisable(t *testing.T) {
+	managed := t.TempDir()
+	writeSkill(t, filepath.Join(managed, ".gbot", "skills"), "pol", "---\ndescription: policy skill\n---\nbody\n")
+	t.Setenv("GBOT_MANAGED_SETTINGS_PATH", managed)
+	reg := NewRegistry(t.TempDir())
+	got := reg.loadManagedSkills()
+	if len(got) != 1 || got[0].Name != "pol" {
+		t.Fatalf("managed skills = %v, want [pol]", skillNames(got))
+	}
+	t.Setenv("GBOT_DISABLE_POLICY_SKILLS", "1")
+	if got := reg.loadManagedSkills(); len(got) != 0 {
+		t.Errorf("managed skills with the disable flag = %v, want none", skillNames(got))
+	}
+}
+
+func TestCollectProjectSkillDirs_WalksUpToHome(t *testing.T) {
+	aboveHome := t.TempDir()
+	home := filepath.Join(aboveHome, "home")
+	if err := os.MkdirAll(filepath.Join(aboveHome, ".gbot", "skills"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("HOME", home)
+	cwd := filepath.Join(home, "proj", "sub")
+	for _, d := range []string{cwd, filepath.Join(home, "proj"), home} {
+		if err := os.MkdirAll(filepath.Join(d, ".gbot", "skills"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	reg := NewRegistry(cwd)
+	got := reg.collectProjectSkillDirs()
+	want := []string{
+		filepath.Join(cwd, ".gbot", "skills"),
+		filepath.Join(home, "proj", ".gbot", "skills"),
+		filepath.Join(home, ".gbot", "skills"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("project skill dirs = %v, want %v (the walk must stop at home)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("dir[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLoadUserSkills_FromHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkill(t, filepath.Join(home, ".gbot", "skills"), "personal", "---\ndescription: personal skill\n---\nbody\n")
+	reg := NewRegistry(t.TempDir())
+	got := reg.loadUserSkills()
+	if len(got) != 1 || got[0].Name != "personal" {
+		t.Fatalf("user skills = %v, want [personal]", skillNames(got))
+	}
+	if got[0].Source != types.SkillSourceUser {
+		t.Errorf("source = %v, want user", got[0].Source)
+	}
+}
+
+func TestManagedSkillsPath_CapAndPath(t *testing.T) {
+	if maxFrontmatterFileSize != 1<<20 {
+		t.Errorf("maxFrontmatterFileSize = %d, want %d (1 MiB)", maxFrontmatterFileSize, 1<<20)
+	}
+	if runtime.GOOS == "linux" && managedSkillsPath() != "/etc/gbot/skills" {
+		t.Errorf("managedSkillsPath() = %q, want /etc/gbot/skills", managedSkillsPath())
+	}
+}
+
+func TestLoadSkillsFromDir_SkipsMissingAndOversized(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, dir, "aaa-noskill", "")
+	if err := os.Remove(filepath.Join(dir, "aaa-noskill", "SKILL.md")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	exact := "---\ndescription: exactly at the cap\n---\n"
+	writeSkill(t, dir, "bbb-toobig", "---\ndescription: over the cap\n---\n"+strings.Repeat("y", maxFrontmatterFileSize))
+	writeSkill(t, dir, "ccc-exact", exact+strings.Repeat("x", maxFrontmatterFileSize-len(exact)))
+	reg := NewRegistry(t.TempDir())
+	got := reg.loadSkillsFromDir(dir, types.SkillSourceProject)
+	if len(got) != 1 || got[0].Name != "ccc-exact" {
+		t.Fatalf("loaded = %v, want [ccc-exact] (a missing SKILL.md and an oversized file must not stop the scan, an exact-cap file must load)", skillNames(got))
+	}
+}
+
+func TestLoadSkillsFromDir_OversizedIsLogged(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	dir := t.TempDir()
+	path := writeSkill(t, dir, "toobig", "---\ndescription: over the cap\n---\n"+strings.Repeat("y", maxFrontmatterFileSize+1)+"\n")
+	reg := NewRegistry(t.TempDir())
+	if got := reg.loadSkillsFromDir(dir, types.SkillSourceProject); len(got) != 0 {
+		t.Fatalf("loaded = %v, want none", skillNames(got))
+	}
+	recs := logs.find("skills: skipping file: too large")
+	if len(recs) != 1 {
+		t.Fatalf("oversize logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["path"] != filepath.Join(path, "SKILL.md") {
+		t.Errorf("path attr = %v, want the oversized SKILL.md", recs[0].attrs["path"])
+	}
+}
+
+func TestOnSkillsLoaded_UnsubscribeRemovesOnlyThatCallback(t *testing.T) {
+	reg := NewRegistry(t.TempDir())
+	var fired []string
+	unsub := reg.OnSkillsLoaded(func() { fired = append(fired, "first") })
+	reg.OnSkillsLoaded(func() { fired = append(fired, "second") })
+	unsub()
+	reg.fireOnSkillsLoaded()
+	if len(fired) != 1 || fired[0] != "second" {
+		t.Errorf("fired = %v, want [second]", fired)
+	}
+}
+
+func TestFireOnSkillsLoaded_PanicIsLoggedAndOthersStillRun(t *testing.T) {
+	logs := captureSkillsLogs(t)
+	reg := NewRegistry(t.TempDir())
+	var fired []string
+	reg.OnSkillsLoaded(func() { fired = append(fired, "before") })
+	reg.OnSkillsLoaded(func() { panic("callback exploded") })
+	reg.OnSkillsLoaded(func() { fired = append(fired, "after") })
+	reg.fireOnSkillsLoaded()
+	if len(fired) != 2 || fired[0] != "before" || fired[1] != "after" {
+		t.Errorf("fired = %v, want [before after]", fired)
+	}
+	recs := logs.find("skills: onSkillsLoaded callback panic")
+	if len(recs) != 1 {
+		t.Fatalf("callback panic logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["error"] == nil {
+		t.Error("panic log carries no error attr")
 	}
 }

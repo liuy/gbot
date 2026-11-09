@@ -276,3 +276,72 @@ func TestDir_UsesProjectDir(t *testing.T) {
 		t.Errorf("Dir should not create the directory, got %q", got)
 	}
 }
+
+func TestPinSlug(t *testing.T) {
+	if got := Slug("/home/u/repos/gbot"); got != "-home-u-repos-gbot" {
+		t.Errorf("Slug basic = %q", got)
+	}
+	if got := Slug("a1B2"); got != "a1B2" {
+		t.Errorf("Slug alnum = %q", got)
+	}
+	long := make([]byte, 300)
+	for i := range long {
+		long[i] = 'a'
+	}
+	got := Slug(string(long))
+	wantLen := maxSlugLength + 1 + len(djb2Hash(string(long)))
+	if len(got) != wantLen {
+		t.Errorf("Slug long len = %d, want %d (200 + '-' + hash)", len(got), wantLen)
+	}
+	if got[:maxSlugLength] != string(long)[:maxSlugLength] {
+		t.Errorf("Slug long prefix = %q", got[:maxSlugLength])
+	}
+	// Exact-boundary behavior: length 200 returns verbatim, 201 truncates.
+	exact200 := strings.Repeat("a", maxSlugLength)
+	if s2 := Slug(exact200); s2 != exact200 {
+		t.Errorf("Slug(len==max) = %q (len %d), want verbatim", s2[:20], len(s2))
+	}
+	over201 := strings.Repeat("a", maxSlugLength+1)
+	if s3 := Slug(over201); s3 == over201 || len(s3) != maxSlugLength+1+len(djb2Hash(over201)) {
+		t.Errorf("Slug(len==max+1) len = %d, want the truncated+hash form", len(s3))
+	}
+}
+
+func TestPinDjb2Hash(t *testing.T) {
+	// The DJB2 constants (5381 seed, *33 step) are the collision-avoidance
+	// contract with existing on-disk project dirs — mirror the reference
+	// formula independently so any constant drift flips this test.
+	ref := uint32(5381)
+	for _, c := range "pin" {
+		ref = ref*33 + uint32(c)
+	}
+	signed := int32(ref)
+	if signed < 0 {
+		signed = -signed
+	}
+	if got := djb2Hash("pin"); got != uintToString(uint64(signed), 36) {
+		t.Errorf("djb2Hash(pin) = %q, want the DJB2 reference %q", got, uintToString(uint64(signed), 36))
+	}
+	if got := djb2Hash(""); got == "" {
+		t.Error("empty hash empty")
+	}
+	if djb2Hash("a") == djb2Hash("b") {
+		t.Error("hash collision on one-rune strings")
+	}
+	h1, h2 := djb2Hash("same"), djb2Hash("same")
+	if h1 != h2 {
+		t.Error("hash not deterministic")
+	}
+}
+
+func TestPinUintToString(t *testing.T) {
+	if got := uintToString(0, 36); got != "0" {
+		t.Errorf("zero = %q", got)
+	}
+	if got := uintToString(35, 36); got != "z" {
+		t.Errorf("35 base36 = %q", got)
+	}
+	if got := uintToString(36, 36); got != "10" {
+		t.Errorf("36 base36 = %q", got)
+	}
+}

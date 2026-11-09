@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -482,5 +483,151 @@ func TestParseShellCommandShellInterpretersDecomposeDashC(t *testing.T) {
 		if !slices.Equal(got, []string{"rm -rf /"}) {
 			t.Errorf("%s: ParseShellCommand(%q) = %q, want [\"rm -rf /\"]", shell, cmd, got)
 		}
+	}
+}
+
+func TestParseShellCommand_Structures(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"ls", []string{"ls"}},
+		{"ls # a comment", []string{"ls"}},
+		{"echo $(date)", []string{"date", "echo $(date)"}},
+		{"if x; then a; else b; fi", []string{"x", "a", "b"}},
+		{"while c; do d; done", []string{"c", "d"}},
+		{"for i in a; do x; done", []string{"x"}},
+		{"bash -c 'rm -rf /'", []string{"rm -rf /"}},
+		{"bash -x 'echo hi'", []string{"bash -x 'echo hi'"}},
+		{"echo -c foo", []string{"echo -c foo"}},
+		{"git status && git push", []string{"git status", "git push"}},
+	}
+	for _, tc := range cases {
+		got, err := ParseShellCommand(tc.in)
+		if err != nil {
+			t.Errorf("ParseShellCommand(%q): %v", tc.in, err)
+			continue
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("ParseShellCommand(%q) = %q, want %q", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("ParseShellCommand(%q) = %q, want %q", tc.in, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+func TestParseShellCommand_MaxSubCommandsBoundary(t *testing.T) {
+	if MaxSubCommands != 50 {
+		t.Errorf("MaxSubCommands = %d, want 50", MaxSubCommands)
+	}
+	under := strings.Repeat("x;", MaxSubCommands-1) + "x"
+	got, err := ParseShellCommand(under)
+	if err != nil || len(got) != MaxSubCommands {
+		t.Errorf("%d commands → len %d err %v, want %d and no error", MaxSubCommands, len(got), err, MaxSubCommands)
+	}
+	over := strings.Repeat("x;", MaxSubCommands*2-1) + "x"
+	got, err = ParseShellCommand(over)
+	if err != nil {
+		t.Errorf("over-limit parse returned %v, want a truncated walk", err)
+	}
+	if len(got) != MaxSubCommands {
+		t.Errorf("over-limit command count = %d, want the walk to stop at %d", len(got), MaxSubCommands)
+	}
+}
+
+func TestParseShellCommand_SyntaxErrorEnvelope(t *testing.T) {
+	_, err := ParseShellCommand("if true; then")
+	if err == nil {
+		t.Fatal("an unterminated if statement parsed without error")
+	}
+	if !strings.HasPrefix(err.Error(), "shell parse error: ") {
+		t.Errorf("error = %q, want the shell-parse prefix", err.Error())
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("error %q does not wrap the parser error", err.Error())
+	}
+}
+
+func TestStripSafeWrappers_Table(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"timeout 5 rm -rf /", "rm -rf /"},
+		{"timeout -k 1s 5 rm -rf /", "rm -rf /"},
+		{"time ls -la", "ls -la"},
+		{"nice -n 10 make", "make"},
+		{"nice -5 make", "make"},
+		{"nohup sleep 10", "sleep 10"},
+		{"stdbuf -o0 cat f", "cat f"},
+		{"NODE_ENV=prod node app.js", "node app.js"},
+		{"EVIL=1 ls", "EVIL=1 ls"},
+		{"# a comment\nls", "ls"},
+		{"timeout 5 ls", "ls"},
+		{"ls -la", "ls -la"},
+	} {
+		if got := StripSafeWrappers(tc.in); got != tc.want {
+			t.Errorf("StripSafeWrappers(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestStripAllLeadingEnvVars_Table(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"FOO=bar rm -rf /", "rm -rf /"},
+		{"A=1 B=2 C=3 ls", "ls"},
+		{"ls -la", "ls -la"},
+		{"# c\nFOO=x ls", "ls"},
+	} {
+		if got := StripAllLeadingEnvVars(tc.in); got != tc.want {
+			t.Errorf("StripAllLeadingEnvVars(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestStripCommentLines_KeepsOriginalWhenAllComments(t *testing.T) {
+	if got := stripCommentLines("ls\n# comment\npwd"); got != "ls\npwd" {
+		t.Errorf("stripCommentLines = %q, want %q", got, "ls\npwd")
+	}
+	if got := stripCommentLines("# only\n# comments"); got != "# only\n# comments" {
+		t.Errorf("all-comment input = %q, want it returned unchanged", got)
+	}
+	if got := stripCommentLines("   # indented\nls"); got != "ls" {
+		t.Errorf("indented comment = %q, want %q", got, "ls")
+	}
+}
+
+func TestNeedsShellMatching_Metacharacters(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"ls && pwd", true},
+		{"a | b", true},
+		{"a;b", true},
+		{"echo $(date)", true},
+		{"echo `date`", true},
+		{"a\nb", true},
+		{"ls -la", false},
+		{"git status", false},
+	} {
+		if got := needsShellMatching(tc.in); got != tc.want {
+			t.Errorf("needsShellMatching(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// `bash -c '<unparseable>'` must fall back to the raw inner command rather than
+// dropping it: the invocation is still a shell interpreter running something.
+func TestParseShellCommand_InnerParseFailureKeepsRawInner(t *testing.T) {
+	got, err := ParseShellCommand(`bash -c 'if true'`)
+	if err != nil {
+		t.Fatalf("ParseShellCommand: %v", err)
+	}
+	if len(got) != 1 || got[0] != "if true" {
+		t.Errorf("commands = %q, want [if true] (raw inner kept when the inner parse fails)", got)
 	}
 }

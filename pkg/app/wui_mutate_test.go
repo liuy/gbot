@@ -32,7 +32,7 @@ func wuiFactory(spy *spyProvider) tui.EngineFactoryFn {
 		})
 		deps := engine.SharedDeps{WorkingDir: filepath.Dir(id), ShortStore: nil}
 		refs := engine.CreateTools(deps, task.NewList(""))
-		engine.WireEngine(eng, refs, deps)
+		engine.WireEngine(eng, refs, deps.McpReg)
 		eng.SetToolRefs(refs)
 		return eng, handler, nil
 	}

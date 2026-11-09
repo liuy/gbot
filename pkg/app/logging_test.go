@@ -206,3 +206,11 @@ func TestSetupLogFile_RotateReplacesOldBackup(t *testing.T) {
 		t.Fatalf("second rotation .old size mismatch: got %d, want %d", len(oldData2), len(bigContent))
 	}
 }
+
+func TestSetupLogFile_UnwritablePathReturnsNil(t *testing.T) {
+	f := setupLogFile(filepath.Join(t.TempDir(), "missing-dir", "gbot.log"))
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("setupLogFile returned a handle for a path it cannot create")
+	}
+}

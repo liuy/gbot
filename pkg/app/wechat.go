@@ -87,7 +87,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 			Dispatcher:        wcHub,
 			ToolsProvider:     refs.Reg.ToolMapFn(),
 		})
-		engine.WireEngine(wcEng, refs, d.deps)
+		engine.WireEngine(wcEng, refs, d.deps.McpReg)
 		wcEng.SetToolRefs(refs)
 		wcEng.SetStore(d.store, d.projectDir)
 
@@ -179,9 +179,10 @@ func startWeChatConnector(d startWeChatDeps) error {
 	// cleanup goroutine; main must Close() it to stop that goroutine).
 	*d.mediaStores = append(*d.mediaStores, wc.MediaCache())
 	go func() {
-		if err := wc.Start(context.Background(), state, d.projectDir); err != nil {
-			slog.Warn("wechat: start failed", "error", err)
-		}
+		// Start's error return is vestigial — it only wires state, the typing
+		// API and two goroutines, and has no failure path. Kept as a goroutine
+		// so restoreContextTokens' file I/O stays off the boot path.
+		_ = wc.Start(context.Background(), state, d.projectDir)
 	}()
 	return nil
 }

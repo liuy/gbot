@@ -74,7 +74,7 @@ func msgWiredParent(t *testing.T, mp *mockProvider, engineID string, deps Shared
 		ToolsProvider: refs.Reg.ToolMap,
 	})
 	t.Cleanup(func() { eng.Close() })
-	WireEngine(eng, refs, deps)
+	WireEngine(eng, refs, deps.McpReg)
 	eng.SetToolRefs(refs)
 	eng.SetSharedDeps(&deps)
 	return eng, refs
@@ -619,7 +619,7 @@ func TestEngine_GrandchildSpawnIdentityLine(t *testing.T) {
 		ToolsProvider: refs.Reg.ToolMap,
 	})
 	defer parent.Close()
-	WireEngine(parent, refs, deps)
+	WireEngine(parent, refs, deps.McpReg)
 	parent.SetToolRefs(refs)
 	parent.SetSharedDeps(&deps)
 	parent.SetSystemPrompt("parent system prompt")

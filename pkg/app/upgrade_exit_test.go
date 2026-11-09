@@ -55,20 +55,23 @@ func assertStoreOpen(t *testing.T, store *short.Store, context string) {
 	}
 }
 
-// interceptExit swaps the osExit seam for a recording no-op and returns a
-// channel closed when watchUpgradeExit reaches its exit call. The exit code
-// is pinned: the upgrade path must exit 0.
+// interceptExit installs an exit hook for the duration of t and returns a
+// channel closed when the code under test reaches its exit call. The exit code
+// is pinned: the upgrade path must exit 0. The close is idempotent because a
+// signal fan-out can drive the shared seam from several goroutines.
 func interceptExit(t *testing.T) chan struct{} {
 	t.Helper()
-	orig := osExit
-	t.Cleanup(func() { osExit = orig })
 	exited := make(chan struct{})
-	osExit = func(code int) {
+	onExit(t, func(code int) {
 		if code != 0 {
 			t.Errorf("upgrade exit code = %d, want 0", code)
 		}
-		close(exited)
-	}
+		select {
+		case <-exited:
+		default:
+			close(exited)
+		}
+	})
 	return exited
 }
 

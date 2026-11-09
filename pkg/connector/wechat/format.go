@@ -102,8 +102,11 @@ func splitForWeChat(text string) []string {
 			inCodeBlock = !inCodeBlock
 			// If we just closed a code block that was hard-split (current is
 			// empty because flush ran in the hard-split path), skip emitting
-			// a lone closing-fence chunk.
-			if !inCodeBlock && len(current) == 0 && len(chunks) > 0 {
+			// a lone closing-fence chunk. No "chunks non-empty" guard is
+			// needed: an empty buffer at a closing fence means a flush already
+			// published the block, and every flush that can empty the buffer
+			// after an opening fence has something to publish.
+			if !inCodeBlock && len(current) == 0 {
 				continue
 			}
 		}

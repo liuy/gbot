@@ -65,6 +65,25 @@ func TestReplScript_BrokenSkipped(t *testing.T) {
 	}
 }
 
+// The exported getter must mirror what was set and hand out a copy — the
+// app-side wiring pin reads it from outside the package.
+func TestReplScripts_GetterRoundTrip(t *testing.T) {
+	SetReplScripts([]ReplScript{{Name: "t:get.js", Source: "x"}})
+	defer SetReplScripts(nil)
+	got := ReplScripts()
+	if len(got) != 1 || got[0].Name != "t:get.js" || got[0].Source != "x" {
+		t.Fatalf("ReplScripts() = %+v, want the one script that was set", got)
+	}
+	got[0].Source = "clobbered"
+	if again := ReplScripts(); len(again) != 1 || again[0].Source != "x" {
+		t.Errorf("ReplScripts() handed out the live slice: %+v, want the stored source", again)
+	}
+	SetReplScripts(nil)
+	if again := ReplScripts(); len(again) != 0 {
+		t.Errorf("ReplScripts() after clearing = %+v, want empty", again)
+	}
+}
+
 func TestReplScript_CanReadAllTools(t *testing.T) {
 	SetReplScripts([]ReplScript{
 		{Name: "t:h.js", Source: "globalThis.browser = { toolCount: () => ALL_TOOLS.length };"},

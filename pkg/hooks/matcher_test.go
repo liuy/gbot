@@ -163,3 +163,28 @@ func TestCompileMatcherEmptyStringNotMatchedByRegex(t *testing.T) {
 		t.Error("regex '^Bash$' should not match empty string")
 	}
 }
+
+func TestCompileMatcher_Rules(t *testing.T) {
+	for _, pat := range []string{"", "*"} {
+		m := CompileMatcher(pat)
+		if !m("Bash") || !m("") {
+			t.Errorf("pattern %q must match everything", pat)
+		}
+	}
+	exact := CompileMatcher("Bash")
+	if !exact("Bash") || exact("Bashx") || exact("Edit") {
+		t.Error("a simple pattern must be an exact match")
+	}
+	pipe := CompileMatcher("Bash|Edit")
+	if !pipe("Bash") || !pipe("Edit") || pipe("Web") {
+		t.Error("a pipe-separated pattern must match exactly one of its parts")
+	}
+	re := CompileMatcher("^mcp__.*")
+	if !re("mcp__github__x") || re("Bash") {
+		t.Error("a regex pattern must match by regex")
+	}
+	bad := CompileMatcher("^(unclosed")
+	if bad("anything") || bad("") {
+		t.Error("an invalid regex must never match")
+	}
+}

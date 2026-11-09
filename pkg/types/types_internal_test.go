@@ -41,3 +41,43 @@ func TestPermissionResultMarkers(t *testing.T) {
 		t.Error("DenyDecision.Behavior should be BehaviorDeny")
 	}
 }
+
+// Pin tests for types.go + wire.go mutation sweep.
+
+func TestPinMessage_SetMetadataFromJSON_EmptyNoop(t *testing.T) {
+	m := &Message{Model: "keep"}
+	m.SetMetadataFromJSON("")
+	if m.Model != "keep" || m.Usage != nil {
+		t.Errorf("empty metadata mutated the message: %+v", m)
+	}
+	m.SetMetadataFromJSON(`{"model":"new","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}`)
+	if m.Model != "new" || m.StopReason != "end_turn" || m.Usage == nil || m.Usage.InputTokens != 3 || m.Usage.OutputTokens != 4 {
+		t.Errorf("metadata restore = model=%q stop=%q usage=%+v", m.Model, m.StopReason, m.Usage)
+	}
+}
+
+func TestPinSkillCommand_AvailabilityAndNames(t *testing.T) {
+	c := &SkillCommand{}
+	if !c.MeetsAvailabilityRequirement() {
+		t.Error("empty availability must pass")
+	}
+	gated := &SkillCommand{Availability: []string{"pro"}}
+	if !gated.MeetsAvailabilityRequirement() {
+		t.Error("gbot has no auth tiers: any availability must pass")
+	}
+	if got := (&SkillCommand{DisplayName: "x"}).UserFacingName(); got != "x" {
+		t.Errorf("UserFacingName(DisplayName) = %q, want x", got)
+	}
+	if got := (&SkillCommand{Name: "n"}).UserFacingName(); got != "n" {
+		t.Errorf("UserFacingName(Name only) = %q, want n", got)
+	}
+	if got := (&SkillCommand{DisplayName: "d", Name: "n"}).UserFacingName(); got != "d" {
+		t.Errorf("UserFacingName(both) = %q, want d", got)
+	}
+	if got := (&SkillCommand{Name: "n", IsUserInvocable: true}).IsHidden(); got {
+		t.Errorf("IsHidden(IsUserInvocable) = %v, want false", got)
+	}
+	if got := (&SkillCommand{Name: "n"}).IsHidden(); !got {
+		t.Error("IsHidden(default) = false, want true")
+	}
+}

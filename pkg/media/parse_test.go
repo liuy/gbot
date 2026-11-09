@@ -242,3 +242,141 @@ func TestExpandDocumentBlocks_EmptyNameFallsBackToBase(t *testing.T) {
 		t.Errorf("text = %q, want %q", got[0].Text, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Parse-chain failure paths, cache modes, document expansion
+// ---------------------------------------------------------------------------
+
+func TestParseDocumentAt_CacheWriteFailureStillReturnsContent(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	parseDir := filepath.Join(root, string(CategoryParse))
+	if err := os.MkdirAll(parseDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := filepath.Join(root, "abcd0123efbe4567.txt")
+	if err := os.WriteFile(doc, []byte("document body"), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	if err := os.Chmod(parseDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parseDir, 0o755) })
+	got, ok := parseDocumentAt(context.Background(), root, doc)
+	if !ok || got != "document body" {
+		t.Fatalf("parseDocumentAt = (%q,%v), want the parsed content", got, ok)
+	}
+	recs := logs.find("media: parse cache write failed")
+	if len(recs) != 1 {
+		t.Fatalf("cache write failure logged %d times, want 1", len(recs))
+	}
+	if recs[0].attrs["path"] != parseCachePath(root, "abcd0123efbe4567") {
+		t.Errorf("path attr = %v, want the cache path", recs[0].attrs["path"])
+	}
+}
+
+func TestParseDocumentAt_RenameFailureIsLogged(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	parseDir := filepath.Join(root, string(CategoryParse))
+	if err := os.MkdirAll(parseDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := filepath.Join(root, "ffff0000aaaa1111.txt")
+	if err := os.WriteFile(doc, []byte("rename me"), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	cachePath := parseCachePath(root, "ffff0000aaaa1111")
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	got, ok := parseDocumentAt(context.Background(), root, doc)
+	if !ok || got != "rename me" {
+		t.Fatalf("parseDocumentAt = (%q,%v), want the parsed content", got, ok)
+	}
+	recs := logs.find("media: parse cache rename failed")
+	if len(recs) != 1 {
+		t.Fatalf("rename failure logged %d times, want 1", len(recs))
+	}
+	tmpLeft, _ := filepath.Glob(cachePath + ".tmp.*")
+	if len(tmpLeft) != 0 {
+		t.Errorf("temp cache files left behind: %v", tmpLeft)
+	}
+}
+
+func TestParseDocumentAt_CacheFileModes(t *testing.T) {
+	root := t.TempDir()
+	doc := filepath.Join(root, "1234567890abcdef.txt")
+	if err := os.WriteFile(doc, []byte("mode probe"), 0o600); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	if _, ok := parseDocumentAt(context.Background(), root, doc); !ok {
+		t.Fatal("parseDocumentAt failed")
+	}
+	cachePath := parseCachePath(root, "1234567890abcdef")
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatalf("cache file not written: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("cache file mode = %v, want 0644", info.Mode().Perm())
+	}
+	dirInfo, err := os.Stat(filepath.Join(root, string(CategoryParse)))
+	if err != nil {
+		t.Fatalf("parse dir: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0o755 {
+		t.Errorf("parse dir mode = %v, want 0755", dirInfo.Mode().Perm())
+	}
+}
+
+func TestParseDocumentAt_EmptyContentIsNotCached(t *testing.T) {
+	logs := captureMediaLogs(t)
+	root := t.TempDir()
+	doc := filepath.Join(root, "0000111122223333.txt")
+	if err := os.WriteFile(doc, nil, 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	got, ok := parseDocumentAt(context.Background(), root, doc)
+	if ok {
+		t.Errorf("parseDocumentAt on an empty document = (%q,true), want ok=false", got)
+	}
+	if got := logs.find("media: document parse returned empty content"); len(got) != 1 {
+		t.Errorf("empty-content logged %d times, want 1", len(got))
+	}
+	if _, err := os.Stat(parseCachePath(root, "0000111122223333")); err == nil {
+		t.Error("an empty parse result was cached")
+	}
+}
+
+func TestExpandDocumentBlocks_PreservesCacheControlAndHeader(t *testing.T) {
+	root := t.TempDir()
+	doc := filepath.Join(root, "deadbeefcafebabe.txt")
+	if err := os.WriteFile(doc, []byte("expanded body"), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	blocks := []types.ContentBlock{
+		types.NewTextBlock("lead"),
+		{Type: types.ContentTypeDocument, Path: doc},
+	}
+	blocks[1].CacheControl = &types.CacheControlConfig{Type: "ephemeral"}
+	got := ExpandDocumentBlocks(context.Background(), blocks)
+	if len(got) != 2 {
+		t.Fatalf("blocks = %d, want 2", len(got))
+	}
+	if got[0].Text != "lead" {
+		t.Errorf("first block = %q, want it untouched", got[0].Text)
+	}
+	if got[1].Type != types.ContentTypeText {
+		t.Fatalf("document block type = %q, want text", got[1].Type)
+	}
+	if got[1].Text != "[Document: deadbeefcafebabe.txt]\nexpanded body" {
+		t.Errorf("expanded block = %q", got[1].Text)
+	}
+	if got[1].CacheControl == nil {
+		t.Error("the cache_control breakpoint was lost across the document swap")
+	}
+	if blocks[1].Type != types.ContentTypeDocument {
+		t.Error("the input slice was mutated")
+	}
+}

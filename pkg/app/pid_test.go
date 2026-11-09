@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -229,5 +231,82 @@ func TestAcquirePID_CorruptPIDFile(t *testing.T) {
 	}
 	if pid != os.Getpid() {
 		t.Errorf("PID = %d, want %d", pid, os.Getpid())
+	}
+}
+
+// Pin tests for pid.go mutation sweep; assertions are exact so a single
+// changed byte flips the test. Mutant line:mutator pairs are in the sweep
+// ledger.
+
+// The grace window is a documented product decision (dying predecessor needs
+// a moment to release the PID file); the defaults must stay pinned.
+func TestPinPID_GraceWindowDefaults(t *testing.T) {
+	if pidWaitTotal != 10*time.Second {
+		t.Errorf("pidWaitTotal = %v, want 10s", pidWaitTotal)
+	}
+	if pidWaitStep != 250*time.Millisecond {
+		t.Errorf("pidWaitStep = %v, want 250ms", pidWaitStep)
+	}
+}
+
+func TestPinPID_MkdirAllFails(t *testing.T) {
+	base := t.TempDir()
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acquirePID(filepath.Join(blocker, "sub"), false)
+	if err == nil {
+		t.Fatal("acquirePID under a file path succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "create project dir") {
+		t.Errorf("err = %v, want 'create project dir' prefix", err)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("err = %v, want a wrapped chain", err)
+	}
+}
+
+func TestPinPID_WriteFails(t *testing.T) {
+	dir := t.TempDir()
+	// A directory at the PID path: ReadFile errors (lock treated as free),
+	// WriteFile then fails.
+	pidPath := project.PIDFile(dir)
+	if err := os.Mkdir(pidPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acquirePID(dir, false)
+	if err == nil {
+		t.Fatal("acquirePID with directory at PID path succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "write PID file") {
+		t.Errorf("err = %v, want 'write PID file' prefix", err)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("err = %v, want a wrapped chain", err)
+	}
+}
+
+func TestPinPID_FileModes(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "proj")
+	cleanup, err := acquirePID(dir, false)
+	if err != nil {
+		t.Fatalf("acquirePID: %v", err)
+	}
+	defer cleanup()
+	dfi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dfi.Mode().Perm(); got != 0o755 {
+		t.Errorf("project dir mode = %o, want 755", got)
+	}
+	pfi, err := os.Stat(project.PIDFile(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pfi.Mode().Perm(); got != 0o644 {
+		t.Errorf("PID file mode = %o, want 644", got)
 	}
 }

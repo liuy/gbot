@@ -3,6 +3,7 @@ package wechat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -483,4 +484,266 @@ func TestStopTyping_SendTypingError(t *testing.T) {
 	}
 	c.stopTyping(context.Background(), "user1")
 	// Should not panic.
+}
+
+// pinTypingMock records the context of every API call, which the shared
+// mockTypingAPI discards — several mutants only show up as a dropped ctx.
+type pinTypingMock struct {
+	mu       sync.Mutex
+	getCtx   []context.Context
+	sendCtx  []context.Context
+	sends    []pinSendCall
+	getErr   error
+	sendErr  error
+	ticket   string
+	getCalls int
+}
+
+type pinSendCall struct {
+	userID string
+	ticket string
+	status int
+}
+
+func (m *pinTypingMock) getConfig(ctx context.Context, userID, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getCalls++
+	m.getCtx = append(m.getCtx, ctx)
+	if m.getErr != nil {
+		return "", m.getErr
+	}
+	if m.ticket != "" {
+		return m.ticket, nil
+	}
+	return "ticket-" + userID, nil
+}
+
+func (m *pinTypingMock) sendTyping(ctx context.Context, userID, ticket string, status int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendCtx = append(m.sendCtx, ctx)
+	m.sends = append(m.sends, pinSendCall{userID: userID, ticket: ticket, status: status})
+	return m.sendErr
+}
+
+func (m *pinTypingMock) snapshot() (getCalls int, sends []pinSendCall, getCtx, sendCtx []context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.getCalls, append([]pinSendCall(nil), m.sends...), append([]context.Context(nil), m.getCtx...), append([]context.Context(nil), m.sendCtx...)
+}
+
+func pinNewTypingConnector(mock typingAPI) *WeChatConnector {
+	return &WeChatConnector{
+		typingCache: newTypingTicketCache(typingTTL),
+		typingAPI:   mock,
+	}
+}
+
+// The 600s ticket TTL is the iLink server-side window; the refresh cadence
+// everywhere else is derived from it.
+func TestPinTypingTTL(t *testing.T) {
+	if typingTTL != 600*time.Second {
+		t.Errorf("typingTTL = %v, want 600s", typingTTL)
+	}
+}
+
+// A cached ticket expires at exactly ttl (>=, not >) and the expired entry is
+// evicted rather than left in the map.
+func TestPinTypingCacheExpiryBoundary(t *testing.T) {
+	c := newTypingTicketCache(60 * time.Second)
+	c.set("u1", "t1")
+	c.mu.Lock()
+	e := c.entries["u1"]
+	e.settled = e.settled.Add(-60 * time.Second)
+	c.entries["u1"] = e
+	c.mu.Unlock()
+
+	if got := c.get("u1"); got != "" {
+		t.Errorf("get at exact ttl = %q, want %q (entry is expired)", got, "")
+	}
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Errorf("entries after expired get = %d, want 0 (evicted)", n)
+	}
+
+	// One tick inside the window must still return the ticket.
+	c.set("u2", "t2")
+	c.mu.Lock()
+	e2 := c.entries["u2"]
+	e2.settled = e2.settled.Add(-59 * time.Second)
+	c.entries["u2"] = e2
+	c.mu.Unlock()
+	if got := c.get("u2"); got != "t2" {
+		t.Errorf("get just inside ttl = %q, want %q", got, "t2")
+	}
+}
+
+// With a virtual clock the elapsed time is exactly zero, so ttl 0 pins the
+// expiry comparison at its boundary: elapsed == ttl is already expired.
+func TestPinTypingCacheExpiryAtZeroElapsed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newTypingTicketCache(0)
+		c.set("u1", "t1")
+		if got := c.get("u1"); got != "" {
+			t.Errorf("get with ttl 0 = %q, want %q (elapsed == ttl is expired)", got, "")
+		}
+	})
+}
+
+// The map must stay guarded for the whole of get, not just until the first
+// return path: concurrent set/get on one cache is a data race otherwise.
+func TestPinTypingCacheConcurrentAccess(t *testing.T) {
+	c := newTypingTicketCache(60 * time.Second)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 50 {
+				c.set("u", "t")
+				if got := c.get("u"); got != "t" {
+					t.Errorf("concurrent get = %q, want %q", got, "t")
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := c.get("u"); got != "t" {
+		t.Errorf("get after concurrent access = %q, want %q", got, "t")
+	}
+}
+
+// get() must release the lock on every return path; a missing user is a
+// second call on the same cache, which deadlocks if the unlock is skipped.
+func TestPinTypingCacheUnlocksOnMiss(t *testing.T) {
+	c := newTypingTicketCache(60 * time.Second)
+	if got := c.get("absent"); got != "" {
+		t.Fatalf("get(absent) = %q, want %q", got, "")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.get("absent")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second get() blocked: the mutex is not released on the miss path")
+	}
+}
+
+// A live cached ticket must be reused without a getConfig round-trip.
+func TestPinEnsureTicketReusesCache(t *testing.T) {
+	mock := &pinTypingMock{}
+	c := pinNewTypingConnector(mock)
+	first := c.ensureTicket(context.Background(), "u1")
+	if first != "ticket-u1" {
+		t.Fatalf("ensureTicket = %q, want %q", first, "ticket-u1")
+	}
+	second := c.ensureTicket(context.Background(), "u1")
+	getCalls, _, _, _ := mock.snapshot()
+	if second != "ticket-u1" {
+		t.Errorf("second ensureTicket = %q, want %q", second, "ticket-u1")
+	}
+	if getCalls != 1 {
+		t.Errorf("getConfig calls = %d, want 1 (cached ticket must not re-fetch)", getCalls)
+	}
+}
+
+// startTyping/stopTyping must thread the caller's context into both the
+// ticket fetch and the send, and must record the refresh on success.
+func TestPinTypingThreadsContext(t *testing.T) {
+	mock := &pinTypingMock{}
+	c := pinNewTypingConnector(mock)
+	c.lastTypingRefresh = time.Time{}
+	ctx := t.Context()
+
+	c.startTyping(ctx, "u1")
+	// A fresh cache forces stopTyping to fetch its own ticket, so the ctx it
+	// passes to getConfig is observable.
+	c2 := pinNewTypingConnector(mock)
+	c2.stopTyping(ctx, "u1")
+
+	_, sends, getCtx, sendCtx := mock.snapshot()
+	if len(getCtx) != 2 {
+		t.Fatalf("getConfig calls = %d, want 2", len(getCtx))
+	}
+	for i, gctx := range getCtx {
+		if gctx == nil {
+			t.Errorf("getConfig[%d] ctx = nil, want the caller's ctx", i)
+		}
+	}
+	wantSends := []pinSendCall{{userID: "u1", ticket: "ticket-u1", status: TypingStart}, {userID: "u1", ticket: "ticket-u1", status: TypingStop}}
+	if len(sends) != 2 || sends[0] != wantSends[0] || sends[1] != wantSends[1] {
+		t.Fatalf("sends = %+v, want %+v", sends, wantSends)
+	}
+	if len(sendCtx) != 2 {
+		t.Fatalf("sendTyping calls = %d, want 2", len(sendCtx))
+	}
+	for i, sctx := range sendCtx {
+		if sctx == nil {
+			t.Errorf("sendTyping[%d] ctx = nil, want the caller's ctx", i)
+		}
+	}
+	if c.lastTypingRefresh.IsZero() {
+		t.Error("lastTypingRefresh not updated after a successful startTyping")
+	}
+}
+
+// A failed ticket fetch must stop before any send and be logged.
+func TestPinStartTypingStopsOnGetConfigError(t *testing.T) {
+	mock := &pinTypingMock{getErr: errors.New("boom")}
+	c := pinNewTypingConnector(mock)
+	logs := pinCaptureSlog(t, func() {
+		c.startTyping(context.Background(), "u1")
+		c.stopTyping(context.Background(), "u1")
+	})
+	_, sends, _, _ := mock.snapshot()
+	if len(sends) != 0 {
+		t.Errorf("sends = %+v, want none when the ticket fetch fails", sends)
+	}
+	if got := strings.Count(logs, "getConfig failed"); got != 2 {
+		t.Errorf("logs contain %d %q lines, want 2: %q", got, "getConfig failed", logs)
+	}
+}
+
+// A failed send must be logged with its direction, and a successful send must
+// not log at all.
+func TestPinTypingSendFailureLogged(t *testing.T) {
+	mock := &pinTypingMock{sendErr: errors.New("send boom")}
+	c := pinNewTypingConnector(mock)
+	logs := pinCaptureSlog(t, func() {
+		c.startTyping(context.Background(), "u1")
+		c.stopTyping(context.Background(), "u1")
+	})
+	if !strings.Contains(logs, "sendTyping start failed") {
+		t.Errorf("logs = %q, want a start-failure line", logs)
+	}
+	if !strings.Contains(logs, "sendTyping stop failed") {
+		t.Errorf("logs = %q, want a stop-failure line", logs)
+	}
+
+	ok := &pinTypingMock{}
+	c2 := pinNewTypingConnector(ok)
+	logs2 := pinCaptureSlog(t, func() {
+		c2.startTyping(context.Background(), "u1")
+		c2.stopTyping(context.Background(), "u1")
+	})
+	if strings.Contains(logs2, "sendTyping") {
+		t.Errorf("logs on success = %q, want no sendTyping failure lines", logs2)
+	}
+}
+
+// startTyping must return before touching the API when no typingAPI is wired.
+func TestPinStartTypingNilAPI(t *testing.T) {
+	c := &WeChatConnector{typingCache: newTypingTicketCache(typingTTL)}
+	pinCaptureSlog(t, func() {
+		c.startTyping(context.Background(), "u1")
+		c.stopTyping(context.Background(), "u1")
+	})
+	if !c.lastTypingRefresh.IsZero() {
+		t.Errorf("lastTypingRefresh = %v with a nil typingAPI, want it untouched", c.lastTypingRefresh)
+	}
 }

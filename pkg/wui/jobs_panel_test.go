@@ -762,7 +762,7 @@ func wireJobsEngine(t *testing.T, deps engine.SharedDeps, id string) (*engine.En
 	eng.SetDispatcher(hub.NewHub())
 	refs := engine.CreateTools(deps, task.NewList(t.TempDir()))
 	eng.SetToolRefs(refs)
-	engine.WireEngine(eng, refs, deps)
+	engine.WireEngine(eng, refs, deps.McpReg)
 	return eng, refs
 }
 

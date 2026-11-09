@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +16,8 @@ import (
 	mcp "github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/plugins"
 	"github.com/liuy/gbot/pkg/reload"
+	"github.com/liuy/gbot/pkg/tool/repl"
+	"github.com/liuy/gbot/pkg/transport"
 )
 
 func TestCleanup_ClosesAllEngines(t *testing.T) {
@@ -169,4 +173,59 @@ func TestCleanup_ClosesMcpRegistry(t *testing.T) {
 func TestCleanup_NilMcpRegInEnv(t *testing.T) {
 	holder := reload.NewEnvHolder(&reload.Env{})
 	(&Instance{EnvHolder: holder}).Cleanup() // must not panic
+}
+
+// Cleanup's teardown steps are side effects, not nil checks: the hub's providers
+// must actually be closed (onGone fires) and a dream timer still running past the
+// join window must be reported rather than silently joined-and-skipped.
+func TestCleanup_ClosesTransportHubAndReportsStuckDream(t *testing.T) {
+	var gone atomic.Int32
+	hub := transport.New()
+	hub.RegisterInproc("proto", func([]byte) {}, func() { gone.Add(1) })
+	orig := dreamJoinTimeout
+	dreamJoinTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { dreamJoinTimeout = orig })
+	prev := slog.Default()
+	logs := &cleanupWarnCapture{}
+	slog.SetDefault(slog.New(logs))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	(&Instance{TransportHub: hub, DreamDone: make(chan struct{})}).Cleanup()
+
+	if got := gone.Load(); got != 1 {
+		t.Errorf("transport provider onGone fired %d times, want 1 (Cleanup must close the hub)", got)
+	}
+	want := "cleanup: dream timer still running; closing store under it"
+	if len(logs.warned) != 1 || logs.warned[0] != want {
+		t.Errorf("warnings = %v, want exactly [%q]", logs.warned, want)
+	}
+}
+
+func TestCleanup_ClosesREPLSessions(t *testing.T) {
+	// cleanup.go:48 — REPL.Close deletes JS sessions. Without it, a
+	// session's globalThis state survives Cleanup and leaks into the
+	// next process's first REPL call under the same session_id.
+	replTool := repl.New()
+	inst := &Instance{MainRefs: &engine.ToolRefs{REPL: replTool}}
+	set, err := json.Marshal(map[string]string{"code": "globalThis.marker = 41", "session_id": "pin-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replTool.Call(context.Background(), set, nil); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	inst.Cleanup()
+	// The reset action reports session existence: Close deleted the
+	// session → "(new)"; a surviving session resets in place.
+	probe, err := json.Marshal(map[string]any{"reset": true, "session_id": "pin-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := replTool.Call(context.Background(), probe, nil)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got := fmt.Sprintf("%v", res.Data); !strings.Contains(got, "reset (new)") {
+		t.Errorf("session state survived Cleanup: %s", got)
+	}
 }

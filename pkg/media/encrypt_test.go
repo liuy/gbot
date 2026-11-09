@@ -148,3 +148,44 @@ func TestPkcs7Pad_TooLarge(t *testing.T) {
 		t.Fatalf("pkcs7Pad oversize error = %v, want 'exceeds maximum'", err)
 	}
 }
+
+func TestEncryptAesEcb_KeyGuardAndPaddingSize(t *testing.T) {
+	if _, err := EncryptAesEcb([]byte("hi"), []byte("short")); err == nil ||
+		err.Error() != "aes-ecb: key must be 16 bytes (AES-128), got 5" {
+		t.Errorf("short-key error = %v, want the 16-byte guard message", err)
+	}
+	for _, tt := range []struct{ in, want int }{
+		{0, 16}, {1, 16}, {15, 16}, {16, 32}, {17, 32}, {31, 32}, {32, 48},
+	} {
+		if got := AesEcbPaddedSize(tt.in); got != tt.want {
+			t.Errorf("AesEcbPaddedSize(%d) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+	key := []byte("0123456789abcdef")
+	for _, size := range []int{0, 1, 15, 16, 17} {
+		plain := make([]byte, size)
+		for i := range plain {
+			plain[i] = byte(i)
+		}
+		out, err := EncryptAesEcb(plain, key)
+		if err != nil {
+			t.Fatalf("EncryptAesEcb(%d bytes): %v", size, err)
+		}
+		if len(out) != AesEcbPaddedSize(size) {
+			t.Errorf("ciphertext for %d bytes = %d, want %d", size, len(out), AesEcbPaddedSize(size))
+		}
+		back, err := DecryptAesEcb(out, key)
+		if err != nil {
+			t.Fatalf("DecryptAesEcb(%d bytes): %v", size, err)
+		}
+		if string(back) != string(plain) {
+			t.Errorf("round-trip for %d bytes mismatch", size)
+		}
+	}
+}
+
+func TestPlaintextSizeCapIsPinned(t *testing.T) {
+	if maxPlaintextSize != 1<<31 {
+		t.Errorf("maxPlaintextSize = %d, want %d (2 GiB)", maxPlaintextSize, 1<<31)
+	}
+}

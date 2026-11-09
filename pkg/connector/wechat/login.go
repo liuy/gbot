@@ -11,6 +11,14 @@ import (
 	qrterminal "github.com/mdp/qrterminal/v3"
 )
 
+// QR login pacing. qrMaxRefresh also feeds the "(n/N)" progress line, so the
+// printed bound and the loop's bound cannot drift apart.
+const (
+	qrLoginWindow = 480 * time.Second
+	qrPollEvery   = 1 * time.Second
+	qrMaxRefresh  = 3
+)
+
 // Login runs the interactive iLink QR login flow.
 // On success, saves state to <projectDir>/wechat/<accountID>.json.
 // Returns the account ID on success.
@@ -34,7 +42,7 @@ func Login(ctx context.Context, client *http.Client, projectDir string) (string,
 	fmt.Printf("\n（无法扫码？直接打开此链接：%s）\n", qrcodeURL)
 
 	// Step 2: Poll for QR status
-	deadline := time.Now().Add(480 * time.Second)
+	deadline := time.Now().Add(qrLoginWindow)
 	currentBaseURL := ILINKBaseURL
 	refreshCount := 0
 
@@ -48,7 +56,7 @@ func Login(ctx context.Context, client *http.Client, projectDir string) (string,
 		statusResp, err := GetQRStatus(ctx, client, currentBaseURL, qrcodeValue)
 		if err != nil {
 			slog.Warn("wechat: QR poll error", "error", err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(qrPollEvery)
 			continue
 		}
 
@@ -69,11 +77,11 @@ func Login(ctx context.Context, client *http.Client, projectDir string) (string,
 			}
 		case "expired":
 			refreshCount++
-			if refreshCount > 3 {
+			if refreshCount > qrMaxRefresh {
 				fmt.Println("\n二维码多次过期，请重新执行登录。")
 				return "", fmt.Errorf("QR code expired too many times")
 			}
-			fmt.Printf("\n二维码已过期，正在刷新... (%d/3)\n", refreshCount)
+			fmt.Printf("\n二维码已过期，正在刷新... (%d/%d)\n", refreshCount, qrMaxRefresh)
 			newQRResp, err := GetBotQR(ctx, client, "3")
 			if err != nil {
 				return "", fmt.Errorf("QR refresh: %w", err)
@@ -119,7 +127,7 @@ func Login(ctx context.Context, client *http.Client, projectDir string) (string,
 			return accountID, nil
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(qrPollEvery)
 	}
 
 	fmt.Println("\n微信登录超时。")

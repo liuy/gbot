@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -291,5 +293,119 @@ func TestCompactionConstants(t *testing.T) {
 	}
 	if PostCompactSkillsTokenBudget != 25000 {
 		t.Errorf("PostCompactSkillsTokenBudget = %d, want 25000 (TS: compact.ts:130)", PostCompactSkillsTokenBudget)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lock discipline and boundary arithmetic
+// ---------------------------------------------------------------------------
+
+func TestAddInvokedSkill_StoresEveryField(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	r.AddInvokedSkill("skill-a", "/p/SKILL.md", "body text", "agent-1")
+	got := r.GetInvokedSkillsForAgent("agent-1")
+	if len(got) != 1 {
+		t.Fatalf("invoked skills = %d, want 1", len(got))
+	}
+	if got[0].SkillName != "skill-a" || got[0].SkillPath != "/p/SKILL.md" ||
+		got[0].Content != "body text" || got[0].AgentID != "agent-1" {
+		t.Errorf("invoked skill = %+v, want all fields recorded", got[0])
+	}
+	if got[0].InvokedAt.IsZero() {
+		t.Error("InvokedAt not stamped")
+	}
+}
+
+func TestCompactionLocksAreReleased(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	r.AddInvokedSkill("s", "/p", "c", "a1")
+	r.GetInvokedSkillsForAgent("a1")
+	if !r.mu.TryLock() {
+		t.Fatal("GetInvokedSkillsForAgent left the registry mutex locked")
+	}
+	r.mu.Unlock()
+	r.CleanupActivatedSkills(time.Hour)
+	if !r.mu.TryLock() {
+		t.Fatal("CleanupActivatedSkills left the registry mutex locked")
+	}
+	r.mu.Unlock()
+	r.ClearInvokedSkillsForAgent("a1")
+	if !r.mu.TryLock() {
+		t.Fatal("ClearInvokedSkillsForAgent left the registry mutex locked")
+	}
+	r.mu.Unlock()
+	if got := r.GetInvokedSkillsForAgent("a1"); len(got) != 0 {
+		t.Errorf("invoked skills after clear = %d, want 0", len(got))
+	}
+}
+
+func TestGetInvokedSkillsForAgent_SortsOldestFirst(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Insert in reverse chronological order: map iteration order is random,
+	// so only the sort can make the output deterministic.
+	names := []string{"s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s10", "s11", "s12"}
+	for i, n := range names {
+		r.invokedSkills["a1:"+n] = types.InvokedSkillInfo{SkillName: n, AgentID: "a1", InvokedAt: base.Add(time.Duration(i+1) * time.Hour)}
+	}
+	got := r.GetInvokedSkillsForAgent("a1")
+	if len(got) != len(names) {
+		t.Fatalf("invoked skills = %d, want %d", len(got), len(names))
+	}
+	for i, want := range names {
+		if got[i].SkillName != want {
+			t.Errorf("position %d = %q, want %q", i, got[i].SkillName, want)
+		}
+	}
+}
+
+func TestCreateSkillAttachment_TotalBudgetBoundary(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	// "### Skill: s\n" is 13 chars; content 28 → section 41, one over the
+	// 40-char total budget (10 tokens × 4 chars).
+	r.AddInvokedSkill("s", "/p", strings.Repeat("x", 28), "a1")
+	if got := r.CreateSkillAttachment("a1", 1000, 10); got != "" {
+		t.Errorf("attachment = %q for a section one char over budget, want empty", got)
+	}
+	// Exactly at budget it must be kept.
+	r2 := NewRegistry(t.TempDir())
+	r2.AddInvokedSkill("s", "/p", strings.Repeat("x", 27), "a1")
+	if got := r2.CreateSkillAttachment("a1", 1000, 10); got != "## Previously invoked skills\n\n### Skill: s\n"+strings.Repeat("x", 27) {
+		t.Errorf("attachment at the exact budget = %q, want the section", got)
+	}
+}
+
+func TestCreateSkillAttachment_StopsAtTheFirstOverBudgetSkill(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	// Each section is 13 + 20 = 33 chars; the 60-char total budget fits the
+	// first skill only.
+	body := strings.Repeat("z", 20)
+	// Fixed timestamps: the sort in GetInvokedSkillsForAgent must be the only
+	// thing ordering these, not wall-clock luck.
+	t1, t2, t3 := time.Unix(1, 0), time.Unix(2, 0), time.Unix(3, 0)
+	r.invokedSkills["a1:one"] = types.InvokedSkillInfo{SkillName: "one", AgentID: "a1", Content: body, InvokedAt: t1}
+	r.invokedSkills["a1:two"] = types.InvokedSkillInfo{SkillName: "two", AgentID: "a1", Content: body, InvokedAt: t2}
+	// A third skill that would fit on its own: only a `break` (not a
+	// `continue`) keeps it out of the attachment.
+	r.invokedSkills["a1:three"] = types.InvokedSkillInfo{SkillName: "three", AgentID: "a1", Content: "tiny", InvokedAt: t3}
+	got := r.CreateSkillAttachment("a1", 1000, 15)
+	want := "## Previously invoked skills\n\n### Skill: one\n" + body
+	if got != want {
+		t.Errorf("attachment = %q, want only the first skill (60-char budget, first over-budget skill must stop the loop)", got)
+	}
+}
+
+func TestCreateSkillAttachment_PerSkillBoundaryIsExclusive(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	// maxTokensPerSkill 10 → 40 chars. Content of exactly 40 chars must stay
+	// verbatim; only 41+ gets the truncation marker.
+	content := strings.Repeat("y", 40)
+	r.AddInvokedSkill("s", "/p", content, "a1")
+	got := r.CreateSkillAttachment("a1", 10, 1000)
+	if got != "## Previously invoked skills\n\n### Skill: s\n"+content {
+		t.Errorf("attachment = %q, want the untruncated 40-char content", got)
+	}
+	if strings.Contains(got, "[...truncated]") {
+		t.Errorf("40-char content was truncated: %q", got)
 	}
 }
