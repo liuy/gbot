@@ -50,4 +50,25 @@ if (
   Element.prototype.scrollIntoView = function () {}
 }
 
+// Module-level timers must not outlive a test file: a pending jsdom timer
+// fires after that file's jsdom is gone (window undefined) and crashes the
+// worker with an unhandled ReferenceError. The crash lands on whichever
+// file the worker runs NEXT, so the blamed file rotates (task_panel,
+// cancel_result, subagent_nesting all took it). stopStatusSweep is a no-op
+// when no sweep is running.
+import { afterEach, vi } from 'vitest'
+import { stopStatusSweep } from './components/status_sweep'
+afterEach(() => stopStatusSweep())
+// The daemon-served novnc prebundle does not exist in the test environment.
+// A real dynamic import fails inside vite's module runner, whose fetch error
+// is re-raised as an unhandled runnerError that bypasses the caller's catch —
+// any test opening the VNC face (chat, vnc_console, …) can poison the worker.
+// File-level vi.mock calls still override this one.
+vi.mock('./rfb_loader', () => ({
+  NOVNC_MODULE_URL: '/assets/novnc.esm.js',
+  loadRFB: vi.fn(async () => {
+    throw new Error('novnc is not available in tests')
+  }),
+}))
+
 export {}
