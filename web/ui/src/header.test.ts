@@ -1720,6 +1720,24 @@ describe('Header target switch (multi-endpoint WUI)', () => {
     expect(native.getRemoteTargets).toHaveBeenCalledTimes(2)
     expect(row('target-entry', 'nas').textContent).toContain('nas')
   })
+  it('opens the target popup without remote rows when the bridge lacks getRemoteTargets', () => {
+    // Older Kotlin builds expose GBotNative without this method — pin the
+    // fallback path (empty list, popup intact). The catch below makes the
+    // '[]' default behaviorally equivalent to a parse failure, so this is
+    // coverage of the path, not a discriminator between the two.
+    const native = stubNative([])
+    delete (native as Partial<typeof native>).getRemoteTargets
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+    applyTarget({ target: 'local', current: '', remotes: [] })
+    clickWordmark(header)
+    expect(popup()).not.toBeNull()
+    expect(row('target-entry', 'nas')).toBeUndefined()
+  })
 
   it('popup panel and rows carry their layout classes; the local row carries no target name', () => {
     stubNative()

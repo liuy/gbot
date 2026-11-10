@@ -541,6 +541,7 @@ func TestIsConnectionDeadErrorTable(t *testing.T) {
 		{"tool-level error", errors.New("tool execution failed: element not found"), false},
 		{"context deadline", context.DeadlineExceeded, false},
 		{"EACCES not dead", syscall.EACCES, false},
+		{"idle conn closed by peer", wrapped(errors.New(`Post "http://127.0.0.1:9": read tcp 127.0.0.1:5-127.0.0.1:9: server closed idle connection`)), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

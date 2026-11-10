@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"io"
+	"strings"
 	"syscall"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,11 +19,19 @@ import (
 //   - ErrSessionMissing: the remote server restarted on the same address
 //     and no longer recognizes the session — the connection state is dead
 func IsConnectionDeadError(err error) bool {
-	return errors.Is(err, mcpsdk.ErrConnectionClosed) ||
+	if errors.Is(err, mcpsdk.ErrConnectionClosed) ||
 		errors.Is(err, mcpsdk.ErrSessionMissing) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ECONNREFUSED)
+		errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	// http.Transport hands back "server closed idle connection" when the
+	// peer dropped a keep-alive we picked from the pool: the pooled
+	// connection IS dead (evict + redial on a fresh one), even though the
+	// server itself is alive. No sentinel exists for it — string match is
+	// the only handle, same as the llm-side IsConnectionError.
+	return err != nil && strings.Contains(err.Error(), "server closed idle connection")
 }
 
 // EvictIfSame removes the stored connection for name only if it is still cs.
