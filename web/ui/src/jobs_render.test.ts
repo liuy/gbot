@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createJobsSection, nearBottom } from './jobs_render'
 import { createJobsStore } from './jobs_store'
+import { setLocale } from './i18n'
 import type { JobWireItem } from './types'
 import type { Block } from './model'
 
@@ -81,6 +82,14 @@ function expFor(host: HTMLElement, id: string): HTMLElement | null {
   return host.querySelector(`.jobs-exp[data-job-id="${id}"]`)
 }
 
+function doneToggle(host: HTMLElement): HTMLElement | null {
+  return host.querySelector('.jobs-done-toggle')
+}
+
+function doneRowIds(host: HTMLElement): string[] {
+  return Array.from(host.querySelectorAll('.jobs-row')).map((r) => (r as HTMLElement).dataset.jobId)
+}
+
 describe('nearBottom', () => {
   it('pins within 40px and releases beyond it', () => {
     // 100 - 41 - 20 = 39 gap → pinned.
@@ -115,6 +124,8 @@ describe('jobs section — rows', () => {
       jw({ id: 'bg-kill137', kind: 'bash', status: 'killed', command: 'x', exitCode: 137 }),
     ])
     ctx.rerender()
+    // Terminal rows live behind the done collapse: open the zone first.
+    doneToggle(ctx.host)?.click()
     expect(rowFor(ctx.host, 'bg-run').querySelector('.spin')).not.toBeNull()
     const doneRow = rowFor(ctx.host, 'bg-done')
     expect(doneRow.querySelector('svg path')?.getAttribute('d')).toBe('M20 6L9 17l-5-5')
@@ -129,6 +140,7 @@ describe('jobs section — rows', () => {
     const ctx = mount()
     ctx.store.setJobs([jw({ id: 'bg-fail0', kind: 'bash', status: 'failed', command: 'x' })])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     expect(rowFor(ctx.host, 'bg-fail0').querySelector('.mono.text-red')?.textContent).toBe('Failed')
   })
 
@@ -140,6 +152,7 @@ describe('jobs section — rows', () => {
       jw({ id: 'bg-fail', kind: 'bash', status: 'failed', command: 'x', exitCode: 1 }),
     ])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     // The color IS the state signal for chips and terminal icons — the
     // panel has no other status affordance on these spans. (A bash row's
     // name cell is also .mono, so chips are selected via the state color.)
@@ -174,6 +187,171 @@ describe('jobs section — rows', () => {
     // Absent metadata must read as an empty label, never a placeholder.
     expect(rowFor(ctx.host, 'bg-nocmd').children[1].textContent).toBe('')
     expect(rowFor(ctx.host, 'ag-notype').children[1].textContent).toBe('')
+  })
+})
+
+// ── Done collapse zone ─────────────────────────────────────────────────────
+
+describe('jobs section — done collapse', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('mixed list: the collapse row counts terminal jobs, hides them, keeps running rows visible', () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      bashJob('bg-run', 'running'),
+      jw({ id: 'bg-d1', kind: 'bash', status: 'completed', command: 'x', startedMs: 2000 }),
+      jw({ id: 'bg-d2', kind: 'bash', status: 'failed', command: 'x', startedMs: 3000 }),
+    ])
+    ctx.rerender()
+    const toggle = doneToggle(ctx.host)
+    expect(toggle).not.toBeNull()
+    expect(toggle?.textContent).toContain('2 Done')
+    // Collapsed points right; the expanded state (asserted below on click)
+    // rotates it down — the sidebar tree's fold idiom.
+    expect(toggle?.children[0].classList.contains('rotate-90')).toBe(false)
+    // Collapsed by default: terminal rows are out of the DOM entirely.
+    expect(rowFor(ctx.host, 'bg-d1')).toBeNull()
+    expect(rowFor(ctx.host, 'bg-d2')).toBeNull()
+    expect(rowFor(ctx.host, 'bg-run')).not.toBeNull()
+  })
+
+  it('expanding lists terminal rows newest-first; collapsing empties the zone again', () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      bashJob('bg-run', 'running'),
+      jw({ id: 'bg-old', kind: 'bash', status: 'completed', command: 'x', startedMs: 1000 }),
+      jw({ id: 'bg-mid', kind: 'bash', status: 'killed', command: 'x', startedMs: 2000 }),
+      jw({ id: 'bg-new', kind: 'bash', status: 'failed', command: 'x', startedMs: 3000 }),
+    ])
+    ctx.rerender()
+    doneToggle(ctx.host)?.click()
+    expect(doneToggle(ctx.host)?.children[0].classList.contains('rotate-90')).toBe(true)
+    // startedMs desc — the completion-time proxy (the wire payload carries no
+    // finished timestamp).
+    expect(doneRowIds(ctx.host)).toEqual(['bg-run', 'bg-new', 'bg-mid', 'bg-old'])
+    doneToggle(ctx.host)?.click()
+    expect(rowFor(ctx.host, 'bg-new')).toBeNull()
+    expect(rowFor(ctx.host, 'bg-run')).not.toBeNull()
+  })
+
+  it('equal startedMs ties order id-desc: the exact reverse of the server row order', () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      jw({ id: 'bg-a', kind: 'bash', status: 'completed', command: 'x', startedMs: 5000 }),
+      jw({ id: 'bg-b', kind: 'bash', status: 'completed', command: 'x', startedMs: 5000 }),
+      jw({ id: 'bg-c', kind: 'bash', status: 'completed', command: 'x', startedMs: 5000 }),
+    ])
+    ctx.rerender()
+    doneToggle(ctx.host)?.click()
+    // A round of jobs shares one StartedMs server-side, so only the ID
+    // tiebreak orders them; newest-first is the reverse of that order.
+    expect(doneRowIds(ctx.host)).toEqual(['bg-c', 'bg-b', 'bg-a'])
+  })
+
+  it('zero terminal jobs: no collapse row at all', () => {
+    const ctx = mount()
+    ctx.store.setJobs([bashJob('bg-run', 'running'), agentJob('agent-1', 'running')])
+    ctx.rerender()
+    expect(doneToggle(ctx.host)).toBeNull()
+    expect(ctx.host.querySelectorAll('.jobs-row')).toHaveLength(2)
+  })
+
+  it('zero running + N terminal: the collapse row is the whole section content', () => {
+    const ctx = mount()
+    ctx.store.setJobs([jw({ id: 'bg-d1', kind: 'bash', status: 'completed', command: 'x' })])
+    ctx.rerender()
+    expect(ctx.host.querySelectorAll('.jobs-row')).toHaveLength(0)
+    expect(doneToggle(ctx.host)?.textContent).toContain('1 Done')
+    doneToggle(ctx.host)?.click()
+    expect(rowFor(ctx.host, 'bg-d1')).not.toBeNull()
+  })
+
+  it('no jobs: nothing renders (the panel-level empty state is upstream)', () => {
+    const ctx = mount()
+    ctx.store.setJobs([])
+    ctx.rerender()
+    expect(ctx.host.children).toHaveLength(0)
+  })
+
+  it('running rows and their expansions survive done-zone toggling untouched', () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      bashJob('bg-run', 'running'),
+      jw({ id: 'bg-d1', kind: 'bash', status: 'completed', command: 'x' }),
+    ])
+    ctx.rerender()
+    rowFor(ctx.host, 'bg-run').click()
+    const feed = expFor(ctx.host, 'bg-run')?.querySelector('.jobs-feed') as HTMLElement
+    doneToggle(ctx.host)?.click()
+    expect(rowFor(ctx.host, 'bg-run')).not.toBeNull()
+    expect(expFor(ctx.host, 'bg-run')).not.toBeNull()
+    doneToggle(ctx.host)?.click()
+    expect(rowFor(ctx.host, 'bg-run')).not.toBeNull()
+    // Zone toggles must not recreate a live running view (scroll lives on it).
+    expect(expFor(ctx.host, 'bg-run')?.querySelector('.jobs-feed')).toBe(feed)
+  })
+
+  it('a feed being read stays rendered when its job goes terminal mid-read', () => {
+    const ctx = mount()
+    const done2 = jw({ id: 'bg-d2', kind: 'bash', status: 'completed', command: 'x', startedMs: 9000 })
+    ctx.store.setJobs([bashJob('bg-1', 'running'), done2])
+    ctx.rerender()
+    rowFor(ctx.host, 'bg-1').click()
+    const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
+    ctx.store.setJobs([bashJob('bg-1', 'completed'), done2])
+    ctx.rerender()
+    // The collapse declutters finished rows, it must never yank an open feed:
+    // row, box, and carried view stay while the zone is closed. The toggle
+    // counts HIDDEN rows — the pinned one is already on screen, so a total
+    // would overcount until the zone opens.
+    expect(rowFor(ctx.host, 'bg-1')).not.toBeNull()
+    expect(expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed')).toBe(feed)
+    expect(doneToggle(ctx.host)?.textContent).toContain('1 Done')
+    // Opening the zone releases the pin: every terminal row lists there,
+    // newest first, the reading box included.
+    doneToggle(ctx.host)?.click()
+    expect(doneRowIds(ctx.host)).toEqual(['bg-d2', 'bg-1'])
+    expect(expFor(ctx.host, 'bg-1')).not.toBeNull()
+  })
+
+  it('expanding a done row with the zone OPEN, then collapsing, pins it up top', () => {
+    const ctx = mount()
+    ctx.store.setJobs([
+      jw({ id: 'bg-d1', kind: 'bash', status: 'completed', command: 'x', startedMs: 1000 }),
+      jw({ id: 'bg-d2', kind: 'bash', status: 'completed', command: 'x', startedMs: 2000 }),
+    ])
+    ctx.rerender()
+    // Open the zone, expand the oldest row's feed.
+    doneToggle(ctx.host)?.click()
+    rowFor(ctx.host, 'bg-d1').click()
+    const feed = expFor(ctx.host, 'bg-d1')?.querySelector('.jobs-feed') as HTMLElement
+    expect(feed).toBeTruthy()
+    // Collapse the zone: the row migrates to the top zone as pinned, the
+    // open feed survives the move (same no-yank contract, opposite path).
+    doneToggle(ctx.host)?.click()
+    expect(rowFor(ctx.host, 'bg-d1')).not.toBeNull()
+    expect(expFor(ctx.host, 'bg-d1')?.querySelector('.jobs-feed')).toBe(feed)
+    // Hidden count excludes the pinned row.
+    expect(doneToggle(ctx.host)?.textContent).toContain('1 Done')
+  })
+
+  it('done toggle label follows the locale', () => {
+    const ctx = mount()
+    ctx.store.setJobs([jw({ id: 'bg-d1', kind: 'bash', status: 'completed', command: 'x' })])
+    ctx.rerender()
+    const prev = document.documentElement.getAttribute('lang')
+    setLocale('zh')
+    try {
+      // Non-anchored text follows on the next rebuild (the popover reopens
+      // or any store change re-renders) — the three-layer retranslate only
+      // covers registered anchors live.
+      ctx.rerender()
+      expect(doneToggle(ctx.host)?.textContent).toContain('1 已完成')
+    } finally {
+      setLocale(prev && prev !== 'zh' ? prev : 'en')
+    }
   })
 })
 
@@ -276,6 +454,7 @@ describe('jobs section — bash expansion', () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'completed')])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     rowFor(ctx.host, 'bg-1').click()
     expect(expFor(ctx.host, 'bg-1')).not.toBeNull()
     expect(ctx.host.querySelector('.jobs-stop')).toBeNull()
@@ -285,6 +464,7 @@ describe('jobs section — bash expansion', () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'completed')])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     rowFor(ctx.host, 'bg-1').click()
     ctx.store.applyOutput('bg-1', 'carried tail line\n')
     await nextFrame()
@@ -307,6 +487,7 @@ describe('jobs section — bash expansion', () => {
       new Map([['bg-1', { tail: 'snapshot tail line\n' }]]),
     )
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     rowFor(ctx.host, 'bg-1').click()
     const feed = expFor(ctx.host, 'bg-1')?.querySelector('.jobs-feed') as HTMLElement
     expect((feed.querySelector('.md-body') as HTMLElement).textContent).toContain('snapshot tail line')
@@ -334,6 +515,7 @@ describe('jobs section — bash expansion', () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'completed')])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     // Guard armed while the feed already carries output: whatever string the
     // connector has, the first paint must happen.
     ctx.store.applyOutput('bg-1', 'Stryker was here!')
@@ -359,6 +541,7 @@ describe('jobs section — bash expansion', () => {
     const ctx = mount()
     ctx.store.setJobs([bashJob('bg-1', 'completed')])
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     ctx.store.applyOutput('bg-1', 'x\n')
     rowFor(ctx.host, 'bg-1').click()
     await nextFrame()
@@ -1151,6 +1334,7 @@ describe('jobs section — incremental DOM sink', () => {
       new Map([['agent-1', { blocks }]]),
     )
     ctx.rerender()
+    doneToggle(ctx.host)?.click()
     rowFor(ctx.host, 'agent-1').click()
     await nextFrame()
     const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement

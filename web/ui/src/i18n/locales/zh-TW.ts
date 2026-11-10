@@ -208,6 +208,7 @@ export const dict: Dict = {
   configBadgeUnchanged: '未變更',
   configBadgeFailed: '失敗',
   jobsSectionTitle: '後台',
+  jobsDoneCount: (n) => `${n} 已完成`,
   tasksDone: (done, total) => `${done}/${total} 完成`,
   tasksRunningCount: (n) => `${n} 執行中`,
   tasksPendingCount: (n) => `${n} 待處理`,

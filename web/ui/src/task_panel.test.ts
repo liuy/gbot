@@ -238,6 +238,10 @@ describe('taskPanel — background jobs section', () => {
     ])
     const popover = openPopover(panel)
     expect(popover.querySelector('.jobs-section')).not.toBeNull()
+    // Running row renders directly; the completed one sits behind the done
+    // collapse until it opens.
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(1)
+    ;(popover.querySelector('.jobs-done-toggle') as HTMLElement).click()
     expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)
   })
 
@@ -314,11 +318,14 @@ describe('taskPanel — background jobs section', () => {
       jw({ id: 'agent-1', kind: 'agent', status: 'killed', agentType: 'executor', description: 'c', parentToolUseID: 'p1' }),
     ])
     const popover = openPopover(panel)
+    ;(popover.querySelector('.jobs-done-toggle') as HTMLElement).click()
     const chips = Array.from(popover.querySelectorAll('.jobs-row')).map((r) => {
       const chip = Array.from(r.querySelectorAll('span')).find((s) => s.className.includes('text-[10px]'))
       return chip?.textContent
     })
-    expect(chips).toEqual(['Running', 'Done', 'Exit 130', 'Stopped'])
+    // Zone lists terminal rows newest-first; ties share startedMs here, so
+    // id-desc: bg-2, bg-1, agent-1.
+    expect(chips).toEqual(['Running', 'Exit 130', 'Done', 'Stopped'])
   })
 
   it('terminal rows carry the dimmed opacity class, running rows do not', () => {
@@ -329,6 +336,7 @@ describe('taskPanel — background jobs section', () => {
       jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' }),
     ])
     const popover = openPopover(panel)
+    ;(popover.querySelector('.jobs-done-toggle') as HTMLElement).click()
     const rows = popover.querySelectorAll('.jobs-row')
     expect(rows[0].classList.contains('opacity-60')).toBe(false)
     expect(rows[1].classList.contains('opacity-60')).toBe(true)
@@ -340,7 +348,9 @@ describe('taskPanel — background jobs section', () => {
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
     const popover = openPopover(panel)
     expect(popover.querySelector('.jobs-row')?.textContent).toContain('Running')
-
+    // Expand before the flip: a feed being read stays rendered (reading pin)
+    // when its job goes terminal behind the collapsed zone.
+    ;(popover.querySelector('.jobs-row') as HTMLElement).click()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'make check' })])
     // A job finishing must not yank the popover shut.
     const popoverAfter = document.getElementById('task-popover')
@@ -364,12 +374,13 @@ describe('taskPanel — background jobs section', () => {
     const popover = openPopover(panel)
 
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
-    // Retention: rows must not be yanked while the user reads them, and the
-    // popover's anchor (the trigger) stays put.
+    // Retention keeps the section mounted (and the popover anchored) while
+    // the user reads; the terminal row itself now sits behind the collapse.
     expect(document.getElementById('task-popover')).toBe(popover)
     expect(panel.root.style.display).toBe('')
-    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(1)
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(0)
     expect(popover.querySelector('.jobs-section')).not.toBeNull()
+    expect(popover.querySelector('.jobs-done-toggle')?.textContent).toContain('1 Done')
 
     // Close ends retention: nothing left to show hides the trigger.
     ;(panel.root as HTMLButtonElement).click()
@@ -418,9 +429,11 @@ describe('taskPanel — background jobs section', () => {
       jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'b' }),
     ])
     // Zero running: the aggregate goes fully silent — no idle line, no title
-    // row. The rows themselves stay until the panel closes (retention).
+    // row. The section stays until the panel closes (retention), with both
+    // finished rows behind the done collapse.
     expect(popover.querySelector('.px-3.pt-2\\.5')).toBeNull()
-    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(2)
+    expect(popover.querySelectorAll('.jobs-row')).toHaveLength(0)
+    expect(popover.querySelector('.jobs-done-toggle')?.textContent).toContain('2 Done')
   })
 })
 

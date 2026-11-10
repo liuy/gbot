@@ -233,6 +233,7 @@ export const dict = {
   configBadgeUnchanged: 'Unchanged',
   configBadgeFailed: 'Failed',
   jobsSectionTitle: 'Background',
+  jobsDoneCount: (n: number) => `${n} Done`,
   tasksDone: (done: number, total: number) => `${done}/${total} Done`,
   tasksRunningCount: (n: number) => `${n} Running`,
   tasksPendingCount: (n: number) => `${n} Pending`,

@@ -2,6 +2,7 @@ import type { JobWireItem } from './types'
 import type { JobsStoreHandle, FeedChange } from './jobs_store'
 import { createElement } from './dom'
 import { t } from './i18n'
+import { renderIcon } from './icons'
 import { wireCopyButtons } from './components/stream_blocks'
 import { createFeedSink, type FeedSinkHandle } from './components/stream_sink'
 import { renderToolOutput } from './tool_render'
@@ -79,6 +80,10 @@ export function createJobsSection(): JobsSectionHandles {
   let unsub: (() => void) | null = null
   let feedUnsub: (() => void) | null = null
   let rafId = 0
+  // Done-zone collapse state: UI-local on purpose. A fresh page starts
+  // collapsed; within a page session it survives popover rebuilds (same
+  // lifetime as the expansion state the panel owns).
+  let doneExpanded = false
 
   const ensureDirty = (jobID: string): DirtyRecord => {
     let rec = dirty.get(jobID)
@@ -349,6 +354,27 @@ export function createJobsSection(): JobsSectionHandles {
     return row
   }
 
+  // Collapse row for the terminal zone: `chevron N done` (i18n'd; the N counts
+  // hidden rows). The chips stay English mono by design — this label is
+  // sentence-adjacent UI text, not a status vocabulary chip. Chevron follows
+  // the sidebar tree's fold idiom: chevron-right rotated 90° when open.
+  const buildDoneToggle = (n: number, onClick: () => void): HTMLElement => {
+    const row = createElement(
+      'div',
+      'jobs-done-toggle flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] cursor-pointer select-none hover:bg-white/[0.04]',
+    )
+    const chev = renderIcon('chevron-right', {
+      size: 12,
+      className: 'shrink-0 text-t3 transition-transform duration-200',
+    })
+    if (doneExpanded) chev.classList.add('rotate-90')
+    const label = createElement('span', 'mono text-[10px] text-t3')
+    label.textContent = t('jobsDoneCount')(n)
+    row.append(chev, label)
+    row.addEventListener('click', onClick)
+    return row
+  }
+
   const rebuild = (
     sectionHost: HTMLElement,
     store: JobsStoreHandle,
@@ -392,9 +418,43 @@ export function createJobsSection(): JobsSectionHandles {
     }
 
     const frag = document.createDocumentFragment()
+    // A feed being read stays rendered when its job goes terminal mid-read
+    // (scroll position lives on that node) — the collapse declutters
+    // finished rows, it must never yank an open one. With the zone open,
+    // every terminal row lists inside it, so the pin only applies while
+    // the zone is closed.
+    const pinned = (j: JobWireItem): boolean => opts.expanded.has(j.id) && !doneExpanded
     for (const j of jobs) {
+      if (j.status !== 'running' && !pinned(j)) continue
       frag.appendChild(renderJobRow(j, opts.expanded.has(j.id), toggle))
       if (opts.expanded.has(j.id)) frag.appendChild(buildExpansion(j, opts.onStop))
+    }
+    // Terminal zone: newest first. StartedMs is the completion-time proxy
+    // (the wire payload carries no finished timestamp); the (StartedMs asc,
+    // ID asc) then reverse order mirrors the server's row sort exactly.
+    const done = jobs
+      .filter((j) => j.status !== 'running')
+      .sort((a, b) => a.startedMs - b.startedMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .reverse()
+    if (done.length > 0) {
+      // Hidden count, not the terminal total: pinned rows are already on
+      // screen, so the toggle's number must match what opening it reveals —
+      // a total would overcount by the pinned row until the zone opens.
+      const hidden = doneExpanded
+        ? done.length
+        : done.filter((j) => !opts.expanded.has(j.id)).length
+      frag.appendChild(
+        buildDoneToggle(hidden, () => {
+          doneExpanded = !doneExpanded
+          rebuild(sectionHost, store, opts)
+        }),
+      )
+      if (doneExpanded) {
+        for (const j of done) {
+          frag.appendChild(renderJobRow(j, opts.expanded.has(j.id), toggle))
+          if (opts.expanded.has(j.id)) frag.appendChild(buildExpansion(j, opts.onStop))
+        }
+      }
     }
     sectionHost.replaceChildren(frag)
 
