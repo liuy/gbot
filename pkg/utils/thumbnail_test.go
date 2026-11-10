@@ -9,6 +9,8 @@ import (
 	_ "image/png"
 	"strings"
 	"testing"
+
+	xdraw "golang.org/x/image/draw"
 )
 
 func TestResizeForThumbnail_LargeImage_Downscaled(t *testing.T) {
@@ -162,5 +164,111 @@ func TestResizeForThumbnail_GIF_DecodesInProduction(t *testing.T) {
 	// URL the frontend builds matches what the backend stored.
 	if !bytes.Equal(out, gifBytes) {
 		t.Errorf("expected pass-through: got %d bytes, want %d (identical)", len(out), len(gifBytes))
+	}
+}
+
+// TestResizeForThumbnail_EdgeExactlyMaxEdge_PassesThrough pins the pass-through
+// comparison to <=: an image whose long edge equals maxEdge needs no scaling,
+// and a strict < would send it through a needless JPEG round-trip (quality loss
+// plus a media-type change) at exactly the boundary the caller chose.
+func TestResizeForThumbnail_EdgeExactlyMaxEdge_PassesThrough(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		w, h int
+	}{
+		{"width at the edge", 512, 256},
+		{"height at the edge", 256, 512},
+	} {
+		pngBytes := encodePNG(t, solidRGBA(tc.w, tc.h, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xFF}))
+		out, mt, err := ResizeForThumbnail(pngBytes, 512)
+		if err != nil {
+			t.Fatalf("%s: ResizeForThumbnail: %v", tc.name, err)
+		}
+		if mt != "image/png" {
+			t.Errorf("%s: media type = %q, want image/png (edge is not over the limit)", tc.name, mt)
+		}
+		if !bytes.Equal(out, pngBytes) {
+			t.Errorf("%s: got %d re-encoded bytes, want the %d input bytes verbatim", tc.name, len(out), len(pngBytes))
+		}
+	}
+}
+
+// TestResizeForThumbnail_RoundingUsesHalfDivisor pins the aspect-ratio
+// rounding term (w/2, h/2). The chosen fixtures land the exact-half remainder
+// in the window where half and third divisors round to different integers,
+// which is the only observable difference.
+func TestResizeForThumbnail_RoundingUsesHalfDivisor(t *testing.T) {
+	t.Parallel()
+	// 505*512 = 258560: (258560+500)/1000 = 259, (258560+333)/1000 = 258.
+	for _, tc := range []struct {
+		name         string
+		w, h         int
+		wantW, wantH int
+	}{
+		{"landscape", 1000, 505, 512, 259},
+		{"portrait", 505, 1000, 259, 512},
+	} {
+		pngBytes := encodePNG(t, solidRGBA(tc.w, tc.h, color.RGBA{G: 0x7F, A: 0xFF}))
+		out, _, err := ResizeForThumbnail(pngBytes, 512)
+		if err != nil {
+			t.Fatalf("%s: ResizeForThumbnail: %v", tc.name, err)
+		}
+		cfg, _, derr := image.DecodeConfig(bytes.NewReader(out))
+		if derr != nil {
+			t.Fatalf("%s: decode resized: %v", tc.name, derr)
+		}
+		if cfg.Width != tc.wantW || cfg.Height != tc.wantH {
+			t.Errorf("%s: decoded dims = %dx%d, want %dx%d", tc.name, cfg.Width, cfg.Height, tc.wantW, tc.wantH)
+		}
+	}
+}
+
+// TestResizeForThumbnail_OutputIsQ80OfScaledPixels pins the resize pipeline
+// end to byte level: the returned bytes must be exactly the q80 JPEG encoding
+// of the CatmullRom-scaled destination. A dropped Scale leaves a blank buffer,
+// a cleared/±1 Quality changes the encoding, and both are invisible to the
+// dimension and decode-only checks above.
+func TestResizeForThumbnail_OutputIsQ80OfScaledPixels(t *testing.T) {
+	t.Parallel()
+	src := noiseRGBA(600, 400, 7)
+	pngBytes := encodePNG(t, src)
+	out, mt, err := ResizeForThumbnail(pngBytes, 512)
+	if err != nil {
+		t.Fatalf("ResizeForThumbnail: %v", err)
+	}
+	if mt != "image/jpeg" {
+		t.Errorf("media type = %q, want image/jpeg", mt)
+	}
+	decoded, _, derr := image.Decode(bytes.NewReader(pngBytes))
+	if derr != nil {
+		t.Fatalf("decode fixture: %v", derr)
+	}
+	targetW, targetH := 512, (400*512+300)/600
+	want := image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+	xdraw.CatmullRom.Scale(want, want.Bounds(), decoded, decoded.Bounds(), xdraw.Over, nil)
+	if wantBytes := encodeJPEG(t, want, 80); !bytes.Equal(out, wantBytes) {
+		t.Errorf("resized bytes = %d, want the %d-byte q80 encoding of the %dx%d CatmullRom result",
+			len(out), len(wantBytes), targetW, targetH)
+	}
+}
+
+// TestResizeForThumbnail_EncodeFailurePropagates reaches the one failure the
+// re-encode step can actually return: jpeg.Encode refuses a destination whose
+// edge hits the 65536 limit (the destination is a bytes.Buffer, so its writes
+// never fail). The helper must report the error rather than hand back the
+// empty buffer as a thumbnail.
+func TestResizeForThumbnail_EncodeFailurePropagates(t *testing.T) {
+	t.Parallel()
+	big := image.NewRGBA(image.Rect(0, 0, 65537, 1))
+	out, mt, err := ResizeForThumbnail(encodePNG(t, big), 65536)
+	if err == nil {
+		t.Fatalf("err = nil, want jpeg's \"image is too large to encode\" for a 65536px destination")
+	}
+	if out != nil {
+		t.Errorf("out = %d bytes, want nil alongside the error", len(out))
+	}
+	if mt != "" {
+		t.Errorf("media type = %q, want empty alongside the error", mt)
 	}
 }

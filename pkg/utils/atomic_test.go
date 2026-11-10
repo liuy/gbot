@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,5 +84,40 @@ func TestAtomicWriteFile_TempFileCleanedUpOnRenameFail(t *testing.T) {
 		if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp") {
 			t.Errorf("temp file %s not cleaned up after rename failure", name)
 		}
+	}
+}
+
+// TestAtomicWriteFile_ErrorWrapsCause pins the %w in both error returns: the
+// caller (settings/session writers) classifies failures with errors.Is against
+// os.ErrNotExist / os.ErrExist, which a %v format verb silently severs.
+func TestAtomicWriteFile_ErrorWrapsCause(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	writeErr := AtomicWriteFile(filepath.Join(dir, "no-such-dir", "x.txt"), []byte("data"), 0o644)
+	if writeErr == nil {
+		t.Fatal("err = nil, want temp-file write failure for a missing parent dir")
+	}
+	if !errors.Is(writeErr, os.ErrNotExist) {
+		t.Errorf("write error %v does not wrap os.ErrNotExist", writeErr)
+	}
+	if !strings.Contains(writeErr.Error(), "write temp file") {
+		t.Errorf("write error = %q, want the 'write temp file' context", writeErr.Error())
+	}
+
+	// Target is a non-empty directory: the temp write succeeds, the rename fails.
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	renameErr := AtomicWriteFile(target, []byte("data"), 0o644)
+	if renameErr == nil {
+		t.Fatal("err = nil, want rename failure onto a non-empty directory")
+	}
+	if !errors.Is(renameErr, os.ErrExist) {
+		t.Errorf("rename error %v does not wrap os.ErrExist", renameErr)
+	}
+	if !strings.Contains(renameErr.Error(), "rename temp file") {
+		t.Errorf("rename error = %q, want the 'rename temp file' context", renameErr.Error())
 	}
 }

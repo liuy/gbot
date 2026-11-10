@@ -53,3 +53,36 @@ func TestFormatDuration_Zero(t *testing.T) {
 		t.Errorf("FormatDuration(0) = %q, want %q", got, "0.0s")
 	}
 }
+
+// TestFormatDuration_Boundaries pins the three band thresholds (1s / 60s / 3600s)
+// from both sides, plus the divisors and moduli inside the m/h bands. The band
+// edges are the only inputs where a ±1 on a threshold literal is observable, and
+// the divisor/modulus pairs (119s vs 120s, 7199s vs 7260s) are the first values
+// where s/60, s%3600 and s%60 disagree with their ±1 variants.
+func TestFormatDuration_Boundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m 0s"},
+		{90 * time.Second, "1m 30s"},
+		{119 * time.Second, "1m 59s"},
+		{120 * time.Second, "2m 0s"},
+		{179 * time.Second, "2m 59s"},
+		{180 * time.Second, "3m 0s"},
+		{3599 * time.Second, "59m 59s"},
+		{3600 * time.Second, "1h 0m 0s"},
+		{3661 * time.Second, "1h 1m 1s"},
+		{7199 * time.Second, "1h 59m 59s"},
+		{7200 * time.Second, "2h 0m 0s"},
+		{7260 * time.Second, "2h 1m 0s"},
+		{10799 * time.Second, "2h 59m 59s"},
+	}
+	for _, tc := range cases {
+		if got := FormatDuration(tc.d); got != tc.want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}

@@ -1,28 +1,33 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
+	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/wui"
 )
 
 // wuiFactory builds a fully wired engine (ToolRefs + WireEngine) the way the
 // production engineFactory does, so tests can assert on the real tool registry.
-func wuiFactory(spy *spyProvider) tui.EngineFactoryFn {
-	return func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+func wuiFactory(prov llm.Provider) tui.EngineFactoryFn {
+	return func(id, name, providerName, model string) (*engine.Engine, *tui.TUIHandler, error) {
 		h, handler := tui.NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{
-			Provider:    spy,
+			Provider:    prov,
 			Logger:      slog.Default(),
 			Model:       model,
 			EngineID:    id,
@@ -36,6 +41,43 @@ func wuiFactory(spy *spyProvider) tui.EngineFactoryFn {
 		eng.SetToolRefs(refs)
 		return eng, handler, nil
 	}
+}
+
+// blockingProvider parks inside Stream until release closes, which is how the
+// connector test catches the engine mid-query.
+type blockingProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingProvider) Name() string { return "blocking" }
+
+func (p *blockingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	p.once.Do(func() { close(p.entered) })
+	<-p.release
+	ch := make(chan llm.StreamEvent, 8)
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: ""}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "OK"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", Usage: &types.Usage{InputTokens: 10, OutputTokens: 1}, DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (p *blockingProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	return &llm.Response{
+		ID:         "blocking-resp",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      req.Model,
+		Content:    []types.ContentBlock{types.NewTextBlock("done")},
+		StopReason: "end_turn",
+	}, nil
 }
 
 func TestCreateEngineForWUI_RegistersEngineAndSession(t *testing.T) {
@@ -77,6 +119,14 @@ func TestCreateEngineForWUI_RegistersEngineAndSession(t *testing.T) {
 	}
 	if vs.System || vs.ReadOnly {
 		t.Errorf("a wui-created engine must not be System/ReadOnly, got %+v", vs)
+	}
+	// The two timestamps are what the browser's engine list sorts by; a
+	// zero-valued one renders as "1970".
+	if vs.CreatedAt.IsZero() || vs.LastActiveAt.IsZero() {
+		t.Errorf("CreatedAt/LastActiveAt = %v/%v, want both stamped at create time", vs.CreatedAt, vs.LastActiveAt)
+	}
+	if vs.LastActiveAt.Before(vs.CreatedAt) {
+		t.Errorf("LastActiveAt %v precedes CreatedAt %v", vs.LastActiveAt, vs.CreatedAt)
 	}
 	// File delivery to the browser goes through artifacts; the Send tool
 	// stays exclusive to WeChat-bound engines.
@@ -154,15 +204,35 @@ func TestCreateEngineForWUI_SessionFailureClosesEngine(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
 
-	_, err = createEngineForWUI("doomed", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	// onClose fires exactly once per Engine.Close, which is how the test sees
+	// the failed engine being closed rather than leaked.
+	var closedSessions []string
+	factory := func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+		eng, handler, err := wuiFactory(&spyProvider{})(id, name, prov, model)
+		if err != nil {
+			return nil, nil, err
+		}
+		eng.SetOnClose(func(sessionID string) { closedSessions = append(closedSessions, sessionID) })
+		return eng, handler, nil
+	}
+
+	_, err = createEngineForWUI("doomed", mgr, factory, store, projectDir, wc, "", "")
 	if err == nil {
 		t.Fatal("createEngineForWUI must fail when the session cannot be created")
 	}
 	if !strings.HasPrefix(err.Error(), "new session: ") {
 		t.Errorf("error = %q, want the \"new session: \" prefix", err.Error())
 	}
+	// The store error must stay in the chain: callers classify it, and %v
+	// would print the same text while severing the wrap.
+	if inner := errors.Unwrap(err); inner == nil {
+		t.Errorf("error %q does not wrap the underlying session error", err.Error())
+	}
 	if n := len(mgr.List()); n != 0 {
 		t.Errorf("manager holds %d engines after a failed create, want 0 (the engine must be closed, not added)", n)
+	}
+	if len(closedSessions) != 1 {
+		t.Errorf("engine Close ran %d times, want exactly 1 before the error return", len(closedSessions))
 	}
 }
 
@@ -277,5 +347,77 @@ func TestCreateEngineForWUI_WhitespaceNameUsesMintedID(t *testing.T) {
 	}
 	if id != "agent-1" || vs.Name != "agent-1" {
 		t.Errorf("id/name = (%q, %q), want (agent-1, agent-1)", id, vs.Name)
+	}
+}
+
+// TestCreateEngineForWUI_SubscribesConnectorToNewEngine pins the connector
+// half of the registration: mgr.Add alone leaves the browser side without a
+// slot, so the new engine's events never reach it. BusyReport is the exported
+// read-back of that slot — it only lists engines the connector holds.
+func TestCreateEngineForWUI_SubscribesConnectorToNewEngine(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	mgr := engine.NewEngineManager()
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+	prov := &blockingProvider{entered: make(chan struct{}), release: make(chan struct{})}
+
+	id, err := createEngineForWUI("busy-1", mgr, wuiFactory(prov), store, projectDir, wc, "", "")
+	if err != nil {
+		t.Fatalf("createEngineForWUI: %v", err)
+	}
+	vs := mgr.Get(id)
+	if vs == nil {
+		t.Fatal("created engine missing from the manager")
+	}
+	t.Cleanup(func() { close(prov.release); vs.Engine.Close() })
+
+	vs.Engine.Query(context.Background(), "hello", "")
+	<-prov.entered
+
+	rep := wc.BusyReport()
+	if !rep.Busy || len(rep.Items) != 1 {
+		t.Fatalf("BusyReport = %+v, want exactly one busy item for the new engine", rep)
+	}
+	if rep.Items[0].EngineID != id || rep.Items[0].Engine != "busy-1" {
+		t.Errorf("busy item = %+v, want engine id %q and name %q", rep.Items[0], id, "busy-1")
+	}
+}
+
+// TestCreateEngineForWUI_PersistMetaFailureIsWarned pins the degradation path:
+// meta.json cannot be written (the target is a non-empty directory, so the
+// atomic rename fails), and the create must still succeed with a warning.
+func TestCreateEngineForWUI_PersistMetaFailureIsWarned(t *testing.T) {
+	logs := captureAppLogs(t)
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := os.MkdirAll(filepath.Join(projectDir, "meta.json", "block"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	mgr := engine.NewEngineManager()
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+
+	id, err := createEngineForWUI("metafail", mgr, wuiFactory(&spyProvider{}), store, projectDir, wc, "", "")
+	if err != nil {
+		t.Fatalf("a meta.json write failure must not fail the create: %v", err)
+	}
+	rec := waitForAppLog(t, logs, "wui: persist meta after engine new")
+	if rec.level != slog.LevelWarn {
+		t.Errorf("log level = %v, want WARN", rec.level)
+	}
+	if rec.attrs["error"] == nil {
+		t.Error("the persist-meta warning must carry the underlying error")
+	}
+	if vs := mgr.Get(id); vs == nil {
+		t.Error("the engine must stay registered despite the meta write failure")
 	}
 }

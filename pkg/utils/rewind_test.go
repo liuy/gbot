@@ -53,6 +53,26 @@ func TestIsSyntheticMessage_FirstBlockNotText(t *testing.T) {
 	}
 }
 
+// TestIsSyntheticMessage_NonTextBlockCarryingInterruptText pins the type gate
+// ahead of the synthetic lookup. The other first-block fixtures leave Text
+// empty, so dropping the gate still reads syntheticTexts[""] and stays false —
+// only a non-text block that carries the interrupt string exposes it.
+func TestIsSyntheticMessage_NonTextBlockCarryingInterruptText(t *testing.T) {
+	t.Parallel()
+	msg := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{{
+			Type: types.ContentTypeToolUse,
+			ID:   "id1",
+			Name: "Bash",
+			Text: types.InterruptMessage,
+		}},
+	}
+	if IsSyntheticMessage(msg) {
+		t.Errorf("IsSyntheticMessage(tool_use block carrying the interrupt Text) = true, want false")
+	}
+}
+
 func TestIsSyntheticMessage_SecondBlockInterrupt(t *testing.T) {
 	t.Parallel()
 	msg := types.Message{
@@ -561,6 +581,40 @@ func TestMessagesAfterAreOnlySynthetic_AllToolResults(t *testing.T) {
 	}
 	if !MessagesAfterAreOnlySynthetic(msgs, 0) {
 		t.Errorf("MessagesAfterAreOnlySynthetic(all tool_result) = false, want true")
+	}
+}
+
+// TestMessagesAfterAreOnlySynthetic_ToolResultThenRealUser pins that the
+// tool_result skip continues the scan instead of ending it: the real user
+// message after the tool_result still has to be seen.
+func TestMessagesAfterAreOnlySynthetic_ToolResultThenRealUser(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("id1", json.RawMessage(`"r1"`), false),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("real input")}},
+	}
+	if MessagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Errorf("MessagesAfterAreOnlySynthetic(tool_result then real input) = true, want false")
+	}
+}
+
+// TestMessagesAfterAreOnlySynthetic_ToolResultWithTrailingText pins the skip
+// itself: a user message that opens with a tool_result is API-structured even
+// when later blocks carry text, so it must not end the rewind window.
+func TestMessagesAfterAreOnlySynthetic_ToolResultWithTrailingText(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("id1", json.RawMessage(`"r1"`), false),
+			types.NewTextBlock("trailing text"),
+		}},
+	}
+	if !MessagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Errorf("MessagesAfterAreOnlySynthetic(tool_result + trailing text) = false, want true")
 	}
 }
 

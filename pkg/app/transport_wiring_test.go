@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -48,6 +49,7 @@ func TestWireTransportLoadsProtocolModules(t *testing.T) {
 }
 
 func TestWireTransportBadModuleDegradesPerPlugin(t *testing.T) {
+	logs := captureAppLogs(t)
 	good := writeProtocolModule(t, "good", `host.log('up')`)
 	bad := writeProtocolModule(t, "bad", `throw new Error('boom')`)
 	missing := plugins.ProtocolModule{Plugin: "missing", RootPath: t.TempDir(), Path: filepath.Join(t.TempDir(), "nope.js")}
@@ -63,6 +65,20 @@ func TestWireTransportBadModuleDegradesPerPlugin(t *testing.T) {
 	}
 	if !hub.Connected("good") || hub.Connected("bad") || hub.Connected("missing") {
 		t.Fatal("only the good plugin may be wired")
+	}
+	// Degradation is silent unless the warning lands: an operator whose
+	// plugin live view is missing has nothing else to look at.
+	fails := logs.find("main: protocol module failed, plugin live view disabled")
+	if len(fails) != 2 {
+		t.Fatalf("protocol-failure warnings = %d, want 2 (one per failed module)", len(fails))
+	}
+	for _, rec := range fails {
+		if rec.level != slog.LevelWarn {
+			t.Errorf("warning level = %v, want WARN", rec.level)
+		}
+		if rec.attrs["error"] == nil {
+			t.Error("the protocol-failure warning must carry the underlying error")
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // First test in the package process to touch tableflip. tableflip allows
@@ -117,4 +118,17 @@ func TestNewUpgrader_ScrubsTableflipMarkerFromEnv(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestUpgradeTimeoutConstants pins the two shipped bounds. Every join test
+// overrides dreamJoinTimeout to exercise its branches, so no behavioral test
+// can hold the shipped values — and drainTimeout is not overridable at all
+// (a const), which leaves the drain window unpinned otherwise.
+func TestUpgradeTimeoutConstants(t *testing.T) {
+	if drainTimeout != 3*time.Second {
+		t.Errorf("drainTimeout = %v, want 3s (the graceful drain window for in-flight HTTP)", drainTimeout)
+	}
+	if dreamJoinTimeout != 3*time.Second {
+		t.Errorf("dreamJoinTimeout = %v, want 3s (the bound on joining a mid-tick dream)", dreamJoinTimeout)
+	}
 }

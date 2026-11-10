@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cloudflare/tableflip"
 )
 
 // markerChildEnv is set to the name of the test a re-executed child should run as
@@ -348,6 +350,14 @@ func runGenuineHandoverChild() int {
 		fmt.Printf("%s marker did not survive newUpgrader (upg nil: %v)\n", markerChildResult, upg == nil)
 		return childFailed
 	}
+	// The genuine child must still scrub the marker: it is now the parent, and
+	// every shell it spawns would otherwise believe it is a tableflip child.
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, tableflipEnvPrefix) {
+			fmt.Printf("%s marker leaked into the child env: %s\n", markerChildResult, kv)
+			return childFailed
+		}
+	}
 	fmt.Printf("%s ok\n", markerChildResult)
 	return childOK
 }
@@ -412,4 +422,150 @@ func markerLine(stdout, prefix string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// TestNewUpgrader_SupervisedNeverReachesTableflip pins the supervised
+// short-circuit. In-process the assertion is unfalsifiable: an earlier test's
+// Start() has already claimed tableflip's one-Upgrader slot, so newUpgrader
+// returns nil there whether or not the short-circuit ran. The child has a fresh
+// slot and reports whether New was reached — tableflip.New fails with "only a
+// single Upgrader allowed" if it was.
+func TestNewUpgrader_SupervisedNeverReachesTableflip(t *testing.T) {
+	if os.Getenv(markerChildEnv) == t.Name() {
+		os.Exit(runSupervisedChild())
+	}
+	cmd, stdout, stderr := markerChild(t)
+	cmd.Env = append(cmd.Env, "GBOT_SUPERVISED=1")
+	runErr := cmd.Run()
+	verdict, found := markerLine(stdout.String(), markerChildResult)
+	if !found {
+		t.Fatalf("supervised child never reported a verdict (run: %v)\nstdout:\n%s\nstderr:\n%s",
+			runErr, stdout.String(), stderr.String())
+	}
+	if verdict != "ok" {
+		t.Fatalf("supervised mode reached tableflip: %s\nstderr:\n%s", verdict, stderr.String())
+	}
+	if runErr != nil {
+		t.Fatalf("scenario passed but the child exited non-zero: %v\nstderr:\n%s", runErr, stderr.String())
+	}
+}
+
+func runSupervisedChild() int {
+	if upg := newUpgrader(); upg != nil {
+		upg.Stop()
+		fmt.Printf("%s supervised mode constructed an upgrader\n", markerChildResult)
+		return childFailed
+	}
+	u, err := tableflip.New(tableflip.Options{})
+	if err != nil {
+		fmt.Printf("%s tableflip slot already consumed: %v\n", markerChildResult, err)
+		return childFailed
+	}
+	u.Stop()
+	fmt.Printf("%s ok\n", markerChildResult)
+	return childOK
+}
+
+// TestNewUpgrader_PinsArgv0InFreshProcess is the falsifiable half of the argv0
+// pin. In-process the test binary's argv[0] already equals os.Executable(), so
+// the assertion passes with the line deleted. Here the child is exec'd through a
+// path that is NOT what os.Executable reports, and the pin must rewrite it.
+func TestNewUpgrader_PinsArgv0InFreshProcess(t *testing.T) {
+	if os.Getenv(markerChildEnv) == t.Name() {
+		os.Exit(runArgv0Child())
+	}
+	cmd, stdout, stderr := markerChild(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	rel, err := filepath.Rel(wd, exe)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
+	// execve still resolves the real binary; only argv[0] carries the alias.
+	cmd.Dir = wd
+	cmd.Path = exe
+	cmd.Args = []string{rel, "-test.run=^" + t.Name() + "$"}
+	runErr := cmd.Run()
+	verdict, found := markerLine(stdout.String(), markerChildResult)
+	if !found {
+		t.Fatalf("argv0 child never reported a verdict (run: %v)\nstdout:\n%s\nstderr:\n%s",
+			runErr, stdout.String(), stderr.String())
+	}
+	if verdict != "ok" {
+		t.Fatalf("argv[0] not pinned to os.Executable(): %s\nstderr:\n%s", verdict, stderr.String())
+	}
+	if runErr != nil {
+		t.Fatalf("scenario passed but the child exited non-zero: %v\nstderr:\n%s", runErr, stderr.String())
+	}
+}
+
+func runArgv0Child() int {
+	before := os.Args[0]
+	upg := newUpgrader()
+	if upg == nil {
+		fmt.Printf("%s no upgrader in a fresh process\n", markerChildResult)
+		return childFailed
+	}
+	upg.Stop()
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("%s os.Executable: %v\n", markerChildResult, err)
+		return childFailed
+	}
+	if os.Args[0] != exe {
+		fmt.Printf("%s argv[0]=%q (was %q), want %q\n", markerChildResult, os.Args[0], before, exe)
+		return childFailed
+	}
+	fmt.Printf("%s ok\n", markerChildResult)
+	return childOK
+}
+
+// TestNewUpgrader_LogsDisabledOnNewFailure covers the one report newUpgrader has
+// when tableflip refuses: the daemon silently loses hot-restart unless the
+// warning names why. The child is exec'd with a real handover pipe pair, so the
+// fd guard passes and New runs — and fails, because the names pipe carries
+// something that is not the parent's name list.
+func TestNewUpgrader_LogsDisabledOnNewFailure(t *testing.T) {
+	if os.Getenv(markerChildEnv) == t.Name() {
+		os.Exit(runNewFailureChild())
+	}
+	readyW, namesR, namesW := handoverPipes(t)
+	// A real parent encodes [][]string here; a string decodes to an error.
+	if err := gob.NewEncoder(namesW).Encode("not a name list"); err != nil {
+		t.Fatalf("encode garbage: %v", err)
+	}
+	cmd, stdout, stderr := markerChild(t, readyW, namesR)
+	cmd.Env = append(cmd.Env, tableflipEnvPrefix+"HAS_PARENT_7DIU3=yes")
+	runErr := cmd.Run()
+	verdict, found := markerLine(stdout.String(), markerChildResult)
+	if !found {
+		t.Fatalf("new-failure child never reported a verdict (run: %v)\nstdout:\n%s\nstderr:\n%s",
+			runErr, stdout.String(), stderr.String())
+	}
+	if verdict != "ok" {
+		t.Fatalf("newUpgrader did not degrade to nil on a failed New: %s\nstderr:\n%s", verdict, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "upgrade: disabled") {
+		t.Errorf("stderr has no \"upgrade: disabled\" warning, so a disabled hot-restart went unreported:\n%s", stderr.String())
+	}
+	if runErr != nil {
+		t.Fatalf("scenario passed but the child exited non-zero: %v\nstderr:\n%s", runErr, stderr.String())
+	}
+}
+
+func runNewFailureChild() int {
+	upg := newUpgrader()
+	if upg != nil {
+		upg.Stop()
+		fmt.Printf("%s tableflip.New unexpectedly succeeded\n", markerChildResult)
+		return childFailed
+	}
+	fmt.Printf("%s ok\n", markerChildResult)
+	return childOK
 }

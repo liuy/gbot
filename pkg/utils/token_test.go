@@ -273,6 +273,68 @@ func TestCountTokenFeatures_TabsCountAsIndent(t *testing.T) {
 	}
 }
 
+// TestEstimateTokens_DigitStructMix pins the Digit feature to SeedTokenRatios[2]
+// (1.34) rather than its neighbour Struct's 1.38. Every single-feature fixture
+// is blind to a swapped index, because the missing feature contributes 0 either
+// way; only text carrying both classes in volume separates the two ratios.
+func TestEstimateTokens_DigitStructMix(t *testing.T) {
+	t.Parallel()
+	const text = `{"key":"12345678901234567890123456789012345678901234567890"}`
+	f := CountTokenFeatures(text)
+	wantFeatures := TokenFeatures{CJK: 0, Struct: 7, Digit: 50, Indent: 0, Words: 1, Other: 3}
+	if f != wantFeatures {
+		t.Fatalf("CountTokenFeatures = %+v, want %+v", f, wantFeatures)
+	}
+	// 50*1.34 + 7*1.38 + 3*0.11 + 1*0.48 = 67 + 9.66 + 0.33 + 0.48 = 77.47 → 77.
+	// A Digit/Struct ratio swap would price the 50 digits at 1.38 → 79.
+	if got := EstimateTokens(text); got != 77 {
+		t.Errorf("EstimateTokens(digits+struct) = %d, want 77", got)
+	}
+}
+
+// TestEstimateTokens_IndentIsScaledNotDivided pins Indent's ratio application:
+// the model multiplies by -0.04, it does not divide by it. Division inflates a
+// 10-space indent from -0.4 to -250 tokens, which the 0-floor hides only in
+// indent-only fixtures — hence the mixed text.
+func TestEstimateTokens_IndentIsScaledNotDivided(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("\t", 10) + "hello world"
+	f := CountTokenFeatures(text)
+	if f.Indent != 10 || f.Other != 11 || f.Words != 2 {
+		t.Fatalf("features = %+v, want Indent 10 / Other 11 / Words 2", f)
+	}
+	// 10*(-0.04) + 11*0.11 + 2*0.48 = -0.4 + 1.21 + 0.96 = 1.77 → 1.
+	if got := EstimateTokens(text); got != 1 {
+		t.Errorf("EstimateTokens(10 tabs + hello world) = %d, want 1", got)
+	}
+}
+
+// TestFormatTokenCount_Boundaries pins each suffix threshold and each divisor
+// literal at the value where it flips. The thresholds are 1000 (not 1024) while
+// the divisors are 1024-based, so the 999/1000 and 1048575/1048576 pairs are
+// what separate the two constants; the 60G case is the only one where a ±1
+// change of the G divisor is visible at one decimal place.
+func TestFormatTokenCount_Boundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{999, "999"},
+		{1000, "1.0k"},
+		{1048575, "1024.0k"},    // 1024*1024-1: last value formatted in k
+		{1048576, "1.0M"},       // 1024*1024
+		{1072693248, "1023.0M"}, // 1023*1024*1024: last value formatted in M
+		{1073741824, "1.0G"},    // 1024*1024*1024
+		{60 * 1024 * 1024 * 1024, "60.0G"},
+	}
+	for _, tc := range cases {
+		if got := FormatTokenCount(tc.n); got != tc.want {
+			t.Errorf("FormatTokenCount(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
+
 func TestCountTokenFeatures_CJKClasses(t *testing.T) {
 	t.Parallel()
 	// 你好世界 all fall in the 0x4E00-0x9FFF range.

@@ -1,17 +1,28 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/connector/wechat"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/reload"
+	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // wechatDeps wires one connector against an offline BaseURL: the poll loop
@@ -281,4 +292,467 @@ func TestStartWeChatConnector_EngineRemovedBeforeWiring(t *testing.T) {
 		return
 	}
 	t.Fatalf("the removal never landed inside the wiring window in %d attempts; the guard is untested", attempts)
+}
+
+// dumpText flattens the request dump's messages so a marker can be searched.
+func dumpText(dump *engine.APIRequestDump) string {
+	var b strings.Builder
+	for _, m := range dump.Messages {
+		for _, cb := range m.Content {
+			b.WriteString(cb.Text)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func dumpHasTool(dump *engine.APIRequestDump, name string) bool {
+	for _, td := range dump.Tools {
+		if td.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// The fresh-build branch wires ~15 Params fields and three view-state fields.
+// Each one is a behavior the connector depends on (modality gating, budget,
+// thinking resolution, the shared hub), so the wiring is pinned field by field
+// rather than by "an engine appeared".
+func TestStartWeChatConnector_PinsEngineWiring(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	const marker = "WECHAT-FIXTURE-CLAUDE-MD"
+	if err := os.WriteFile(filepath.Join(d.workingDir, "CLAUDE.md"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+	prov := &config.Provider{Name: "zhipu"}
+	prov.Models.Set("glm-5", config.ModelConfig{Input: []string{"text", "image"}})
+	d.primaryProviderCfg = prov
+	d.modelThinking = map[string]llm.Effort{"glm-5": llm.EffortHigh}
+
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine missing, manager holds %v", engineIDs(mgr))
+	}
+	if vs.Engine.Provider() == nil {
+		t.Error("engine Provider = nil, want the configured provider")
+	}
+	if !vs.Engine.SupportsModality("image") {
+		t.Error("InputModalities not wired: the engine must accept image input for this provider")
+	}
+	if vs.Engine.TokenBudget() != 5000 {
+		t.Errorf("TokenBudget = %d, want the configured context window 5000", vs.Engine.TokenBudget())
+	}
+	if vs.Engine.TaskList() == nil {
+		t.Error("TaskList not wired on the connector engine")
+	}
+	if vs.Engine.EngineID() != "wechat-acct1" {
+		t.Errorf("EngineID = %q, want wechat-acct1", vs.Engine.EngineID())
+	}
+	if vs.Engine.Dispatcher() == nil {
+		t.Error("Dispatcher not wired: the engine would dispatch to nowhere")
+	}
+	if got := vs.Engine.Thinking(); got != llm.EffortHigh {
+		t.Errorf("Thinking = %q, want the model's configured effort %q", got, llm.EffortHigh)
+	}
+	dump := vs.Engine.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	if dump.WorkingDir != d.workingDir {
+		t.Errorf("request WorkingDir = %q, want %q", dump.WorkingDir, d.workingDir)
+	}
+	if !strings.Contains(dumpText(dump), marker) {
+		t.Error("the working dir's CLAUDE.md never reaches the API request (context map empty)")
+	}
+	if !dumpHasTool(dump, "Bash") {
+		t.Errorf("request carries no Bash tool: WireEngine/ToolsProvider wiring missing (%d tools)", len(dump.Tools))
+	}
+	if vs.Handler == nil {
+		t.Error("the connector's TUIHandler must be stored on the view state (switchEngine flips drain roles)")
+	}
+	if vs.Repl == nil {
+		t.Error("Repl snapshot missing on the connector engine")
+	}
+	// The fresh branch owns its hub: the isolated-hub fallback must stay silent.
+	if recs := logs.find("wechat: engine dispatcher is not a *hub.Hub, using isolated hub"); len(recs) != 0 {
+		t.Errorf("fresh-build engine fell back to an isolated hub: %d records", len(recs))
+	}
+}
+
+// The poll loop must actually start: a connector that never polls looks healthy
+// and silently stops answering. The offline BaseURL makes the first poll fail
+// fast, and that failure line is the proof the goroutine ran.
+func TestStartWeChatConnector_StartsPollLoop(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	if recs := waitForAppLogCount(t, logs, "wechat: poll error", 1); len(recs) == 0 {
+		t.Error("no poll error after 3s — the connector's poll loop never started")
+	}
+}
+
+// A store that cannot create the fresh session must be reported: the engine
+// would otherwise serve WeChat with whatever session it happened to hold.
+func TestStartWeChatConnector_NewSessionFailureWarns(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	rec := exactlyOne(t, logs, "wechat: new session failed", "closed store")
+	if rec.attrs["error"] == nil {
+		t.Error("the new-session warning must carry the store error")
+	}
+}
+
+// Daemon mode wires three per-engine pieces: the memory dir override, the
+// matching system prompt, and the refresher that re-applies both after a
+// config reload. The refresher must be installed (RefreshContext reports
+// whether one exists) and must rebuild the same prompt, not clear it.
+func TestStartWeChatConnector_DaemonWiresRefresher(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, true)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	const marker = "WECHAT-FIXTURE-CLAUDE-MD"
+	if err := os.WriteFile(filepath.Join(d.workingDir, "CLAUDE.md"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine missing, manager holds %v", engineIDs(mgr))
+	}
+	wantDir := filepath.Join(d.projectDir, "memory", "wechat-acct1")
+	if got := vs.Engine.MemoryDir(); got != wantDir {
+		t.Errorf("MemoryDir = %q, want %q", got, wantDir)
+	}
+	if !vs.Engine.RefreshContext() {
+		t.Error("no context refresher installed: a config reload would never land on this engine")
+	}
+	// The refresh must rebuild, not blank: both halves of the prompt-cache
+	// prefix have to survive it.
+	if sp := vs.Engine.SystemPrompt(); !strings.Contains(sp, wantDir) {
+		t.Errorf("system prompt after refresh = %q, want it to still carry %q", sp, wantDir)
+	}
+	if !strings.Contains(dumpText(vs.Engine.DumpAPIRequest()), marker) {
+		t.Error("the refresh dropped the user-context half: CLAUDE.md no longer reaches the request")
+	}
+}
+
+// A restored engine's hub lives only as the engine's Dispatcher. If the
+// recovery does not land, the connector subscribes to an isolated hub and
+// never sees the engine's events — the fallback says so, so its silence is
+// the assertion.
+func TestStartWeChatConnector_RestoredEngineSharesEngineHub(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	eng, _, err := wuiFactory(&spyProvider{})("wechat-acct1", "wechat-acct1", "", "glm-5")
+	if err != nil {
+		t.Fatalf("seed engine: %v", err)
+	}
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, "restored"); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	mgr.Add(&engine.EngineViewState{Engine: eng, ID: "wechat-acct1", Name: "wechat-acct1"})
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	if recs := logs.find("wechat: engine dispatcher is not a *hub.Hub, using isolated hub"); len(recs) != 0 {
+		t.Errorf("restored engine's hub was not recovered: %d records", len(recs))
+	}
+	if vs := mgr.Get("wechat-acct1"); vs == nil || vs.Engine.Dispatcher() == nil {
+		t.Error("restored engine lost its dispatcher")
+	}
+}
+
+// countDispatcher is a non-*hub.Hub dispatcher: it satisfies the engine's
+// Dispatcher contract but cannot be recovered as the connector's hub.
+type countDispatcher struct{ n atomic.Int32 }
+
+func (d *countDispatcher) Dispatch(_ types.QueryEvent) { d.n.Add(1) }
+
+// An engine whose dispatcher is not a *hub.Hub must degrade loudly and still
+// get a hub: the connector would otherwise be wired to nil.
+func TestStartWeChatConnector_NonHubDispatcherUsesIsolatedHub(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	disp := &countDispatcher{}
+	eng := engine.New(&engine.Params{
+		Provider:   &spyProvider{},
+		Model:      "glm-5",
+		EngineID:   "wechat-acct1",
+		Logger:     slog.Default(),
+		Dispatcher: disp,
+	})
+	deps := engine.SharedDeps{WorkingDir: projectDir, ShortStore: store}
+	refs := engine.CreateTools(deps, task.NewList(""))
+	engine.WireEngine(eng, refs, deps.McpReg)
+	eng.SetToolRefs(refs)
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, "seed"); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	mgr.Add(&engine.EngineViewState{Engine: eng, ID: "wechat-acct1", Name: "wechat-acct1"})
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	rec := exactlyOne(t, logs, "wechat: engine dispatcher is not a *hub.Hub, using isolated hub", "non-hub dispatcher")
+	if rec.attrs["id"] != "wechat-acct1" {
+		t.Errorf("id attr = %v, want wechat-acct1", rec.attrs["id"])
+	}
+}
+
+// The job-notification wiring WireEngine installs is what makes a finished
+// background job reach this engine's attachment queue. Without it the job
+// completes and the model never hears about it.
+func TestStartWeChatConnector_WiresJobNotifications(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine missing, manager holds %v", engineIDs(mgr))
+	}
+	refs := vs.Engine.ToolRefs()
+	if refs.BashReg == nil {
+		t.Fatal("BashReg missing on the connector engine's ToolRefs")
+	}
+	refs.BashReg.OnNotify(bash.JobNotification{JobID: "j1", Status: "completed", Summary: "done"})
+	if n := vs.Engine.AttachmentsLen(); n != 1 {
+		t.Errorf("attachment queue = %d after a job notification, want 1 (WireEngine wiring missing)", n)
+	}
+}
+
+// A typed-nil *hub.Hub dispatcher satisfies the type assertion but is not a
+// usable hub: the nil check in the recovery is what keeps the connector off it.
+func TestStartWeChatConnector_TypedNilDispatcherUsesIsolatedHub(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	var nilHub *hub.Hub
+	eng := engine.New(&engine.Params{
+		Provider:   &spyProvider{},
+		Model:      "glm-5",
+		EngineID:   "wechat-acct1",
+		Logger:     slog.Default(),
+		Dispatcher: nilHub,
+	})
+	deps := engine.SharedDeps{WorkingDir: projectDir, ShortStore: store}
+	refs := engine.CreateTools(deps, task.NewList(""))
+	engine.WireEngine(eng, refs, deps.McpReg)
+	eng.SetToolRefs(refs)
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, "seed"); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	mgr.Add(&engine.EngineViewState{Engine: eng, ID: "wechat-acct1", Name: "wechat-acct1"})
+	logs := captureAppLogs(t)
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	exactlyOne(t, logs, "wechat: engine dispatcher is not a *hub.Hub, using isolated hub", "typed-nil dispatcher")
+}
+
+// MaxTurns must stay 0 (no cap): the WeChat engine runs multi-turn tool loops,
+// and a negative cap stops the loop before the first LLM call.
+func TestStartWeChatConnector_NoTurnCap(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	spy := &spyProvider{}
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	d.provider = spy
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine missing, manager holds %v", engineIDs(mgr))
+	}
+	vs.Engine.QuerySync(context.Background(), "hi", "")
+	if spy.streamCalls == 0 {
+		t.Error("the WeChat engine made no LLM call: MaxTurns caps the loop before the first turn")
+	}
+}
+
+// wechat.go:77/80/84 — the deps-sourced Params fields must be the engine's
+// actual collaborators. Nil fallbacks in engine.New make clearing them
+// silently swap in package defaults: the host logger stops seeing engine
+// events, MCPTools() reads an empty view, and the Task tool's list diverges
+// from the engine's.
+func TestStartWeChatConnector_PinsDepsCollaboratorsIntoEngine(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+	var loggedKeys []string
+	d.logger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			loggedKeys = append(loggedKeys, a.Key)
+			return a
+		},
+	}))
+	reg := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	reg.SetToolsForTest([]mcp.DiscoveredTool{{
+		Name: "mcp__srv__thing", OriginalName: "thing", ServerName: "srv",
+		InputSchema: json.RawMessage(`{}`),
+	}})
+	d.mcpRegistry = reg
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine wechat-acct1 missing")
+	}
+	vs.Engine.EnqueueAttachment(types.QueuedItem{Value: "pin", Mode: types.ItemModePrompt})
+	if len(loggedKeys) == 0 {
+		t.Error("deps logger saw no engine event — Params.Logger fell back to slog.Default()")
+	}
+	if got := len(vs.Engine.MCPTools()); got != 1 {
+		t.Errorf("MCPTools = %d, want 1 through the deps registry", got)
+	}
 }

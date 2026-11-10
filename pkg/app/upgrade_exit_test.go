@@ -1,6 +1,10 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -8,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/wui"
 )
 
 // exitUpgrader drives watchUpgradeExit's <-upg.Exit() from the test; the
@@ -86,6 +94,10 @@ func TestWatchUpgradeExit_LeavesStoreOpenForAttachedChild(t *testing.T) {
 	exited := interceptExit(t)
 	store, dbPath := newExitTestStore(t)
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
+	// The gate's own flag is reset here so the assertion below proves THIS
+	// call set it, not an earlier test.
+	handedOver.Store(false)
+	t.Cleanup(func() { handedOver.Store(false) })
 
 	go watchUpgradeExit(upg, &http.Server{}, nil, nil, nil, store, nil)
 	close(upg.exitCh)
@@ -94,6 +106,11 @@ func TestWatchUpgradeExit_LeavesStoreOpenForAttachedChild(t *testing.T) {
 	case <-exited:
 	case <-time.After(5 * time.Second):
 		t.Fatal("watchUpgradeExit did not exit after upg.Exit() closed")
+	}
+	// From the exit onward this process is not the PID-file owner; a SIGINT
+	// landing here must skip pidCleanup, which is what handedOver gates.
+	if !handedOver.Load() {
+		t.Error("handedOver must be set on the handover exit — a late SIGINT would delete the child's PID file")
 	}
 	assertStoreOpen(t, store, "upgrade handover exit")
 	// The sidecars the attached child needs must still be on disk — deleting
@@ -193,6 +210,7 @@ func TestWatchUpgradeExit_ExitsAfterDrain_LeavesStoreOpen(t *testing.T) {
 // death. The bound keeps a long dream Query from stalling the upgrade
 // forever.
 func TestWatchUpgradeExit_DreamJoinIsBounded(t *testing.T) {
+	logs := captureAppLogs(t)
 	orig := dreamJoinTimeout
 	dreamJoinTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { dreamJoinTimeout = orig })
@@ -211,6 +229,13 @@ func TestWatchUpgradeExit_DreamJoinIsBounded(t *testing.T) {
 		t.Fatal("watchUpgradeExit hung on an unfinished dream tick")
 	}
 	assertStoreOpen(t, store, "after bounded dream join")
+	// Exiting under the dream loses its in-flight persist; that must be said
+	// out loud, not silently.
+	if recs := logs.find("upgrade exit: dream timer still running; exiting under it (in-flight persist lost whole)"); len(recs) != 1 {
+		t.Errorf("dream-timeout warnings = %d, want 1", len(recs))
+	} else if recs[0].level != slog.LevelWarn {
+		t.Errorf("dream-timeout log level = %v, want WARN", recs[0].level)
+	}
 }
 
 // The join must actually happen: with dreamDone open past the (generously
@@ -225,14 +250,21 @@ func TestWatchUpgradeExit_JoinsDreamBeforeExit(t *testing.T) {
 	store, _ := newExitTestStore(t)
 	upg := &exitUpgrader{exitCh: make(chan struct{})}
 	dreamDone := make(chan struct{})
+	dreamCtx, dreamCancel := context.WithCancel(context.Background())
+	t.Cleanup(dreamCancel)
 
-	go watchUpgradeExit(upg, &http.Server{}, nil, nil, dreamDone, store, nil)
+	go watchUpgradeExit(upg, &http.Server{}, nil, dreamCancel, dreamDone, store, nil)
 	close(upg.exitCh)
 
 	select {
 	case <-exited:
 		t.Fatal("exited without waiting for the in-flight dream tick — join removed or misplaced")
 	case <-time.After(150 * time.Millisecond):
+	}
+	// The cancel must precede the join: RunDreamTimer only checks ctx between
+	// ticks, so a missing cancel leaves the tick running with no way to stop it.
+	if dreamCtx.Err() == nil {
+		t.Error("dream context not cancelled — the join would wait on a tick nothing stops")
 	}
 	close(dreamDone)
 
@@ -308,4 +340,103 @@ func TestCleanup_DreamJoinIsBounded(t *testing.T) {
 		t.Fatal("Cleanup hung on a never-closing DreamDone — timeout case removed")
 	}
 	assertStoreClosed(t, store, "after bounded Cleanup dream join")
+}
+
+// TestWatchUpgradeExit_ClosesBrowserWithUpgradeFrame pins the 1012 close frame
+// reaching the browser before teardown: the WebView tells "the daemon is
+// upgrading, reconnect" from a dropped link only by that code.
+func TestWatchUpgradeExit_ClosesBrowserWithUpgradeFrame(t *testing.T) {
+	exited := interceptExit(t)
+	store, _ := newExitTestStore(t)
+	mgr := engine.NewEngineManager()
+	wc := wui.New(mgr, config.ProviderMap{}, map[string]*config.Provider{})
+	mux := http.NewServeMux()
+	wui.RegisterChatWS(mux, wc)
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+
+	ws, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws/chat", nil)
+	if err != nil {
+		t.Fatalf("dial /ws/chat: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	if err := ws.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil { // REAL-TIME — bounded read
+		t.Fatalf("ws deadline: %v", err)
+	}
+
+	upg := &exitUpgrader{exitCh: make(chan struct{})}
+	go watchUpgradeExit(upg, srv, wc, nil, nil, store, nil)
+	close(upg.exitCh)
+
+	for {
+		_, _, rerr := ws.ReadMessage()
+		if rerr == nil {
+			continue // metadata/history frames precede the close
+		}
+		var ce *websocket.CloseError
+		if !errors.As(rerr, &ce) {
+			t.Fatalf("browser saw %v, want a 1012 close frame from the upgrade", rerr)
+		}
+		if ce.Code != 1012 {
+			t.Errorf("close code = %d, want 1012 (service restart)", ce.Code)
+		}
+		break
+	}
+	<-exited
+}
+
+// TestWatchUpgradeExit_ClosesUndrainedConnectionsOnShutdownTimeout pins the
+// Close fallback behind the Shutdown error: a request that outlives the drain
+// makes Shutdown return its deadline error, and only srv.Close reaps the
+// connection. Without that fallback the socket stays open past the exit.
+func TestWatchUpgradeExit_ClosesUndrainedConnectionsOnShutdownTimeout(t *testing.T) {
+	exited := interceptExit(t)
+	store, _ := newExitTestStore(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	requestIn := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestIn)
+		<-release // outlives the drain window, forcing Shutdown's deadline error
+		_, _ = w.Write([]byte("late"))
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	<-requestIn
+
+	upg := &exitUpgrader{exitCh: make(chan struct{})}
+	go watchUpgradeExit(upg, srv, nil, nil, nil, store, nil)
+	close(upg.exitCh)
+
+	// The exit lands only after the drain deadline (drainTimeout).
+	<-exited
+	// The server must have hard-closed the socket the drain could not finish:
+	// a read that only stops on OUR deadline means the connection outlived the
+	// exit, which is what srv.Close prevents.
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil { // REAL-TIME — bounded read
+		t.Fatalf("conn deadline: %v", err)
+	}
+	n, rerr := conn.Read(make([]byte, 1))
+	if rerr == nil {
+		t.Fatalf("undrained connection still serving %d bytes after the exit — the srv.Close fallback is missing", n)
+	}
+	var ne net.Error
+	if errors.As(rerr, &ne) && ne.Timeout() {
+		t.Fatalf("undrained connection stayed open past the exit (read hit the local deadline): %v", rerr)
+	}
 }
