@@ -58,7 +58,7 @@ func TestParseCachePath(t *testing.T) {
 	if got := parseCachePath("/root", ""); got != "" {
 		t.Errorf("empty key = %q, want no cache path", got)
 	}
-	want := filepath.Join("/root", "documents", "parse", "abc.md")
+	want := filepath.Join("/root", "documents", "parse", "v2", "abc.md")
 	if got := parseCachePath("/root", "abc"); got != want {
 		t.Errorf("parseCachePath = %q, want %q", got, want)
 	}

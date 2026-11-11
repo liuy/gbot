@@ -18,7 +18,10 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -334,6 +337,11 @@ func findOMath(elm *OMMLElement, results *[]string) {
 
 // documentToHTML converts the document.xml content to HTML.
 func (c *DocxConverter) documentToHTML(docData []byte, rels map[string]Relationship, numbering map[string]numberingDef, comments map[string]docxComment, styles map[string]styleInfo, zr *zip.Reader) string {
+	imageDir := ""
+	if c.markitdown != nil {
+		imageDir = c.markitdown.imageDir
+	}
+	usedNames := make(map[string]int)
 	var html strings.Builder
 	html.WriteString("<html><body>")
 
@@ -503,9 +511,18 @@ func (c *DocxConverter) documentToHTML(docData []byte, rels map[string]Relations
 					}
 				}
 
+			case "Fallback":
+				// OOXML AlternateContent semantics: consumers process Choice
+				// and ignore Fallback (the legacy duplicate of the same
+				// content). Skipping the subtree collapses the Choice/
+				// Fallback text duplication at construction time.
+				skipElement(decoder)
+
 			case "drawing", "pict":
-				// Try to extract images
-				imgData := c.extractImage(t, decoder, zr)
+				// Consume the whole subtree: embedded image reference plus
+				// any text box text it wraps (template docx files keep body
+				// text inside drawing-attached text boxes).
+				imgData := c.extractDrawingContent(t, decoder, zr, imageDir, usedNames)
 				if imgData != "" {
 					if s.inTableCell {
 						cellContent.WriteString(imgData)
@@ -669,13 +686,41 @@ func (c *DocxConverter) getHeadingLevel(styleID string, styles map[string]styleI
 	return 0
 }
 
-// extractImage attempts to extract an image from a drawing or pict element.
-func (c *DocxConverter) extractImage(startElem xml.StartElement, decoder *xml.Decoder, zr *zip.Reader) string {
+// skipElement consumes the balanced subtree rooted at the StartElement just
+// returned by decoder.Token. Token errors stop the skip — the enclosing loop
+// hits the same error on its next Token call and exits anyway.
+func skipElement(decoder *xml.Decoder) {
+	depth := 1
+	for depth > 0 {
+		tok, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		switch tok.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+}
+
+// extractDrawingContent consumes an entire drawing/pict subtree and returns
+// the HTML for what it holds: text box paragraphs plus, when an embedded
+// image resolves, the image markup. Template-built docx files keep their body
+// text inside text boxes attached to drawings, so dropping the subtree (the
+// old extractImage behavior) lost whole documents.
+func (c *DocxConverter) extractDrawingContent(startElem xml.StartElement, decoder *xml.Decoder, zr *zip.Reader, imageDir string, usedNames map[string]int) string {
 	// We need to consume the entire drawing/pict element
 	// and look for embedded image references
 	depth := 1
 	var embedID string
 	var altText string
+	inTextBox := 0
+	inText := false
+	var boxPara strings.Builder
+	var runBuf strings.Builder
+	var parts []string
 
 	for depth > 0 {
 		tok, err := decoder.Token()
@@ -685,8 +730,36 @@ func (c *DocxConverter) extractImage(startElem xml.StartElement, decoder *xml.De
 		switch t := tok.(type) {
 		case xml.StartElement:
 			depth++
+			local := t.Name.Local
+			if local == "txbxContent" {
+				inTextBox++
+				continue
+			}
+			if local == "Fallback" {
+				// Same AlternateContent semantics as the document loop, but
+				// this subtree is consumed HERE — the main loop's Fallback
+				// case never sees it. skipElement already consumed the
+				// matching EndElement, so compensate the depth++ above.
+				skipElement(decoder)
+				depth--
+				continue
+			}
+			if inTextBox > 0 {
+				switch local {
+				case "p":
+					boxPara.Reset()
+				case "t":
+					inText = true
+					runBuf.Reset()
+				case "tab":
+					boxPara.WriteString("\t")
+				case "br":
+					boxPara.WriteString("<br/>")
+				}
+				continue
+			}
 			// Look for blip element (embedded image reference)
-			if t.Name.Local == "blip" {
+			if local == "blip" {
 				for _, attr := range t.Attr {
 					if attr.Name.Local == "embed" {
 						embedID = attr.Value
@@ -694,22 +767,60 @@ func (c *DocxConverter) extractImage(startElem xml.StartElement, decoder *xml.De
 				}
 			}
 			// Look for docPr element (description/alt text)
-			if t.Name.Local == "docPr" {
+			if local == "docPr" {
 				for _, attr := range t.Attr {
 					if attr.Name.Local == "descr" {
 						altText = attr.Value
 					}
 				}
 			}
+		case xml.CharData:
+			if inTextBox > 0 && inText {
+				// Runs are buffered separately and escaped at their end so
+				// the raw <br/> tabs/breaks write into the paragraph survive
+				// (same per-run escaping as the body-level loop).
+				runBuf.Write(t)
+			}
 		case xml.EndElement:
 			depth--
+			local := t.Name.Local
+			if local == "txbxContent" {
+				inTextBox--
+				continue
+			}
+			if inTextBox > 0 {
+				switch local {
+				case "t":
+					boxPara.WriteString(escapeHTMLText(runBuf.String()))
+					inText = false
+				case "p":
+					// Trim before appending: blank paragraphs are dropped, not
+					// rendered (same semantics as body-level paragraphs).
+					if text := strings.TrimSpace(boxPara.String()); text != "" {
+						parts = append(parts, text)
+					}
+					boxPara.Reset()
+				}
+			}
 		}
 	}
 
-	if embedID == "" {
-		return ""
+	if embedID != "" {
+		if imgHTML := c.drawingImageHTML(embedID, altText, zr, imageDir, usedNames); imgHTML != "" {
+			parts = append(parts, imgHTML)
+		}
 	}
+	return strings.Join(parts, "<br/>")
+}
 
+// drawingImageHTML resolves an embedded image reference to markup. With
+// imageDir set, the image bytes are written into imageDir and the markup
+// references the file's absolute path — a truncated data URI is a dead
+// reference the LLM cannot act on, while a file path can be fileread on
+// demand. When the write fails (including the MkdirAll), the markup falls
+// back to the data URI form, which the HTML layer then truncates: the
+// "no megabyte base64 in text blocks" invariant stays enforced either way.
+func (c *DocxConverter) drawingImageHTML(embedID, altText string, zr *zip.Reader, imageDir string, usedNames map[string]int) string {
 	// Resolve the relationship to find the image file
 	rels, _ := ParseRelationshipsFromReader(zr, "word/_rels/document.xml.rels")
 	rel, ok := rels[embedID]
@@ -726,6 +837,25 @@ func (c *DocxConverter) extractImage(startElem xml.StartElement, decoder *xml.De
 		if err != nil {
 			return ""
 		}
+	}
+
+	if altText == "" {
+		altText = path.Base(rel.Target)
+	}
+
+	if imageDir != "" {
+		name := path.Base(rel.Target)
+		usedNames[name]++
+		if n := usedNames[name]; n > 1 {
+			ext := path.Ext(name)
+			name = strings.TrimSuffix(name, ext) + "-" + strconv.Itoa(n) + ext
+		}
+		if err := os.MkdirAll(imageDir, 0o755); err == nil {
+			if err := os.WriteFile(filepath.Join(imageDir, name), imgData, 0o644); err == nil {
+				return `<img src="` + escapeHTMLAttr(filepath.Join(imageDir, name)) + `" alt="` + escapeHTMLAttr(altText) + `"/>`
+			}
+		}
+		// fall through to the data URI form
 	}
 
 	// Determine content type from extension
@@ -745,10 +875,6 @@ func (c *DocxConverter) extractImage(startElem xml.StartElement, decoder *xml.De
 	// Encode as data URI
 	b64 := base64.StdEncoding.EncodeToString(imgData)
 	src := fmt.Sprintf("data:%s;base64,%s", contentType, b64)
-
-	if altText == "" {
-		altText = path.Base(rel.Target)
-	}
 
 	return fmt.Sprintf(`<img src="%s" alt="%s"/>`, src, escapeHTMLAttr(altText))
 }

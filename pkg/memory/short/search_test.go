@@ -1001,7 +1001,7 @@ func TestSearchMessages_OrPhraseRanking(t *testing.T) {
 	}{
 		{"msg-1", `[{"type":"text","text":"张三 喜欢 蓝色"}]`},
 		{"msg-2", `[{"type":"text","text":"张三 喜欢 红色"}]`},
-		{"msg-3", `[{"type":"text","text":"王丽君 是 教师"}]`},
+		{"msg-3", `[{"type":"text","text":"李四 是 教师"}]`},
 	}
 
 	for _, m := range messages {

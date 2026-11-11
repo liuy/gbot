@@ -28,3 +28,14 @@ func WithStyleMap(styleMap string) Option {
 		m.styleMap = styleMap
 	}
 }
+
+// WithImageDir makes the DOCX converter write embedded images as files under
+// dir and reference their paths in the output, instead of embedding data
+// URIs. The library default stays "no disk writes" — base64 placeholders are
+// useless to an LLM only when the caller has a way to serve the files back,
+// so materialization is opt-in per caller.
+func WithImageDir(dir string) Option {
+	return func(m *MarkItDown) {
+		m.imageDir = dir
+	}
+}

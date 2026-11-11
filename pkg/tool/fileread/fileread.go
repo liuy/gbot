@@ -498,7 +498,7 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	case imageExtensions[ext]:
 		result, execErr = executeImage(in, info)
 	case convertibleExtensions[ext]:
-		result, execErr = executeDocument(in, info)
+		result, execErr = executeDocument(in, info, tctx)
 	case binaryExtensions[ext]:
 		return nil, fmt.Errorf("file has binary extension %s and cannot be read as text: %s", ext, in.FilePath)
 	default:
@@ -592,8 +592,12 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 // executeDocument converts binary documents (docx, xlsx, pptx, epub, csv, ipynb)
 // to markdown via markitdown, then applies offset/limit on the converted text.
 // omp: convertFileWithMarkit → #buildInMemoryTextResult pipeline.
-func executeDocument(in Input, info os.FileInfo) (*tool.ToolResult, error) {
-	m := markitdown.New()
+func executeDocument(in Input, info os.FileInfo, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+	var opts []markitdown.Option
+	if tctx != nil && tctx.DocumentImageDir != "" {
+		opts = append(opts, markitdown.WithImageDir(tctx.DocumentImageDir))
+	}
+	m := markitdown.New(opts...)
 	result, err := m.ConvertFile(in.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("convert %s: %w", strings.ToLower(filepath.Ext(in.FilePath)), err)

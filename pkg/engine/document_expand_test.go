@@ -22,7 +22,7 @@ func seedDocumentFixture(t *testing.T, name, key, markdown string) types.Content
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, ".gbot", "cache")
-	for _, dir := range []string{"documents", string(media.CategoryParse)} {
+	for _, dir := range []string{"documents", filepath.Join(string(media.CategoryParse), "v2")} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
@@ -31,7 +31,7 @@ func seedDocumentFixture(t *testing.T, name, key, markdown string) types.Content
 	if err := os.WriteFile(docPath, []byte("unparsed bytes"), 0o644); err != nil {
 		t.Fatalf("write stored doc: %v", err)
 	}
-	cachePath := filepath.Join(root, string(media.CategoryParse), key+".md")
+	cachePath := filepath.Join(root, string(media.CategoryParse), "v2", key+".md")
 	if err := os.WriteFile(cachePath, []byte(markdown), 0o644); err != nil {
 		t.Fatalf("write parse cache: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestPrepareAPIMessages_ExpandsDocumentBlocks(t *testing.T) {
 	if api[0].Content[1].Type != types.ContentTypeText {
 		t.Fatalf("content[1].Type = %q, want text", api[0].Content[1].Type)
 	}
-	if want := "[Document: notes.txt]\n# parsed\n\nbody text"; api[0].Content[1].Text != want {
+	if want := "[Document: notes.txt saved at " + doc.Path + "]\n# parsed\n\nbody text"; api[0].Content[1].Text != want {
 		t.Errorf("expanded text = %q, want %q", api[0].Content[1].Text, want)
 	}
 
@@ -107,7 +107,7 @@ func TestPrepareAPIMessages_DocumentParseFailure_HeaderOnly(t *testing.T) {
 	if api[0].Content[1].Type != types.ContentTypeText {
 		t.Fatalf("content[1].Type = %q, want text", api[0].Content[1].Type)
 	}
-	if want := "[Document: weird.bin]"; api[0].Content[1].Text != want {
+	if want := "[Document: weird.bin saved at " + docPath + "]"; api[0].Content[1].Text != want {
 		t.Errorf("fallback text = %q, want %q", api[0].Content[1].Text, want)
 	}
 }
@@ -147,7 +147,7 @@ func TestPrepareAPIMessages_AttachmentDocument_BusyPath(t *testing.T) {
 		!strings.Contains(content[0].Text, "while you were working") {
 		t.Errorf("content[0] = %+v, want system-reminder wrapping the prompt", content[0])
 	}
-	if content[1].Type != types.ContentTypeText || content[1].Text != "[Document: notes.txt]\nparsed body" {
+	if content[1].Type != types.ContentTypeText || content[1].Text != "[Document: notes.txt saved at "+doc.Path+"]\nparsed body" {
 		t.Errorf("content[1] = %+v, want expanded document text", content[1])
 	}
 	for _, b := range content {
@@ -196,7 +196,7 @@ func TestQueryWithContent_DocumentExpandedInProviderRequest(t *testing.T) {
 			if b.Type == types.ContentTypeDocument {
 				sawDocument = true
 			}
-			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "[Document: notes.txt]\ne2e markdown body") {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "[Document: notes.txt saved at "+doc.Path+"]\ne2e markdown body") {
 				sawExpanded = true
 			}
 		}

@@ -42,6 +42,7 @@ type MarkItDown struct {
 	converters   []registeredConverter
 	keepDataURIs bool
 	styleMap     string
+	imageDir     string
 }
 
 // New creates a new MarkItDown instance with the given options.

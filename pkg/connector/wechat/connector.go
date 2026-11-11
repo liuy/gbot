@@ -557,7 +557,13 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 
 	// Parse the document inline so the LLM gets content, not a path to chase.
 	input, _ := json.Marshal(fileread.Input{FilePath: path})
-	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
+	// Same image-dir rule as media.parseDocumentAt: hash-named files get a
+	// content-addressed materialization directory, others keep placeholders.
+	tctx := &tool.ToolUseContext{UncappedOutput: true}
+	if key := media.ParseCacheKey(path); key != "" {
+		tctx.DocumentImageDir = filepath.Join(c.mediaCache.RootDir, string(media.CategoryParseMedia), key)
+	}
+	result, err := fileread.Execute(ctx, input, tctx)
 	if err != nil || result == nil {
 		slog.Warn("wechat: document parse failed, sending path as fallback", "file", name, "error", err)
 		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))

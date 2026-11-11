@@ -35,6 +35,12 @@ const (
 	// documents/parse/ stores the derived markdown so re-expansion on
 	// later turns skips the (slow) parse chain.
 	CategoryParse Category = "documents/parse"
+	// CategoryParseMedia holds images materialized out of parsed documents,
+	// one subdirectory per parse key ({key}/<basename>). Registered so the
+	// category is documented beside its siblings — Cleanup(CategoryDocument)
+	// recursively covers it (it nests under documents/), so CleanupAll
+	// deliberately adds no term for it.
+	CategoryParseMedia Category = "documents/parse-media"
 	// CategoryTrace holds Playwright/browser trace archives written by plugin
 	// MCP servers via ${GBOT_CACHE_DIR}/traces/... — registered here so the
 	// category dir is created at startup and swept by CleanupAll like the rest.

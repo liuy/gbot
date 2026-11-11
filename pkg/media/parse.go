@@ -37,13 +37,19 @@ func ParseCacheKey(path string) string {
 	return base[:len(base)-len(ext)]
 }
 
-// parseCachePath returns {root}/parse/{key}.md for root != ""; "" disables
+// parseCachePath returns {root}/parse/v2/{key}.md for root != ""; "" disables
 // caching (used when home resolution fails — parse still works).
+//
+// The v2 segment is a format version marker, not a namespace: the v1 parser
+// dropped docx text-box text and emitted dead base64 placeholders, so serving
+// a v1 entry would resurrect that bug even after the parser is fixed. The
+// key is a hash of the SOURCE bytes, which says nothing about the parser
+// version. Orphaned v1 files are reclaimed by the documents mtime sweep.
 func parseCachePath(root, key string) string {
 	if root == "" || key == "" {
 		return ""
 	}
-	return filepath.Join(root, string(CategoryParse), key+".md")
+	return filepath.Join(root, string(CategoryParse), "v2", key+".md")
 }
 
 // cacheRoot resolves ~/.gbot/cache like New(); "" means "no cache" rather
@@ -71,7 +77,15 @@ func parseDocumentAt(ctx context.Context, root, path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
+	// Materialize embedded images next to the parse cache when the filename
+	// carries a hash key: same key always maps to the same source bytes, so
+	// the image files are content-addressed and immutable too. Non-hash
+	// names get no image dir — their output keeps the data URI placeholders.
+	imageDir := ""
+	if key != "" {
+		imageDir = filepath.Join(root, string(CategoryParseMedia), key)
+	}
+	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true, DocumentImageDir: imageDir})
 	if err != nil || result == nil {
 		slog.Warn("media: document parse failed", "file", path, "error", err)
 		return "", false
@@ -114,10 +128,14 @@ func ParseDocument(ctx context.Context, path string) (string, bool) {
 }
 
 // ExpandDocumentBlocks replaces document content blocks with text blocks
-// shaped "[Document: <name>]\n<markdown>" (header-only "[Document: <name>]"
-// when the parse fails), so providers with no document-block schema still
-// receive the content. The input slice is never mutated; the same slice is
-// returned when no document block is present.
+// shaped "[Document: <name> saved at <path>]\n<markdown>" (header-only
+// "[Document: <name>]" when the parse fails or the block carries no Path),
+// so providers with no document-block schema still receive the content. The
+// saved-at header matches the shape the wechat connector has always sent
+// (queue.go parses it), telling the model where the source file lives —
+// needed now that embedded images are materialized as fileread-able files.
+// The input slice is never mutated; the same slice is returned when no
+// document block is present.
 func ExpandDocumentBlocks(ctx context.Context, blocks []types.ContentBlock) []types.ContentBlock {
 	hasDoc := false
 	for i := range blocks {
@@ -140,10 +158,14 @@ func ExpandDocumentBlocks(ctx context.Context, blocks []types.ContentBlock) []ty
 		if name == "" {
 			name = filepath.Base(out[i].Path)
 		}
+		header := fmt.Sprintf("[Document: %s saved at %s]", name, out[i].Path)
+		if out[i].Path == "" {
+			header = fmt.Sprintf("[Document: %s]", name)
+		}
 		if md, ok := parseDocumentAt(ctx, root, out[i].Path); ok {
-			out[i] = types.NewTextBlock(fmt.Sprintf("[Document: %s]\n%s", name, md))
+			out[i] = types.NewTextBlock(header + "\n" + md)
 		} else {
-			out[i] = types.NewTextBlock(fmt.Sprintf("[Document: %s]", name))
+			out[i] = types.NewTextBlock(header)
 		}
 		// marshalMessages stamps cache_control on the LAST block — a
 		// document sitting there must keep the breakpoint across the
