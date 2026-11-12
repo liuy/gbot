@@ -163,10 +163,13 @@ type responsesItem struct {
 	Name    string                 `json:"name,omitempty"`
 	// Arguments is a JSON-encoded string, not an object (Responses wire quirk).
 	Arguments string `json:"arguments,omitempty"`
-	// Output is a pointer so an empty function_call_output still serializes
-	// "output":"" (the field is required on that item kind) while other item
-	// kinds omit it entirely.
-	Output *string `json:"output,omitempty"`
+	// Output holds the function_call_output payload — a plain string or an
+	// ordered array of content parts (see responsesToolOutput). It is a
+	// pointer so an empty function_call_output still serializes "output":""
+	// (the field is required on that item kind) while other item kinds omit
+	// it entirely. JSON null unmarshals to a nil pointer without invoking
+	// UnmarshalJSON (encoding/json pointer semantics).
+	Output *responsesToolOutput `json:"output,omitempty"`
 	// OpenAI reasoning items carry summaries here instead of content.
 	Summary []responsesSummaryPart `json:"summary,omitempty"`
 }
@@ -180,6 +183,35 @@ type responsesContentPart struct {
 	Type     string `json:"type"` // input_text|input_image|output_text|reasoning_text|text
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"` // "data:<media>;base64,<data>"
+}
+
+// responsesToolOutput is the function_call_output.output wire value: either a
+// plain string or an ordered array of content parts (codex
+// FunctionCallOutputPayload, codex-rs/protocol/src/models.rs:2180-2263).
+type responsesToolOutput struct {
+	text  string
+	parts []responsesContentPart
+}
+
+func (o responsesToolOutput) MarshalJSON() ([]byte, error) {
+	if len(o.parts) > 0 {
+		return json.Marshal(o.parts)
+	}
+	return json.Marshal(o.text)
+}
+
+func (o *responsesToolOutput) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		o.text, o.parts = s, nil
+		return nil
+	}
+	var parts []responsesContentPart
+	if err := json.Unmarshal(b, &parts); err != nil {
+		return err
+	}
+	o.text, o.parts = "", parts
+	return nil
 }
 
 // responsesSSEEvent is the SSE data envelope, parsed loosely: unknown fields
@@ -254,6 +286,54 @@ func responsesUsageToUsage(u *responsesUsage) types.Usage {
 // Request translation (Anthropic → Responses)
 // ---------------------------------------------------------------------------
 
+// buildResponsesToolOutput converts a tool_result payload to the wire output.
+// With any content present it mirrors codex convert_mcp_content_to_items
+// (codex-rs/protocol/src/models.rs:2344): one part per block, order preserved,
+// images inline as input_image data URLs. Text-only payloads stay a plain
+// string (codex Text(String) default) so existing wire shape is unchanged.
+func buildResponsesToolOutput(raw json.RawMessage) *responsesToolOutput {
+	if len(raw) == 0 {
+		return &responsesToolOutput{text: ""}
+	}
+
+	// Legacy single-wrapped string form.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return &responsesToolOutput{text: s}
+	}
+
+	// Canonical array form: one part per block, block order preserved.
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		// Fallback: the raw bytes as text, no images (openai.go raw fallback).
+		return &responsesToolOutput{text: string(raw)}
+	}
+
+	var parts []responsesContentPart
+	var texts []string
+	hasImage := false
+	for _, b := range blocks {
+		switch {
+		case b.Text != "":
+			parts = append(parts, responsesContentPart{Type: "input_text", Text: b.Text})
+			texts = append(texts, b.Text)
+		case b.Type == types.ContentTypeImage && b.Source != nil:
+			hasImage = true
+			parts = append(parts, responsesContentPart{
+				Type:     "input_image",
+				ImageURL: "data:" + b.Source.MediaType + ";base64," + b.Source.Data,
+			})
+		}
+	}
+	// The parts array exists to carry images; text-only results keep the
+	// plain-string wire shape so imageless turns are byte-identical to
+	// pre-inline history.
+	if !hasImage {
+		return &responsesToolOutput{text: strings.Join(texts, "\n")}
+	}
+	return &responsesToolOutput{parts: parts}
+}
+
 // translateResponsesItems converts Anthropic-shaped messages to Responses
 // input items, preserving per-message block order. Assistant reasoning is
 // replayed as reasoning items (GLM accepts plain-text reasoning without ids).
@@ -301,17 +381,10 @@ func translateResponsesItems(messages []types.Message) []responsesItem {
 				}
 
 			case types.ContentTypeToolResult:
-				text, imageMsgs := extractToolResultContent(cb.Content)
-				if len(imageMsgs) > 0 {
-					// function_call_output is text-only; unlike openai.go there
-					// is no companion message to rescue the images into.
-					slog.Debug("responses: dropping tool_result image content — function_call_output accepts text only",
-						"tool_use_id", cb.ToolUseID, "images", len(imageMsgs))
-				}
 				toolOutputs = append(toolOutputs, responsesItem{
 					Type:   "function_call_output",
 					CallID: cb.ToolUseID,
-					Output: &text,
+					Output: buildResponsesToolOutput(cb.Content),
 				})
 
 			case types.ContentTypeImage:

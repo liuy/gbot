@@ -563,6 +563,179 @@ func TestResponsesTranslateRequest_ImageAndEmptyToolResult(t *testing.T) {
 	}
 }
 
+// TestResponsesTranslateRequest_ToolResultImageInline pins the codex
+// content-items form of function_call_output.output: tool_result text and
+// image blocks become ordered input_text/input_image parts inline in the
+// output array, while text-only, legacy-string and unparseable payloads stay
+// plain strings.
+func TestResponsesTranslateRequest_ToolResultImageInline(t *testing.T) {
+	t.Parallel()
+
+	p := newResponsesTestProvider()
+
+	translate := func(t *testing.T, content string) map[string]any {
+		t.Helper()
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "call_1", Name: "read"},
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolResult, ToolUseID: "call_1", Content: json.RawMessage(content)},
+			}},
+		}
+		m := translateToMap(t, p, &Request{Messages: messages}, false)
+		input, ok := m["input"].([]any)
+		if !ok || len(input) != 2 {
+			t.Fatalf("input = %v, want 2 items (function_call + function_call_output)", m["input"])
+		}
+		fco, ok := input[1].(map[string]any)
+		if !ok || fco["type"] != "function_call_output" || fco["call_id"] != "call_1" {
+			t.Fatalf("input[1] = %v, want function_call_output call_1", input[1])
+		}
+		return fco
+	}
+
+	// text + image → exactly two ordered parts: input_text then input_image.
+	fco := translate(t, `[{"type":"text","text":"screenshot of widget"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]`)
+	parts, ok := fco["output"].([]any)
+	if !ok {
+		t.Fatalf("output = %v (%T), want a content-items array", fco["output"], fco["output"])
+	}
+	if len(parts) != 2 {
+		t.Fatalf("output has %d parts, want 2: %v", len(parts), parts)
+	}
+	textPart, ok := parts[0].(map[string]any)
+	if !ok || textPart["type"] != "input_text" || textPart["text"] != "screenshot of widget" {
+		t.Errorf("parts[0] = %v, want input_text 'screenshot of widget'", parts[0])
+	}
+	imgPart, ok := parts[1].(map[string]any)
+	if !ok || imgPart["type"] != "input_image" || imgPart["image_url"] != "data:image/png;base64,aGk=" {
+		t.Errorf("parts[1] = %v, want input_image data:image/png;base64,aGk=", parts[1])
+	}
+
+	// image-only → single input_image part.
+	fco = translate(t, `[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"Yg=="}}]`)
+	parts, ok = fco["output"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("image-only output = %v, want exactly one part", fco["output"])
+	}
+	imgPart, ok = parts[0].(map[string]any)
+	if !ok || imgPart["type"] != "input_image" || imgPart["image_url"] != "data:image/jpeg;base64,Yg==" {
+		t.Errorf("image-only part = %v, want input_image data:image/jpeg;base64,Yg==", parts[0])
+	}
+
+	// image-then-text → part order follows block order.
+	fco = translate(t, `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},{"type":"text","text":"after"}]`)
+	parts, ok = fco["output"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("image-then-text output = %v, want 2 parts", fco["output"])
+	}
+	if parts[0].(map[string]any)["type"] != "input_image" {
+		t.Errorf("parts[0] = %v, want input_image first (block order)", parts[0])
+	}
+	tp, ok := parts[1].(map[string]any)
+	if !ok || tp["type"] != "input_text" || tp["text"] != "after" {
+		t.Errorf("parts[1] = %v, want input_text 'after'", parts[1])
+	}
+
+	// nil-source image inside a tool_result → skipped without panic; only
+	// the text content survives.
+	fco = translate(t, `[{"type":"text","text":"note"},{"type":"image"}]`)
+	if fco["output"] != "note" {
+		t.Errorf("nil-source output = %v, want text-only %q", fco["output"], "note")
+	}
+
+	// a non-image block carrying a stray source field must not become an
+	// image part; with no usable content the output stays the empty string.
+	fco = translate(t, `[{"type":"thinking","source":{"type":"base64","media_type":"image/png","data":"aGk="}}]`)
+	if out, present := fco["output"]; !present || out != "" {
+		t.Errorf("stray-source output = %v (present=%v), want empty string present", out, present)
+	}
+
+	// interleaved multi-image multi-text → part count and order preserved.
+	fco = translate(t, `[{"type":"text","text":"t1"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},`+
+		`{"type":"text","text":"t2"},{"type":"image","source":{"type":"base64","media_type":"image/gif","data":"Yg=="}}]`)
+	parts, ok = fco["output"].([]any)
+	if !ok || len(parts) != 4 {
+		t.Fatalf("interleaved output = %v, want 4 parts", fco["output"])
+	}
+	wantParts := []map[string]string{
+		{"type": "input_text", "text": "t1"},
+		{"type": "input_image", "image_url": "data:image/png;base64,aGk="},
+		{"type": "input_text", "text": "t2"},
+		{"type": "input_image", "image_url": "data:image/gif;base64,Yg=="},
+	}
+	for i, want := range wantParts {
+		got, ok := parts[i].(map[string]any)
+		if !ok || got["type"] != want["type"] {
+			t.Errorf("parts[%d] = %v, want type %s", i, parts[i], want["type"])
+			continue
+		}
+		if want["text"] != "" && got["text"] != want["text"] {
+			t.Errorf("parts[%d].text = %v, want %s", i, got["text"], want["text"])
+		}
+		if want["image_url"] != "" && got["image_url"] != want["image_url"] {
+			t.Errorf("parts[%d].image_url = %v, want %s", i, got["image_url"], want["image_url"])
+		}
+	}
+
+	// String-form guards: legacy string content, unparseable raw, and
+	// single-byte raw all stay plain strings (openai.go raw-fallback parity).
+	for _, tc := range []struct{ content, want string }{
+		{`"plain"`, "plain"},
+		{`not json`, "not json"},
+		{`1`, "1"},
+	} {
+		fco = translate(t, tc.content)
+		if fco["output"] != tc.want {
+			t.Errorf("output for %s = %v, want string %q", tc.content, fco["output"], tc.want)
+		}
+	}
+}
+
+// TestResponsesToolOutputUnmarshalJSON anchors all three branches of the
+// function_call_output.output unmarshal: plain string, content-items array
+// (the SSE echo path), and a non-string/non-array rejection. JSON null is
+// covered separately via responsesItem: encoding/json nulls a pointer field
+// without invoking UnmarshalJSON.
+func TestResponsesToolOutputUnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	var o responsesToolOutput
+	if err := json.Unmarshal([]byte(`"plain text"`), &o); err != nil {
+		t.Fatalf("unmarshal string: %v", err)
+	}
+	if o.text != "plain text" || o.parts != nil {
+		t.Errorf("string form: text/parts = %q/%v, want plain text/nil", o.text, o.parts)
+	}
+
+	o = responsesToolOutput{}
+	if err := json.Unmarshal([]byte(`[{"type":"input_text","text":"a"},{"type":"input_image","image_url":"data:image/png;base64,aGk="}]`), &o); err != nil {
+		t.Fatalf("unmarshal array: %v", err)
+	}
+	if o.text != "" || len(o.parts) != 2 {
+		t.Fatalf("array form: text/parts = %q/%d parts, want empty text/2 parts", o.text, len(o.parts))
+	}
+	if o.parts[0].Type != "input_text" || o.parts[0].Text != "a" {
+		t.Errorf("parts[0] = %+v, want input_text 'a'", o.parts[0])
+	}
+	if o.parts[1].Type != "input_image" || o.parts[1].ImageURL != "data:image/png;base64,aGk=" {
+		t.Errorf("parts[1] = %+v, want input_image data URL", o.parts[1])
+	}
+
+	if err := json.Unmarshal([]byte(`42`), &o); err == nil {
+		t.Error("unmarshal 42 must fail (neither string nor array)")
+	}
+
+	var item responsesItem
+	if err := json.Unmarshal([]byte(`{"type":"function_call_output","call_id":"c","output":null}`), &item); err != nil {
+		t.Fatalf("unmarshal null output: %v", err)
+	}
+	if item.Output != nil {
+		t.Errorf("null output = %+v, want nil pointer", item.Output)
+	}
+}
+
 // TestResponsesTranslateRequest_RedactedThinkingDropped verifies that
 // redacted_thinking produces no item carrying encrypted content.
 func TestResponsesTranslateRequest_RedactedThinkingDropped(t *testing.T) {

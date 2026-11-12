@@ -124,7 +124,7 @@ func TestTranslateResponsesItems_Shapes(t *testing.T) {
 	if items[2].Type != "function_call" || items[2].CallID != "c1" || items[2].Name != "W" || items[2].Arguments != `{"a":1}` {
 		t.Errorf("function_call = %+v", items[2])
 	}
-	if items[3].Type != "function_call_output" || items[3].CallID != "c1" || items[3].Output == nil || *items[3].Output != "res" {
+	if items[3].Type != "function_call_output" || items[3].CallID != "c1" || items[3].Output == nil || items[3].Output.text != "res" {
 		t.Errorf("function_call_output = %+v", items[3])
 	}
 	if items[4].Type != "message" || items[4].Role != "user" {
@@ -1841,8 +1841,9 @@ func TestResponsesTranslateItems_Guards(t *testing.T) {
 	}
 }
 
-// translateRequest debug logs: stop_sequences and tool_result image drops are
-// logged with their payloads; clean requests stay silent.
+// translateRequest debug logs: stop_sequences and redacted_thinking drops are
+// logged; tool_result images ride the output array inline with no drop log at
+// translate time (the endpoint-rejection fallback strips them later).
 func TestResponsesTranslateRequest_DebugLogs(t *testing.T) {
 	logBuf := &syncedLogBuffer{}
 	oldLog := slog.Default()
@@ -1884,9 +1885,10 @@ func TestResponsesTranslateRequest_DebugLogs(t *testing.T) {
 	if _, err := p.translateRequest(&Request{Model: "m", MaxTokens: 1, Messages: msgs}, true); err != nil {
 		t.Fatal(err)
 	}
-	logged = logBuf.String()
-	if !strings.Contains(logged, "dropping tool_result image content") || !strings.Contains(logged, "tool_use_id=tu_1") || !strings.Contains(logged, "images=1") {
-		t.Errorf("image drop debug missing: %s", logged)
+	// Images ride the output array inline at translate time; absence of the
+	// drop log is the assertion.
+	if strings.Contains(logBuf.String(), "dropping tool_result image content") {
+		t.Errorf("inline image tool_result logged image drop: %s", logBuf.String())
 	}
 
 	logBuf.Reset()
