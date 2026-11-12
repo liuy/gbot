@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, classifyReminderMessage, formatTokenCount, VOICE_MSG_MARKER, stripVoiceMarker, type ReminderRow } from './utils'
+import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, unwrapEnvelopeDisplay, classifyReminderMessage, cronReminderEnvelope, formatTokenCount, VOICE_MSG_MARKER, stripVoiceMarker, type ReminderRow } from './utils'
 import { initShareMenu, extractShareText, type ShareSource } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -408,7 +408,7 @@ function shareSourceFor(m: MessageState, target: HTMLElement): ShareSource | nul
 // reads. Content blocks mirror Go types.ContentBlock JSON tags: image data is
 // base64 (data URL assembled client-side), documents carry reference metadata.
 type AttachmentEventMessage = {
-  attachment?: { prompt?: string; source_uuid?: string }
+  attachment?: { prompt?: string; source_uuid?: string; origin?: { kind?: string } }
   timestamp?: string
   content?: {
     type: string
@@ -469,6 +469,12 @@ function renderCommittedMessageDOM(
         } else if (unwrapQueuedReminder(text) !== null) {
           // Persisted mid-turn queued message: show the original text, gray.
           content.appendChild(createQueuedMessageTextSpan(unwrapQueuedReminder(text)!))
+        } else if (unwrapEnvelopeDisplay(text) !== null) {
+          // Bare single-layer envelopes the row classifier does not own
+          // (cron fires, other system-reminders) replay as the stripped
+          // display text, gray — the web mirror of the TUI's
+          // EnvelopeDisplayText BlockUser lines.
+          content.appendChild(createQueuedMessageTextSpan(unwrapEnvelopeDisplay(text)!))
         } else {
           content.appendChild(createUserTextSpan(text))
         }
@@ -2292,6 +2298,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
           text = att.prompt ?? ''
         }
         if (!text && imageSrcs.length === 0 && docs.length === 0) return
+        // A fired cron prompt is a system-originated scheduled event: origin
+        // outranks mode, and the idle fire's event carries the bare prompt
+        // with no envelope to sniff — re-wrap so the shared classifier path
+        // renders the Reminder row live, streaming, and at commit.
+        if (att.origin?.kind === 'cron') {
+          text = cronReminderEnvelope(att.prompt ?? text)
+        }
         // Drained job/message reminders ride EventAttachment with the
         // persisted envelope as content; render through the shared tool-row
         // path (renderStreamBlock sniffs the envelope into a Reminder row)

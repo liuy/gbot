@@ -914,7 +914,7 @@ func createDreamEngine(d dreamEngineDeps) (*engine.Engine, *tui.TUIHandler, stri
 		// dreamEngineDeps for why they stay wired under the default whitelist.
 		EngineMgr: d.EngineMgr,
 		IDMinter:  d.IDMinter,
-	}, task.NewList(""))
+	}, task.NewList(""), engine.WithoutCron())
 
 	// Whitelist: only tools dream needs.
 	dreamWhitelist := d.Tools

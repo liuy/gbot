@@ -141,7 +141,26 @@ type attachmentMsg struct {
 	UserText   string           // plain text from ItemModePrompt attachment
 	SourceUUID string           // UUID for matching pendingQueue entries
 	From       string           // sender id from an ItemModeMessage delivery
+	Cron       bool             // fired cron prompt (OriginCron) — reminder-row form
 	Agent      *types.AgentMeta // non-nil when from a sub-agent
+}
+
+// CronFireRowText labels a fired cron prompt for the reminder-row family.
+// Shared by the live drain (attachmentMsg) and history replay
+// (engineMessagesToViews) so the two rows are byte-identical; the label
+// mirrors the wui Reminder row summary ("scheduled task fired: …").
+func CronFireRowText(prompt string) string {
+	return "scheduled task fired: " + prompt
+}
+
+// cronFireRow builds the fired-cron notification view shared by both replay
+// arms (persisted envelope row, in-memory attachment row) — one constructor
+// so live and replay cannot drift.
+func cronFireRow(prompt string) MessageView {
+	return MessageView{
+		Role:   "notification",
+		Blocks: []ContentBlock{{Type: BlockText, Text: styleDotSuccess.Render("●") + " " + CronFireRowText(prompt)}},
+	}
 }
 
 // idleAbortedMsg is returned when an idle readEvents is cancelled

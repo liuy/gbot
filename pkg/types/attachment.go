@@ -84,6 +84,7 @@ const (
 	OriginJobCommand MessageOriginKind = "job_command"
 	OriginMessage    MessageOriginKind = "message"
 	OriginHuman      MessageOriginKind = "human"
+	OriginCron       MessageOriginKind = "cron"
 )
 
 // MessageOrigin describes the source of a message.

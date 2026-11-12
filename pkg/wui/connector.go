@@ -1253,6 +1253,13 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		var text string
 		if att := event.Message.Attachment; att != nil && att.Mode == types.ItemModePrompt && att.Prompt != "" {
 			text = att.Prompt
+			// Origin outranks mode: a fired cron prompt echoes as the reminder
+			// ENVELOPE (the exact bytes the mid-turn persist path stores), not
+			// the bare prompt — the client's row classifier sniffs content, so
+			// the echo renders the same Reminder row live and on takeover.
+			if att.Origin != nil && att.Origin.Kind == types.OriginCron {
+				text = utils.BuildCronReminderEnvelope(att.Prompt)
+			}
 		} else {
 			for _, cb := range event.Message.Content {
 				if cb.Type == types.ContentTypeText {
@@ -1849,6 +1856,13 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 		StartedAt: m.Timestamp.UnixMilli(),
 		Status:    "done",
 	}
+	// Legacy store rows only (pre-envelope-persistence): a drained cron fire
+	// persisted as an attachment carries the bare prompt; the client's row
+	// classifier sniffs content, so the text is re-wrapped into the envelope
+	// the live echo sends — wui live == wui replay for the same message list.
+	// Current fires persist the envelope already and pass through verbatim.
+	cronFire := m.Attachment != nil && m.Attachment.Origin != nil &&
+		m.Attachment.Origin.Kind == types.OriginCron
 	for _, cb := range m.Content {
 		switch cb.Type {
 		case types.ContentTypeText:
@@ -1859,6 +1873,12 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 			if m.HasFlag(types.FlagAPIError) {
 				hm.Error += cb.Text
 				continue
+			}
+			// Empty/whitespace-only prompts stay unwrapped: the block loop
+			// below drops them, and a wrapped-but-blockless envelope would
+			// strand hm.Text as an unsniffable raw bubble on the client.
+			if cronFire && strings.TrimSpace(cb.Text) != "" {
+				cb.Text = utils.BuildCronReminderEnvelope(cb.Text)
 			}
 			hm.Text += cb.Text
 			// Match TUI's engineMessagesToViews: skip whitespace-only text

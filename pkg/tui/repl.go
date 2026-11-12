@@ -1401,8 +1401,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			return true, a.readEvents()
 		}
 
-		// ItemModeJob / ItemModeMessage drain: render a live notification row.
-		if m.JobID != "" || m.From != "" {
+		// ItemModeJob / ItemModeMessage / cron-fire drain: render a live
+		// notification row.
+		if m.JobID != "" || m.From != "" || m.Cron {
 			var dotStr string
 			if m.Failed {
 				dotStr = styleDotError.Render("●")
@@ -1414,6 +1415,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				// Message deliveries carry their own label, matching the wui
 				// Reminder row summary; the exit-code trim is job-only.
 				preview = "got a message from " + m.From
+			} else if m.Cron {
+				preview = CronFireRowText(preview)
 			} else if !m.Failed {
 				preview = strings.TrimSuffix(preview, " (exit code 0)")
 			}

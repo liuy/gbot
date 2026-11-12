@@ -440,8 +440,23 @@ export function unwrapQueuedReminder(text: string): string | null {
 const JOB_COMMAND_REMINDER_PREFIX = '<system-reminder>\nA background command completed:\n'
 const JOB_AGENT_REMINDER_PREFIX = '<system-reminder>\nA background agent completed a job:\n'
 const REMINDER_SUFFIX = '\n</system-reminder>'
+const CRON_REMINDER_PREFIX = '<system-reminder>\nA scheduled cron task fired:\n'
 const MESSAGE_DELIVERY_PREFIX = '<message from="'
 const MESSAGE_DELIVERY_SUFFIX = '</message>'
+
+// Byte-mirror of pkg/utils BuildCronReminderEnvelope — the live origin branch
+// in chat.ts re-wraps a bare fired prompt into this shape so the shared
+// content sniff renders the Reminder row on every path (live echo, streaming
+// block, committed message).
+export function cronReminderEnvelope(prompt: string): string {
+  return CRON_REMINDER_PREFIX + prompt + REMINDER_SUFFIX
+}
+
+// The shared row form for a fired cron prompt — a system-originated scheduled
+// event renders in the Reminder row family, not as user input.
+function cronReminderRow(prompt: string): ReminderRow {
+  return { name: 'Reminder', summary: `scheduled task fired: ${prompt}`, body: prompt }
+}
 
 // Bare <job-notification> envelope: what both producers emit once the outer
 // system-reminder wrap is gone. Mirrors background.go FormatXML's format
@@ -590,6 +605,9 @@ export function classifyReminderMessage(text: string): ReminderRow | null {
     const quote = text.indexOf('"', MESSAGE_DELIVERY_PREFIX.length)
     const from = text.slice(MESSAGE_DELIVERY_PREFIX.length, quote)
     return { name: 'Reminder', summary: `got a message from ${from}`, body: unwrapEnvelopeDisplay(text) ?? text }
+  }
+  if (text.startsWith(CRON_REMINDER_PREFIX) && text.endsWith(REMINDER_SUFFIX)) {
+    return cronReminderRow(text.slice(CRON_REMINDER_PREFIX.length, text.length - REMINDER_SUFFIX.length))
   }
   return null
 }

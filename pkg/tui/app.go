@@ -662,6 +662,34 @@ func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []M
 				}
 			}
 			if hasNonToolResult {
+				// The persisted form of a fired cron prompt: a plain user
+				// message carrying the envelope (the Attachment stub does not
+				// survive the store round-trip). The sniff must precede the
+				// generic envelope arm below, or the body renders as a gray
+				// user line instead of the live row form.
+				if prompt, ok := utils.UnwrapCronReminderEnvelope(utils.FirstTextBlockContent(msg)); ok {
+					if current != nil && len(current.Blocks) > 0 {
+						views = append(views, *current)
+						current = nil
+					}
+					views = append(views, cronFireRow(prompt))
+					continue
+				}
+				// Legacy store rows only (pre-envelope-persistence): a drained
+				// cron fire persisted as an attachment replays in the
+				// reminder-row family — origin outranks the prompt-mode content
+				// shape, matching the live drain (attachmentMsg{Cron})
+				// byte-for-byte via CronFireRowText. Current fires persist the
+				// envelope and render through the sniff arm below.
+				if msg.Attachment != nil && msg.Attachment.Origin != nil &&
+					msg.Attachment.Origin.Kind == types.OriginCron {
+					if current != nil && len(current.Blocks) > 0 {
+						views = append(views, *current)
+						current = nil
+					}
+					views = append(views, cronFireRow(utils.FirstTextBlockContent(msg)))
+					continue
+				}
 				if current != nil && len(current.Blocks) > 0 {
 					views = append(views, *current)
 					current = nil

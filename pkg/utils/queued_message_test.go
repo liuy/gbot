@@ -24,6 +24,59 @@ func TestUnwrapQueuedReminder(t *testing.T) {
 	}
 }
 
+// TestBuildCronReminderEnvelope pins the wui-side cron envelope byte-for-byte
+// against the engine's persisted form (buildReminderContent + wrapOriginText's
+// cron arm — the same bytes pkg/engine's StrandedFire integration test pins).
+// The wui live echo and history replay rebuild this shape from the attachment
+// stub's bare prompt so the client's content sniffer renders the same
+// Reminder row live and on replay.
+func TestBuildCronReminderEnvelope(t *testing.T) {
+	got := BuildCronReminderEnvelope("check the time")
+	want := "<system-reminder>\nA scheduled cron task fired:\ncheck the time\n</system-reminder>"
+	if got != want {
+		t.Errorf("BuildCronReminderEnvelope = %q, want %q", got, want)
+	}
+	// Create-time validation rejects empty prompts, but legacy store rows
+	// predating it may still carry one — the envelope builder must not drop
+	// them (the render guards stay dead-but-harmless for exactly this data).
+	if got := BuildCronReminderEnvelope(""); got != "<system-reminder>\nA scheduled cron task fired:\n\n</system-reminder>" {
+		t.Errorf("BuildCronReminderEnvelope(\"\") = %q, want the empty-prompt envelope", got)
+	}
+}
+
+// TestUnwrapCronReminderEnvelope: the persisted idle-fire row is a plain user
+// message carrying the envelope, so the TUI replay row and the rewind filter
+// need the same unwrap/predicate pair the queued-message and job envelopes
+// have — matching only the exact envelope bytes.
+func TestUnwrapCronReminderEnvelope(t *testing.T) {
+	got, ok := UnwrapCronReminderEnvelope(BuildCronReminderEnvelope("drink water"))
+	if !ok {
+		t.Fatal("cron envelope not recognized")
+	}
+	if got != "drink water" {
+		t.Errorf("unwrapped = %q, want %q", got, "drink water")
+	}
+	for _, text := range []string{
+		"",
+		"plain user text",
+		"drink water",
+		// Sibling envelopes must not cross-match.
+		"<system-reminder>\nThe user sent a new message while you were working:\nhi" +
+			"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.\n</system-reminder>",
+		"<system-reminder>\nA background agent completed a job:\ndone\n</system-reminder>",
+		// Partial shapes: head without suffix, suffix without head.
+		"<system-reminder>\nA scheduled cron task fired:\nno suffix",
+		"A scheduled cron task fired:\nno head\n</system-reminder>",
+		// The injectTimestamp API form must not match — only the exact
+		// envelope does (same discipline as the queued-message unwrapper).
+		"[2026-11-11 22:06:13 CST] " + BuildCronReminderEnvelope("drink water"),
+	} {
+		if _, ok := UnwrapCronReminderEnvelope(text); ok {
+			t.Errorf("UnwrapCronReminderEnvelope(%q) matched, want no match", text)
+		}
+	}
+}
+
 func TestUnwrapQueuedReminder_NonMatches(t *testing.T) {
 	nonMatches := []string{
 		"",

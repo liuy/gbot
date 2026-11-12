@@ -35,6 +35,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // TestHandle_QueryStart serializes a query_start event through Handle and
@@ -2108,11 +2109,135 @@ func TestUpdateStreamStateAttachmentEcho(t *testing.T) {
 		t.Fatalf("fallback echo block = %+v, want user block with text FALLBACK", ssF.blocks)
 	}
 
+	// Cron-origin prompt fires echo the reminder ENVELOPE, never the bare
+	// prompt: origin outranks mode, and the client's row classifier is a
+	// content sniffer — the block must carry the exact envelope the mid-turn
+	// persist path produces so live and takeover rows agree.
+	ssCr := mkSS()
+	updateStreamState(ssCr, types.QueryEvent{Type: types.EventAttachment, Message: mkMsg(&types.Attachment{
+		Mode: types.ItemModePrompt, Prompt: "drink water",
+		Origin: &types.MessageOrigin{Kind: types.OriginCron},
+	}, "drink water")})
+	wantEnv := utils.BuildCronReminderEnvelope("drink water")
+	if len(ssCr.blocks) != 1 || ssCr.blocks[0].Kind != "user" || ssCr.blocks[0].Text != wantEnv {
+		t.Fatalf("cron echo block = %+v, want user block with the cron envelope %q", ssCr.blocks, wantEnv)
+	}
+
+	// A NON-cron origin keeps the bare-prompt echo — the wrap is cron-only.
+	ssHuman := mkSS()
+	updateStreamState(ssHuman, types.QueryEvent{Type: types.EventAttachment, Message: mkMsg(&types.Attachment{
+		Mode: types.ItemModePrompt, Prompt: "queued mid-stream",
+		Origin: &types.MessageOrigin{Kind: types.OriginHuman},
+	}, "queued mid-stream")})
+	if len(ssHuman.blocks) != 1 || ssHuman.blocks[0].Text != "queued mid-stream" {
+		t.Fatalf("human-origin echo block = %+v, want the bare prompt", ssHuman.blocks)
+	}
+
+	// An empty-prompt fire echoes nothing (no envelope of empty content) —
+	// matching its history replay, which stays unwrapped.
+	ssEmpty := mkSS()
+	updateStreamState(ssEmpty, types.QueryEvent{Type: types.EventAttachment, Message: mkMsg(&types.Attachment{
+		Mode: types.ItemModePrompt, Prompt: "",
+		Origin: &types.MessageOrigin{Kind: types.OriginCron},
+	}, "")})
+	if len(ssEmpty.blocks) != 0 {
+		t.Fatalf("empty-prompt cron echo = %+v, want no block", ssEmpty.blocks)
+	}
+
 	// No attachment: multiple text blocks concatenate in order.
 	ssC := mkSS()
 	updateStreamState(ssC, types.QueryEvent{Type: types.EventAttachment, Message: mkMsg(nil, "A", "B")})
 	if len(ssC.blocks) != 1 || ssC.blocks[0].Text != "AB" {
 		t.Fatalf("concat echo block = %+v, want user block with text AB", ssC.blocks)
+	}
+}
+
+// TestBuildHistoryChatMsg_CronFireEnvelopeWrap: the in-memory attachment
+// message of an idle cron fire carries the bare prompt; history replay wraps
+// it into the reminder envelope so the client's content sniffer renders the
+// same Reminder row the live echo produced — wui live == wui replay.
+func TestBuildHistoryChatMsg_CronFireEnvelopeWrap(t *testing.T) {
+	c := newTestConnector(t)
+
+	m := types.Message{
+		ID:          "cron-1",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Timestamp:   fixedTimestamp,
+		Content:     []types.ContentBlock{types.NewTextBlock("drink water")},
+		Attachment: &types.Attachment{
+			Mode:   types.ItemModePrompt,
+			Prompt: "drink water",
+			Origin: &types.MessageOrigin{Kind: types.OriginCron},
+		},
+	}
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
+	wantEnv := utils.BuildCronReminderEnvelope("drink water")
+	if hm.Text != wantEnv {
+		t.Errorf("Text = %q, want the cron envelope %q", hm.Text, wantEnv)
+	}
+	if len(hm.Blocks) != 1 || hm.Blocks[0].Kind != "text" || hm.Blocks[0].Text != wantEnv {
+		t.Errorf("Blocks = %+v, want one text block carrying the cron envelope", hm.Blocks)
+	}
+
+	// Non-cron prompt attachments keep the bare-prompt replay (user bubble) —
+	// both the origin-less stub and a NON-cron origin: the wrap is cron-only.
+	for name, att := range map[string]*types.Attachment{
+		"no origin":    {Mode: types.ItemModePrompt, Prompt: "drink water"},
+		"human origin": {Mode: types.ItemModePrompt, Prompt: "drink water", Origin: &types.MessageOrigin{Kind: types.OriginHuman}},
+	} {
+		plain := m
+		plain.Attachment = att
+		phm := c.buildHistoryChatMsg(plain, nil, nil, nil)
+		if phm.Text != "drink water" {
+			t.Errorf("%s Text = %q, want bare %q (only cron origin wraps)", name, phm.Text, "drink water")
+		}
+		if len(phm.Blocks) != 1 || phm.Blocks[0].Text != "drink water" {
+			t.Errorf("%s Blocks = %+v, want the bare text block", name, phm.Blocks)
+		}
+	}
+
+	// Empty/whitespace prompts stay unwrapped: the block loop drops them, and
+	// a wrapped-but-blockless envelope would strand hm.Text as a raw bubble.
+	empty := m
+	empty.Content = []types.ContentBlock{types.NewTextBlock("")}
+	ehm := c.buildHistoryChatMsg(empty, nil, nil, nil)
+	if ehm.Text != "" || len(ehm.Blocks) != 0 {
+		t.Errorf("empty-prompt cron replay = text:%q blocks:%d, want nothing", ehm.Text, len(ehm.Blocks))
+	}
+	ws := m
+	ws.Content = []types.ContentBlock{types.NewTextBlock("  ")}
+	whm := c.buildHistoryChatMsg(ws, nil, nil, nil)
+	if strings.Contains(whm.Text, "<system-reminder>") || len(whm.Blocks) != 0 {
+		t.Errorf("whitespace-prompt cron replay = text:%q blocks:%d, want no envelope leak", whm.Text, len(whm.Blocks))
+	}
+}
+
+// TestBuildHistoryChatMsg_CronEnvelopePassthrough: the idle fire's persisted
+// form is a plain user message already carrying the envelope (no Attachment
+// stub survives the store round-trip). Replay must pass those bytes through
+// verbatim — the client's content sniffer renders the Reminder row, and any
+// re-wrap here would double the envelope.
+func TestBuildHistoryChatMsg_CronEnvelopePassthrough(t *testing.T) {
+	c := newTestConnector(t)
+
+	envelope := utils.BuildCronReminderEnvelope("drink water")
+	m := types.Message{
+		ID:          "cron-persisted-1",
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeUser,
+		Timestamp:   fixedTimestamp,
+		Content:     []types.ContentBlock{types.NewTextBlock(envelope)},
+	}
+	hm := c.buildHistoryChatMsg(m, nil, nil, nil)
+	if hm.Text != envelope {
+		t.Errorf("Text = %q, want the envelope verbatim %q", hm.Text, envelope)
+	}
+	if len(hm.Blocks) != 1 || hm.Blocks[0].Kind != "text" || hm.Blocks[0].Text != envelope {
+		t.Errorf("Blocks = %+v, want one text block carrying the envelope once", hm.Blocks)
+	}
+	if strings.Count(hm.Text, "A scheduled cron task fired") != 1 {
+		t.Errorf("Text carries %d cron heads, want exactly 1 (double-wrap)", strings.Count(hm.Text, "A scheduled cron task fired"))
 	}
 }
 

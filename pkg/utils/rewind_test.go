@@ -404,6 +404,20 @@ func TestIsSelectableUserMessage_TagInMiddleOfText(t *testing.T) {
 	}
 }
 
+// A persisted cron fire is a system-originated scheduled event riding the
+// cron envelope — never a rewind target, exactly like the job envelopes above.
+func TestIsSelectableUserMessage_CronFireEnvelope(t *testing.T) {
+	t.Parallel()
+	msg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(
+			BuildCronReminderEnvelope("drink water"))},
+	}
+	if IsSelectableUserMessage(msg) {
+		t.Error("persisted cron fire envelope is selectable for rewind, want false — it is not user input")
+	}
+}
+
 // Falsifiability: the job-envelope cases below carry NO <job-notification>
 // tag — a plain-text body — so the legacy Contains guard cannot reject them;
 // only the IsInjectedReminderEnvelope/IsMessageDeliveryEnvelope predicates

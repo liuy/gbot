@@ -163,6 +163,15 @@ func TestEnvelopeDisplayText(t *testing.T) {
 				"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.",
 			true,
 		},
+		{
+			// Mid-turn persisted cron fire: the cron envelope matches none of
+			// the job/message heads, so the generic arm strips the tags and
+			// leaves the prefix line visible.
+			"cron fire envelope strips tags, keeps prefix",
+			"<system-reminder>\nA scheduled cron task fired:\ndrink water\n</system-reminder>",
+			"A scheduled cron task fired:\ndrink water",
+			true,
+		},
 		// Negatives — ok=false.
 		{"legacy wrapped job envelope", bashJobEnvelope, "", false},
 		{"plain text", "hello world", "", false},

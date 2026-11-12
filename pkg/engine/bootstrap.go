@@ -14,11 +14,13 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/project"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/computer"
+	cronpkg "github.com/liuy/gbot/pkg/tool/cron"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
@@ -83,15 +85,27 @@ type ToolRefs struct {
 	REPL    *repl.REPLTool
 	JobReg  *job.MultiRegistry
 	Message *message.MessageTool
+	// Cron is this engine's cron scheduler Manager. nil when disabled
+	// (WithoutCron option or GBOT_DISABLE_CRON).
+	Cron *cronpkg.Manager
 }
 
 // createToolsOpts carries CreateTools option state.
 type createToolsOpts struct {
-	root *ToolRefs
+	root        *ToolRefs
+	withoutCron bool
 }
 
 // CreateToolsOption customizes CreateTools.
 type CreateToolsOption func(*createToolsOpts)
+
+// WithoutCron suppresses the Cron tool and its scheduler Manager. Used by the
+// dream engine, which is materialized eagerly at daemon boot and must not
+// steal the per-project scheduler lock or fire durable prompts into the
+// dream system prompt.
+func WithoutCron() CreateToolsOption {
+	return func(o *createToolsOpts) { o.withoutCron = true }
+}
 
 // WithSessionRootRefs binds the created toolset's Bash and Job tools to a
 // session root's registries. A sidechain engine's own registries die with it,
@@ -154,6 +168,14 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 	}
 	reg.MustRegister(job.NewJob(toolJobReg))
 
+	// Cron scheduler: per-engine Manager over the projectspace of the working
+	// dir (Manager/Store/Lock take the dir verbatim — no slug logic here).
+	var cronMgr *cronpkg.Manager
+	if !ctOpts.withoutCron && cronpkg.Enabled() {
+		cronMgr = cronpkg.NewManager(project.Dir(deps.WorkingDir))
+		reg.MustRegister(cronpkg.New(cronMgr))
+	}
+
 	// message: registered unconditionally — the ToolPrompts harvest (reload,
 	// boot) runs CreateTools with nil resolver deps and still needs the tool
 	// text; delivery degrades to "unknown target" until real deps arrive.
@@ -198,7 +220,7 @@ func CreateTools(deps SharedDeps, taskList *task.List, opts ...CreateToolsOption
 		reg.MustRegister(recall.New(deps.ShortStore, long.GetMemoryPath(deps.WorkingDir)))
 	}
 
-	return ToolRefs{Reg: reg, Bash: bt, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg, Message: msgTool}
+	return ToolRefs{Reg: reg, Bash: bt, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg, Message: msgTool, Cron: cronMgr}
 }
 
 // WireEngine wires notification callbacks and injects the engine into tools.
@@ -287,6 +309,22 @@ func WireEngine(eng *Engine, refs ToolRefs, mcpReg *mcp.Registry) {
 		emitJob := JobEventEmitter(eng)
 		refs.BashReg.OnJobEvent = emitJob
 		refs.Agent.Registry().SetOnJobEvent(emitJob)
+
+		// Cron scheduler lifecycle: the engine is the fire sink. Sub-agent
+		// engines get a sessionOnly Manager (CC-teammate parity: session
+		// crons fire on their own ticker, no lock, no file store); root
+		// engines auto-start when durable tasks exist (CC hasCronTasksSync).
+		// Boot-order note: a fire landing between WireEngine and
+		// SetSystemPrompt strands in the queue until the first query drains
+		// it — harmless (nothing lost).
+		if refs.Cron != nil {
+			refs.Cron.SetSink(eng)
+			if eng.isSubagent {
+				refs.Cron.SetSessionOnly()
+			} else {
+				refs.Cron.StartIfTasksExist()
+			}
+		}
 	}
 
 	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).

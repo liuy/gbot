@@ -160,6 +160,17 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			return nil
 		}
 		att := evt.Message.Attachment
+		// Origin outranks mode: a fired cron prompt is a system-originated
+		// scheduled event, not user input, so it renders as the reminder-row
+		// family (job/message notification rows) even though the item drains
+		// in prompt mode.
+		if att.Origin != nil && att.Origin.Kind == types.OriginCron {
+			return attachmentMsg{
+				Cron:    true,
+				Preview: att.Prompt,
+				Agent:   evt.Agent,
+			}
+		}
 		if att.Mode == types.ItemModePrompt {
 			return attachmentMsg{
 				UserText:   att.Prompt,

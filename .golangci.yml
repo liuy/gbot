@@ -26,6 +26,12 @@ linters:
       # Deferred Close is best-effort — not checking its error is standard Go practice.
       - linters: [errcheck]
         source: "defer .+\\.Close\\(\\)"
+      # Cron tool validation errors are byte-exact ports of Claude Code's
+      # CronCreateTool messages — trailing periods and initial capitals
+      # included (they are model-facing text, not Go-internal errors).
+      - linters: [staticcheck]
+        path: pkg/tool/cron/cron\.go
+        text: "ST1005"
       # Tests legitimately use partial struct literals — only checking fields
       # relevant to each test is the point, not exhaustiveness.
       - linters: [exhaustruct_v5]

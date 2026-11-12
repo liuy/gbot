@@ -1192,6 +1192,92 @@ func TestConvertEventToMsg_Attachment_PromptMode(t *testing.T) {
 	}
 }
 
+// A fired cron prompt (prompt mode + cron origin) renders as the reminder-row
+// family, not the user-interjection form: origin outranks mode because a fire
+// is a system-originated scheduled event, not user input.
+func TestConvertEventToMsg_Attachment_PromptMode_CronOrigin(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModePrompt,
+				Prompt:     "drink water",
+				SourceUUID: "cron-uuid",
+				Origin:     &types.MessageOrigin{Kind: types.OriginCron},
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if !am.Cron {
+		t.Error("Cron = false, want true — the cron-origin branch must claim the row form")
+	}
+	if am.Preview != "drink water" {
+		t.Errorf("Preview = %q, want %q", am.Preview, "drink water")
+	}
+	if am.UserText != "" {
+		t.Errorf("UserText = %q, want empty — a cron fire must not render as a user interjection", am.UserText)
+	}
+	if am.JobID != "" || am.From != "" {
+		t.Errorf("cron fire carried job/delivery fields: JobID=%q From=%q, want both empty", am.JobID, am.From)
+	}
+
+	// The stub's Agent rides along like every other attachment form.
+	agent := &types.AgentMeta{ParentToolUseID: "toolu_9"}
+	msg = h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventAttachment,
+		Agent: agent,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:   types.ItemModePrompt,
+				Prompt: "drink water",
+				Origin: &types.MessageOrigin{Kind: types.OriginCron},
+			},
+		},
+	})
+	am, ok = msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.Agent != agent {
+		t.Errorf("Agent = %v, want the event's agent meta carried on the cron row", am.Agent)
+	}
+}
+
+// A NON-cron origin on a prompt-mode attachment keeps the interjection form:
+// only OriginCron claims the reminder row, so a human-origin prompt queued
+// mid-stream still renders as user input.
+func TestConvertEventToMsg_Attachment_PromptMode_NonCronOrigin(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModePrompt,
+				Prompt:     "queued mid-stream",
+				SourceUUID: "u1",
+				Origin:     &types.MessageOrigin{Kind: types.OriginHuman},
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.Cron {
+		t.Error("Cron = true for an OriginHuman prompt — the row form must be cron-only")
+	}
+	if am.UserText != "queued mid-stream" {
+		t.Errorf("UserText = %q, want the interjection text", am.UserText)
+	}
+	if am.SourceUUID != "u1" {
+		t.Errorf("SourceUUID = %q, want u1", am.SourceUUID)
+	}
+}
+
 func TestConvertEventToMsg_Attachment_WithAgent(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{

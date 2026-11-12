@@ -31,6 +31,10 @@ const (
 	jobNotificationHead   = "<job-notification>\n"
 	jobNotificationSuffix = "</job-notification>"
 	jobStallJoint         = "</job-notification>\nLast output:"
+
+	// The cron fire head: wrapOriginText's OriginCron arm. Byte-pinned by
+	// pkg/engine's StrandedFire integration test.
+	cronReminderPrefix = "<system-reminder>\nA scheduled cron task fired:\n"
 )
 
 // UnwrapQueuedReminder extracts the original user text from a
@@ -131,6 +135,33 @@ func IsMessageDeliveryEnvelope(text string) bool {
 		}
 	}
 	return !strings.Contains(text, "<system-reminder>")
+}
+
+// BuildCronReminderEnvelope rebuilds a fired cron prompt's persisted envelope
+// from the attachment stub's bare prompt. The wui live echo and history replay
+// serialize this form because the client's reminder-row classifier sniffs
+// content — it has no Origin access — and the idle fire's engine message
+// carries the bare prompt until API assembly wraps it.
+func BuildCronReminderEnvelope(prompt string) string {
+	return cronReminderPrefix + prompt + reminderSuffix
+}
+
+// UnwrapCronReminderEnvelope extracts the fired prompt from a persisted cron
+// fire row. The idle fire stores the envelope bytes as a plain user message
+// (no Attachment survives the store round-trip), so the TUI replay row and the
+// rewind filter claim these rows by content, exactly like the queued-message
+// and job envelope pairs. ok is false for anything else — including the
+// timestamp-prefixed API form — so only exact envelopes match.
+func UnwrapCronReminderEnvelope(text string) (prompt string, ok bool) {
+	inner, hasPrefix := strings.CutPrefix(text, cronReminderPrefix)
+	if !hasPrefix {
+		return "", false
+	}
+	prompt, hasSuffix := strings.CutSuffix(inner, reminderSuffix)
+	if !hasSuffix {
+		return "", false
+	}
+	return prompt, true
 }
 
 // MessageDeliverySender extracts the sender id from a message-delivery

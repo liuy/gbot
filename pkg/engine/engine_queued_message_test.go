@@ -990,6 +990,7 @@ func TestIsUserQueuedMessageOrigin(t *testing.T) {
 	}{
 		{nil, true},
 		{&types.MessageOrigin{Kind: types.OriginHuman}, true},
+		{&types.MessageOrigin{Kind: types.OriginCron}, true},
 		{&types.MessageOrigin{Kind: types.OriginJob}, false},
 		{&types.MessageOrigin{Kind: types.OriginJobCommand}, false},
 		{&types.MessageOrigin{Kind: types.OriginMessage}, false},

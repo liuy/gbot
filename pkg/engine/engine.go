@@ -774,13 +774,25 @@ func (e *Engine) appendQueuedReminderMessage(item types.QueuedItem) {
 
 // appendDrainedItem appends ONE drained item in its channel's form and
 // returns the attachment message it produced (prompt mode only, nil
-// otherwise — reminder events fire inside appendQueuedReminderMessage, prompt
-// events stay at the call sites). Shared by the turn-boundary drain and
-// processAttachments so the two cannot drift. All four ItemModes are covered
-// by the two branches: prompt goes through createAttachmentMessages below;
-// job, message and notification persist in their own final form.
+// otherwise — reminder events fire inside appendQueuedReminderMessage, and
+// cron-origin prompt items fire inside appendQueuedUserMessage, which also
+// persists their envelope; human-origin prompt events stay at the call
+// sites). Shared by the turn-boundary drain and processAttachments so the
+// two cannot drift. All four ItemModes are covered by the branches: prompt
+// goes through createAttachmentMessages below (unless cron-origin); job,
+// message and notification persist in their own final form.
 func (e *Engine) appendDrainedItem(item types.QueuedItem) *types.Message {
 	if item.Mode == types.ItemModePrompt {
+		// Cron fires are system-originated, not user input: they take the
+		// queued-message final form (appendQueuedUserMessage — the same
+		// construction the stranded-fire path uses), so the store keeps the
+		// envelope bytes and a reload replays the fire as the reminder row
+		// instead of a plain user bubble. The attachment row's prompt-mode
+		// persist would strip the envelope and store the bare prompt.
+		if item.Origin != nil && item.Origin.Kind == types.OriginCron {
+			e.appendQueuedUserMessage(item)
+			return nil
+		}
 		msgs := e.createAttachmentMessages([]types.QueuedItem{item})
 		if len(msgs) == 0 {
 			return nil
@@ -1192,6 +1204,15 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	WireEngine(subEng, subRefs, e.sharedDeps.McpReg)
 
+	// The sub's cron Manager (sessionOnly) starts when the sub creates a
+	// session task and must die with the run. Stop via subRefs — NOT
+	// subEng.toolRefs, which aliases THIS engine's refs: stopping the alias
+	// would kill the session's scheduler. Stop is idempotent; no-op when the
+	// sub never started it.
+	if subRefs.Cron != nil {
+		defer subRefs.Cron.Stop()
+	}
+
 	// Root-table routing: the sub's Agent tool is re-pointed at THIS engine's
 	// table, so every background spawn by this sub — at any depth — lands in
 	// the session root's table at spawn time and resolves through the root
@@ -1481,8 +1502,8 @@ func (e *Engine) processAttachments(ctx context.Context, token uint64, systemPro
 	// runTurns, keeping committed turns in buildHistory.
 	e.snapshotQueryStart()
 	for i := range pendingItems {
-		// nil return = reminder item (job/message): the event already fired
-		// inside appendQueuedReminderMessage.
+		// nil return = reminder item (job/message) or cron-origin prompt
+		// (envelope-persisted): the event already fired inside the append* helper.
 		if m := e.appendDrainedItem(pendingItems[i]); m != nil {
 			attMsgs = append(attMsgs, *m)
 		}
@@ -1545,6 +1566,8 @@ func wrapOriginText(raw string, origin *types.MessageOrigin) string {
 		return raw
 	case origin != nil && origin.Kind == types.OriginJob:
 		return "A background agent completed a job:\n" + raw
+	case origin != nil && origin.Kind == types.OriginCron:
+		return "A scheduled cron task fired:\n" + raw
 	default:
 		return "The user sent a new message while you were working:\n" + raw +
 			"\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it."
@@ -2545,8 +2568,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// See types.QueuePriority for full drain timing documentation.
 		if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
 			for i := range drainedItems {
-				// nil return = reminder item (job/message): the event already
-				// fired inside appendQueuedReminderMessage.
+				// nil return = reminder item (job/message) or cron-origin
+				// prompt (envelope-persisted): the event already fired inside
+				// the append* helper.
 				if m := e.appendDrainedItem(drainedItems[i]); m != nil {
 					e.emitEvent(types.QueryEvent{
 						Type:    types.EventAttachment,
@@ -4471,6 +4495,15 @@ func (e *Engine) Close() {
 		// The waiter goroutine stays parked until the stuck work finishes —
 		// bounded by how many Closes time out, accepted trade-off.
 		e.logger.Warn("engine:close_join_timeout", "session", e.sessionID, "cap", closeJoinTimeout)
+	}
+
+	// Stop the cron scheduler and release the durable lock. The !isSubagent
+	// guard is load-bearing: sub-engines alias the parent's toolRefs
+	// (NewSubEngine), and the session-notes extractor closes a sub-engine
+	// mid-session — an unguarded stop would kill the parent's scheduler and
+	// silently release the lock.
+	if e.toolRefs.Cron != nil && !e.isSubagent {
+		e.toolRefs.Cron.Stop()
 	}
 
 	if e.onCloseFn != nil {

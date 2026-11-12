@@ -202,6 +202,51 @@ describe('injected reminder history rendering', () => {
     expect(document.body.textContent).not.toContain('<system-reminder>')
   })
 
+  it('cron fire envelope renders a Reminder row (origin-based, not mode-based)', () => {
+    const CRON_ENVELOPE =
+      '<system-reminder>\nA scheduled cron task fired:\ndrink water\n</system-reminder>'
+    mountHistory(CRON_ENVELOPE)
+    // A cron fire is a system-originated scheduled event: the same row family
+    // as job completions, never a user bubble or a body-only gray line.
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(rows[0].dataset.toolName).toBe('Reminder')
+    expect(summaryTextOfRow(rows[0])).toBe(' (scheduled task fired: drink water)')
+    clickRowHeader(rows[0])
+    expect(document.body.textContent).toContain('drink water')
+    expect(bubbleSpans().some(s => s.textContent?.includes('<system-reminder>'))).toBe(false)
+  })
+
+  it('live: a cron-origin prompt attachment inserts the same Reminder row', () => {
+    // The idle fire's engine event carries the BARE prompt (content + stub);
+    // the row comes from the origin, not from sniffable envelope content.
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvent({ type: 'query_start' })
+    dispatchEvent({
+      type: 'attachment',
+      message: {
+        role: 'user',
+        timestamp: '2026-10-13T13:43:05Z',
+        content: [{ type: 'text', text: 'drink water' }],
+        attachment: {
+          prompt: 'drink water',
+          source_uuid: 'cron-1',
+          mode: 'prompt',
+          origin: { kind: 'cron' },
+        },
+      },
+    })
+    const rows = reminderRows()
+    expect(rows.length).toBe(1)
+    expect(rows[0].dataset.toolName).toBe('Reminder')
+    expect(summaryTextOfRow(rows[0])).toBe(' (scheduled task fired: drink water)')
+    clickRowHeader(rows[0])
+    expect(document.body.textContent).toContain('drink water')
+    // Not the interjection form: no gray user-echo bubble carries the prompt.
+    expect(bubbleSpans().some(s => s.textContent === 'drink water')).toBe(false)
+  })
+
   it('R5 positives: every real sender shape renders a Reminder row', () => {
     for (const sender of ['main', 'e2', 'agent-3', 'fork-2', 'azAZ09._-']) {
       mountHistory(`<message from="${sender}">\nhi\n</message>`)

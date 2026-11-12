@@ -82,6 +82,11 @@ func IsSelectableUserMessage(msg types.Message) bool {
 	if IsInjectedReminderEnvelope(text) || IsMessageDeliveryEnvelope(text) {
 		return false
 	}
+	// Persisted cron fires are system-originated scheduled events, not user
+	// input — same rewind treatment as the job envelopes above.
+	if _, ok := UnwrapCronReminderEnvelope(text); ok {
+		return false
+	}
 	nonUserTags := []string{
 		"<local-command-stdout>", "<local-command-stderr>",
 		"<bash-stdout>", "<bash-stderr>",

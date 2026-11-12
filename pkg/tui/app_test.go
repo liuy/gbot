@@ -29,6 +29,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/bash"
 	taskpkg "github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -559,6 +560,38 @@ func TestApp_Attachment_MessageDeliveryNotification(t *testing.T) {
 	}
 	if text := m.Blocks[0].Text; !strings.Contains(text, "got a message from main") {
 		t.Errorf("Text = %q, want to contain %q", text, "got a message from main")
+	}
+}
+
+// TestApp_Attachment_CronFireNotification: a fired cron prompt renders the
+// reminder-row family (dot + label), never the user-interjection form — the
+// live counterpart of TestEngineMessagesToViews_CronFireRendersReminderRow.
+// Both assert the same row literal so live and replay cannot drift apart.
+func TestApp_Attachment_CronFireNotification(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	model, _ := app.Update(attachmentMsg{Cron: true, Preview: "drink water"})
+	a := model.(*App)
+
+	if len(a.repl.messages) != 2 {
+		t.Fatalf("expected 2 messages (assistant + cron row), got %d", len(a.repl.messages))
+	}
+	m := a.repl.messages[1]
+	if m.Role != "notification" {
+		t.Errorf("Role = %q, want %q", m.Role, "notification")
+	}
+	if len(m.Blocks) != 1 || m.Blocks[0].Type != BlockText {
+		t.Fatalf("expected 1 text block, got %v", m.Blocks)
+	}
+	if want := styleDotSuccess.Render("●") + " scheduled task fired: drink water"; m.Blocks[0].Text != want {
+		t.Errorf("Text = %q, want exactly %q", m.Blocks[0].Text, want)
+	}
+	if strings.Contains(m.Blocks[0].Text, "(exit code") {
+		t.Errorf("Text = %q — the exit-code trim is job-only and must not touch cron rows", m.Blocks[0].Text)
 	}
 }
 
@@ -9438,6 +9471,176 @@ func TestEngineMessagesToViews_EnvelopesRenderAsGrayUserLines(t *testing.T) {
 	// Cold start: empty history replays as empty views.
 	if got := engineMessagesToViews(nil, nil); len(got) != 0 {
 		t.Errorf("empty history = %d views, want 0", len(got))
+	}
+}
+
+// TestEngineMessagesToViews_CronFireRendersReminderRow: an attachment message
+// with a cron origin replays as the reminder-row family (the same row the live
+// drain builds — TestApp_Attachment_CronFireNotification), never as a user
+// bubble. Covers the in-memory engine list (rewind, re-attach, switch-while-
+// running) where the MessageTypeAttachment form with its Origin stub survives.
+func TestEngineMessagesToViews_CronFireRendersReminderRow(t *testing.T) {
+	cronMsg := types.Message{
+		Role: types.RoleUser, MessageType: types.MessageTypeAttachment,
+		Content:    []types.ContentBlock{types.NewTextBlock("drink water")},
+		Attachment: &types.Attachment{Mode: types.ItemModePrompt, Prompt: "drink water", Origin: &types.MessageOrigin{Kind: types.OriginCron}},
+		Timestamp:  time.Unix(5000, 0),
+	}
+	wantRow := styleDotSuccess.Render("●") + " scheduled task fired: drink water"
+
+	// Sequence 1 — the cron row mid-conversation: the accumulated assistant
+	// view MUST flush at the row boundary (same flush the generic user branch
+	// runs), or the answer turns merge across the row and the row drifts to
+	// the front of the conversation.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("go")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("first answer")}},
+		cronMsg,
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hydration noted")}},
+	}
+	views := engineMessagesToViews(msgs, nil)
+	wantRoles := []string{"user", "assistant", "notification", "assistant"}
+	if len(views) != len(wantRoles) {
+		t.Fatalf("view count = %d, want %d (%v) — a missing flush merges the assistant turns", len(views), len(wantRoles), wantRoles)
+	}
+	for i, want := range wantRoles {
+		if views[i].Role != want {
+			t.Errorf("view[%d] role = %q, want %q", i, views[i].Role, want)
+		}
+	}
+	if views[1].Blocks[0].Text != "first answer" {
+		t.Errorf("view[1] text = %q, want the pre-row assistant turn kept whole", views[1].Blocks[0].Text)
+	}
+	if views[2].Blocks[0].Type != BlockText || views[2].Blocks[0].Text != wantRow {
+		t.Errorf("view[2] = %+v, want exactly the live cron row %q", views[2].Blocks[0], wantRow)
+	}
+	if views[3].Blocks[0].Text != "hydration noted" {
+		t.Errorf("view[3] text = %q, want the post-row answer as its own turn", views[3].Blocks[0].Text)
+	}
+
+	// Sequence 2 — a whitespace-only assistant ahead of the row leaves the
+	// accumulator with ZERO blocks: nothing to flush, and no empty view may
+	// appear ahead of the row.
+	views = engineMessagesToViews([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("   ")}},
+		cronMsg,
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hydration noted")}},
+	}, nil)
+	if len(views) != 2 {
+		t.Fatalf("view count = %d, want 2 (row + answer) — an empty accumulator must not flush a phantom view", len(views))
+	}
+	if views[0].Role != "notification" || views[0].Blocks[0].Text != wantRow {
+		t.Errorf("view[0] = %+v, want the cron row first", views[0])
+	}
+	if views[1].Role != "assistant" || views[1].Blocks[0].Text != "hydration noted" {
+		t.Errorf("view[1] = %+v, want the trailing answer", views[1])
+	}
+
+	// A NON-cron origin keeps the plain user-bubble replay — the row is
+	// cron-only, matching the handler's origin branch.
+	human := cronMsg
+	human.Attachment = &types.Attachment{Mode: types.ItemModePrompt, Prompt: "drink water", Origin: &types.MessageOrigin{Kind: types.OriginHuman}}
+	views = engineMessagesToViews([]types.Message{human}, nil)
+	if len(views) != 1 || views[0].Role != "user" || views[0].Blocks[0].Type != BlockText || views[0].Blocks[0].Text != "drink water" {
+		t.Errorf("human-origin views = %+v, want a plain user bubble", views)
+	}
+
+	// The row as the very first view: nothing accumulated to flush, and the
+	// accumulator must stay untouched (no phantom empty view).
+	views = engineMessagesToViews([]types.Message{cronMsg}, nil)
+	if len(views) != 1 || views[0].Role != "notification" || views[0].Blocks[0].Text != wantRow {
+		t.Errorf("cron-first views = %+v, want exactly one row view", views)
+	}
+
+	// An origin-less prompt attachment (the mid-stream interjection form)
+	// keeps the user-bubble replay — the guard must not assume Origin.
+	noOrigin := cronMsg
+	noOrigin.Attachment = &types.Attachment{Mode: types.ItemModePrompt, Prompt: "drink water"}
+	views = engineMessagesToViews([]types.Message{noOrigin}, nil)
+	if len(views) != 1 || views[0].Role != "user" || views[0].Blocks[0].Text != "drink water" {
+		t.Errorf("origin-less views = %+v, want a plain user bubble", views)
+	}
+}
+
+// TestEngineMessagesToViews_CronFirePersistedEnvelopeRow: the idle fire's
+// persisted form is a plain user message carrying the reminder envelope (no
+// Attachment stub survives the store round-trip). Replay must render the same
+// notification row the live drain builds — byte-identical via
+// CronFireRowText — never the envelope body as a gray user line.
+func TestEngineMessagesToViews_CronFirePersistedEnvelopeRow(t *testing.T) {
+	persisted := types.Message{
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeUser,
+		Content:     []types.ContentBlock{types.NewTextBlock(utils.BuildCronReminderEnvelope("drink water"))},
+		Timestamp:   time.Unix(5000, 0),
+	}
+	wantRow := styleDotSuccess.Render("●") + " scheduled task fired: drink water"
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("go")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("first answer")}},
+		persisted,
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hydration noted")}},
+	}
+	views := engineMessagesToViews(msgs, nil)
+	wantRoles := []string{"user", "assistant", "notification", "assistant"}
+	if len(views) != len(wantRoles) {
+		t.Fatalf("view count = %d, want %d (%v)", len(views), len(wantRoles), wantRoles)
+	}
+	for i, want := range wantRoles {
+		if views[i].Role != want {
+			t.Errorf("view[%d] role = %q, want %q", i, views[i].Role, want)
+		}
+	}
+	if views[2].Blocks[0].Type != BlockText || views[2].Blocks[0].Text != wantRow {
+		t.Errorf("view[2] = %+v, want exactly the live cron row %q", views[2].Blocks[0], wantRow)
+	}
+	if strings.Contains(views[2].Blocks[0].Text, "<system-reminder>") {
+		t.Error("the raw envelope leaked into the replay row")
+	}
+	// The post-row answer must be its OWN view holding only its own block —
+	// a flush that fails to clear the accumulator would prepend the pre-row
+	// answer's text to it.
+	if len(views[3].Blocks) != 1 || views[3].Blocks[0].Text != "hydration noted" {
+		t.Errorf("view[3] = %+v, want exactly one block %q", views[3].Blocks, "hydration noted")
+	}
+
+	// A whitespace-only assistant ahead of the row leaves the accumulator
+	// with ZERO blocks: nothing to flush, and no empty view may appear ahead
+	// of the row.
+	views = engineMessagesToViews([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("   ")}},
+		persisted,
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hydration noted")}},
+	}, nil)
+	if len(views) != 2 {
+		t.Fatalf("view count = %d, want 2 (row + answer) — an empty accumulator must not flush a phantom view", len(views))
+	}
+	if views[0].Role != "notification" || views[0].Blocks[0].Text != wantRow {
+		t.Errorf("view[0] = %+v, want the cron row first", views[0])
+	}
+	if views[1].Role != "assistant" || views[1].Blocks[0].Text != "hydration noted" {
+		t.Errorf("view[1] = %+v, want the trailing answer", views[1])
+	}
+
+	// The row as the very first message: nothing accumulated to flush, and
+	// the accumulator must stay untouched (no phantom empty view).
+	views = engineMessagesToViews([]types.Message{persisted}, nil)
+	if len(views) != 1 || views[0].Role != "notification" || views[0].Blocks[0].Text != wantRow {
+		t.Errorf("cron-first views = %+v, want exactly one row view", views)
+	}
+
+	// Near-miss envelopes stay user bubbles: only the exact cron envelope
+	// head+suffix claims the notification row.
+	sibling := types.Message{
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeUser,
+		Content: []types.ContentBlock{types.NewTextBlock(
+			"<system-reminder>\nsome other reminder:\ndrink water\n</system-reminder>")},
+	}
+	views = engineMessagesToViews([]types.Message{sibling}, nil)
+	if len(views) != 1 || views[0].Role != "user" {
+		t.Errorf("sibling-envelope views = %+v, want a plain user view", views)
 	}
 }
 

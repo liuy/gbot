@@ -118,6 +118,17 @@ func TestWrapOriginText_NilOrigin(t *testing.T) {
 	}
 }
 
+func TestWrapOriginText_CronOrigin(t *testing.T) {
+	got := wrapOriginText("drink water", &types.MessageOrigin{Kind: types.OriginCron})
+	want := "A scheduled cron task fired:\ndrink water"
+	if got != want {
+		t.Errorf("wrapOriginText(cron) = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "The user sent a new message") {
+		t.Error("wrapOriginText(cron) hit the default user-插话 arm — the cron case must precede it")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // normalizeAttachmentForAPI tests
 // ---------------------------------------------------------------------------
