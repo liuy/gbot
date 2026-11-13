@@ -527,3 +527,58 @@ describe('page fetch: late-frame seq sorting (V22)', () => {
     expect(occurrences('w2')).toBe(1)
   })
 })
+
+describe('page fetch: cached page0 carries no seq watermark (V23)', () => {
+  it('cache-hit after a daemon restart still streams (2026-11-13: first send after switch silent)', () => {
+    mount()
+    // 旧进程盖的页：seq 水位是大数。hasMore:false 防止 prefetch 干扰请求数断言。
+    bootPaged({}, { nextCursor: '', hasMore: false, seq: 5000 }, 'restart-incident')
+    // daemon 重启（同构建 → wuiHash 不变 → tab 不刷新，缓存存活）；同 engine/session/rev
+    // 命中缓存。pin 住命中路径：不得发出新的 history_request。
+    const reqs = historyRequests().length
+    sendMetadata({ rev: 'r1' }, 'restart-incident')
+    expect(historyRequests().length).toBe(reqs)
+    expect(occurrences('hello-a')).toBe(1) // 缓存内容照常重放
+
+    // 新进程 seq 从 ~0 重新编号：第一发的每一帧都在旧水位之下，必须照常 streaming。
+    dispatch({ type: 'event', seq: 4, event: { type: 'query_start' } })
+    dispatch({ type: 'event', seq: 3, event: { type: 'turn_start' } })
+    expect(bodyText()).toContain('STOP') // streaming 状态已上弦（用户症状的判据）
+    dispatch({ type: 'event', seq: 2, event: { type: 'text_start' } })
+    dispatch({ type: 'event', seq: 1, event: { type: 'text_delta', text: 'streams after restart' } })
+    dispatch({ type: 'event', seq: 5, event: { type: 'query_end' } })
+    expect(occurrences('streams after restart')).toBe(1)
+  })
+
+  it('healing path: rev bump misses the cache; the fresh-page watermark still drops absorbed frames', () => {
+    mount()
+    bootPaged({}, { nextCursor: '', hasMore: false, seq: 5000 }, 'restart-heal')
+    // 第一发已提交 → rev 变化 → 二次切换重新拉页（事故中的"切回来就好了"）。
+    sendMetadata({ rev: 'r2' }, 'restart-heal')
+    const n = lastHistoryRequestNonce()
+    sendPage({ rev: 'r2', messages: [], nextCursor: '', hasMore: false, seq: 10 }, n)
+    // 新鲜页面的吸收规则原样保留：seq ≤ 水位丢弃，> 水位放行。
+    dispatch({ type: 'event', seq: 9, event: { type: 'text_delta', text: 'absorbed' } })
+    expect(occurrences('absorbed')).toBe(0)
+    dispatch({ type: 'event', seq: 11, event: { type: 'query_start' } })
+    dispatch({ type: 'event', seq: 12, event: { type: 'turn_start' } })
+    dispatch({ type: 'event', seq: 13, event: { type: 'text_delta', text: 'healed' } })
+    expect(occurrences('healed')).toBe(1)
+  })
+
+  it('reconnect after a daemon restart still streams: resetAllState must drop the stale watermark', () => {
+    mount()
+    bootPaged({}, { nextCursor: '', hasMore: false, seq: 5000 }, 'restart-reconnect')
+    // Daemon 重启 → ws 重连派发 bare connect_status（chat.test.ts:3830 同款用法）。
+    // 该路径的 resetAllState 之后没有任何 applyPage0——残留水位只能由 reset 自己清。
+    dispatch({ type: 'connect_status', connected: true })
+    // 新进程的帧全在旧水位之下，必须照常 streaming。
+    dispatch({ type: 'event', seq: 4, event: { type: 'query_start' } })
+    dispatch({ type: 'event', seq: 3, event: { type: 'turn_start' } })
+    expect(bodyText()).toContain('STOP')
+    dispatch({ type: 'event', seq: 2, event: { type: 'text_start' } })
+    dispatch({ type: 'event', seq: 1, event: { type: 'text_delta', text: 'streams after reconnect' } })
+    dispatch({ type: 'event', seq: 5, event: { type: 'query_end' } })
+    expect(occurrences('streams after reconnect')).toBe(1)
+  })
+})

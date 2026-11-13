@@ -558,13 +558,16 @@ function buildTimeDivider(label: string): HTMLElement {
 // metadata frame whose rev matches the cached entry re-applies the page
 // without a server round trip. Module level so it survives createChat
 // re-invocations in one page session, mirroring persistedMessages.
+// No seq: the entry is validated by rev (content), and seq is a
+// process-local watermark — caching it would let a restarted daemon (seq
+// renumbered from zero) have every frame swallowed by the old process's
+// watermark (2026-11-13 incident).
 type Page0Entry = {
   rev: string
   messages: HistoryChatMsg[]
   stream?: Block[]
   nextCursor: string
   hasMore: boolean
-  seq: number
 }
 
 const page0Cache = new Map<string, Page0Entry>()
@@ -1261,6 +1264,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     // expectedHistoryNonce is deliberately NOT reset (see its declaration).
     pendingEvents = []
     pendingPageZero = false
+    // The watermark marks the absorption point of a page served by this
+    // process (0 = none); a reset view has no such page, and a leftover
+    // value may belong to a pre-restart process — it would silently
+    // swallow every frame of a new query.
+    appliedPageSeq = 0
     isNearBottom = true
     lastScrollHeight = 0
     inputHistory.load([])
@@ -2766,7 +2774,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
             stream: cached.stream,
             nextCursor: cached.nextCursor,
             hasMore: cached.hasMore,
-            seq: cached.seq,
           })
         } else {
           pendingPageZero = true
@@ -2943,7 +2950,6 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
               stream: msg.stream,
               nextCursor: msg.nextCursor,
               hasMore: msg.hasMore,
-              seq: msg.seq ?? 0,
             })
             if (page0Cache.size > PAGE0_CACHE_MAX) {
               page0Cache.delete(page0Cache.keys().next().value as string)
