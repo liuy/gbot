@@ -1743,6 +1743,13 @@ func (a *App) popAllQueuedToInput() bool {
 // readEvents reads the next event from TUIHandler.appCh.
 // This is called as a tea.Cmd.
 func (a *App) readEvents() tea.Cmd {
+	// Snapshot idleStop here, on the Update goroutine. The closure below runs
+	// concurrently with later Updates, and every submit path close-and-replaces
+	// a.idleStop there — an unsynchronised write racing this field's read in the
+	// select (-race caught it on the second submit after an idle pump re-armed).
+	// Binding the pump to the idleStop generation that created it is also the
+	// intent: closing that generation aborts that pump.
+	stop := a.idleStop
 	return func() tea.Msg {
 		if a.tuiHandler == nil {
 			return queryEndMsg{}
@@ -1753,7 +1760,7 @@ func (a *App) readEvents() tea.Cmd {
 				return queryEndMsg{}
 			}
 			return msg
-		case <-a.idleStop:
+		case <-stop:
 			return idleAbortedMsg{}
 		}
 	}

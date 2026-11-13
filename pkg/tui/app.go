@@ -1189,7 +1189,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// All REPL messages are handled by repl.go
 	case textStartMsg, textDeltaMsg, textEndMsg, toolRunMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
-		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
+		queryEndMsg, turnStartMsg, turnEndMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		attachmentMsg, idleAbortedMsg,
 		infoMsg, submitMsg, spinnerTickMsg, bgTickMsg,
@@ -1202,6 +1202,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reloadDoneMsg:
 		return a, a.handleReloadDone(m)
 	default:
+		// A msg reaching here from appCh means its type is missing from the
+		// list above — and since readEvents is a one-shot pump re-armed only
+		// by the listed handlers, this nil-cmd return kills the pump with it
+		// (2026-11 stuck-streaming incident: turnEndMsg fell through here and
+		// the following queryEndMsg was never read). New engine event types
+		// must be added to the list, not handled here.
 		// Bubble Tea internal messages (e.g. printLineMessage from
 		// tea.Println) are handled by the renderer; suppress WARN for them.
 		if !isInternalTeaMsg(msg) {
