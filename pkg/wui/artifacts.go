@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -248,9 +249,15 @@ func serveArtifactGzipped(w http.ResponseWriter, r *http.Request, f *os.File, st
 	w.Header().Set("Last-Modified", st.ModTime().UTC().Format(http.TimeFormat))
 	w.Header().Set("Content-Encoding", "gzip")
 	if w.Header().Get("Content-Type") == "" {
-		// Compressed bytes cannot be sniffed; without the explicit model
-		// map there is nothing better to report.
-		w.Header().Set("Content-Type", "application/octet-stream")
+		// Compressed bytes cannot be sniffed, but the filename still knows
+		// its type: mirror ServeContent's extension lookup so a >1MiB HTML
+		// artifact previews as text/html instead of downloading as
+		// octet-stream. Unknown extensions keep the octet-stream fallback.
+		ct := mime.TypeByExtension(filepath.Ext(st.Name()))
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ct)
 	}
 
 	var hit bool

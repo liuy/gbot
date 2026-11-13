@@ -585,3 +585,27 @@ func statArtifact(t *testing.T, dir, name string) os.FileInfo {
 	}
 	return fi
 }
+
+func TestArtifactGzipHTMLContentType(t *testing.T) {
+	dir := t.TempDir()
+	content := "<!doctype html><html><body>" + strings.Repeat("<p>resume</p>\n", 100000) + "</body></html>"
+	writeArtifactFile(t, dir, "big.html", content)
+	srv := newArtifactTestServer(t, dir)
+
+	status, h, body, _ := probeArtifact(t, srv.URL+"/artifacts/big.html", "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip (payload above the size threshold)", got)
+	}
+	// octet-stream here is exactly the bug that turns an iframe preview
+	// into a WebView download; Go's mime table pins text/* to charset=utf-8,
+	// so the exact value is deterministic.
+	if ct := h.Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+	if plain := gunzipAll(t, body); !bytes.Equal(plain, []byte(content)) {
+		t.Errorf("gunzipped body = %d bytes, want the exact file content (%d)", len(plain), len(content))
+	}
+}

@@ -880,12 +880,17 @@ func TestArtifactGzipSizeFloor(t *testing.T) {
 }
 
 // TestArtifactGzipEligibleText serves a >1MiB text artifact: the
-// eligibility sniff must let plain text through and the octet-stream
-// Content-Type fallback must be applied on the compressed representation.
+// eligibility sniff must let plain text through, and the compressed
+// representation must carry the extension-resolved type (the identity path
+// sniffs the same file to text/plain, so both encodings must agree). A
+// second, extensionless payload pins the octet-stream fallback for names
+// mime cannot resolve.
 func TestArtifactGzipEligibleText(t *testing.T) {
 	dir := t.TempDir()
 	content := strings.Repeat("wui-gzip-text-payload\n", 80000) // > 1.5 MiB
 	writeArtifactFile(t, dir, "big.txt", content)
+	noext := strings.Repeat("wui-gzip-noext-payload\n", 80000) // > 1.5 MiB
+	writeArtifactFile(t, dir, "noext", noext)
 	srv := newArtifactTestServer(t, dir)
 
 	status, h, body, contentLength := probeArtifact(t, srv.URL+"/artifacts/big.txt", "gzip", nil)
@@ -895,14 +900,25 @@ func TestArtifactGzipEligibleText(t *testing.T) {
 	if got := h.Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip for compressible text over the floor", got)
 	}
-	if got := h.Get("Content-Type"); got != "application/octet-stream" {
-		t.Errorf("Content-Type = %q, want the explicit octet-stream fallback", got)
+	if got := h.Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8 (mime.TypeByExtension)", got)
 	}
 	if contentLength != int64(len(body)) {
 		t.Errorf("ContentLength = %d, want %d (exact compressed size on the wire)", contentLength, len(body))
 	}
 	if plain := gunzipAll(t, body); string(plain) != content {
 		t.Errorf("gunzipped body = %d bytes, want the exact content (%d)", len(plain), len(content))
+	}
+
+	status, h, _, _ = probeArtifact(t, srv.URL+"/artifacts/noext", "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("noext status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("noext Content-Encoding = %q, want gzip", got)
+	}
+	if got := h.Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("noext Content-Type = %q, want the octet-stream fallback (no extension to resolve)", got)
 	}
 }
 
