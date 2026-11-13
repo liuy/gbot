@@ -1,8 +1,16 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestResolvePrimary(t *testing.T) {
@@ -43,6 +51,70 @@ func TestResolvePrimary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "p2") {
 		t.Errorf("error must name the missing provider, got: %v", err)
+	}
+}
+
+// TestCreateAllProviders_InputModalitiesWiring drives one end-to-end request
+// through a provider built from settings-shaped model declarations: a model
+// declaring image input must see its tool-result image on the wire.
+func TestCreateAllProviders_InputModalitiesWiring(t *testing.T) {
+	var lastBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		lastBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"c","model":"glm-5.3-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Providers: []Provider{{
+		Name: "zhipu", URL: srv.URL, Keys: []string{"k"},
+		Type: ProviderTypeOpenAI,
+		Models: NewModelsFromMap(map[string]ModelConfig{
+			"glm-5.3-flash": {Input: []string{"text", "image"}},
+		}),
+	}}}
+	pm, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	resp, err := pm["zhipu"].Complete(t.Context(), &llm.Request{
+		Model:     "glm-5.3-flash",
+		MaxTokens: 16,
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "c1", Name: "Read", Input: json.RawMessage(`{}`)},
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolResult, ToolUseID: "c1", Content: json.RawMessage(`[{"type":"text","text":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QQ"}}]`)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Content) == 0 || resp.Content[0].Text != "ok" {
+		t.Errorf("response content = %+v, want text %q", resp.Content, "ok")
+	}
+
+	var root struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(lastBody, &root); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(root.Messages) != 3 || root.Messages[2].Role != "user" {
+		t.Fatalf("messages = %+v, want assistant+tool+trailing user image message", root.Messages)
+	}
+	if !strings.Contains(string(lastBody), `"image_url"`) {
+		t.Error("declared-vision model request carries no image_url, want the tool-result image on the wire")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1562,18 +1563,25 @@ func TestTranslateMessages_ToolResultWithImage(t *testing.T) {
 	if result[1].Role != "user" {
 		t.Errorf("result[1].role = %q, want %q", result[1].Role, "user")
 	}
-	images, ok := result[1].Content.([]openaiImageURL)
+	arr, ok := result[1].Content.([]any)
 	if !ok {
-		t.Fatalf("result[1].content type = %T, want []openaiImageURL", result[1].Content)
+		t.Fatalf("result[1].content type = %T, want []any", result[1].Content)
 	}
-	if len(images) != 1 {
-		t.Fatalf("len(images) = %d, want 1", len(images))
+	if len(arr) != 2 {
+		t.Fatalf("len(arr) = %d, want 2 (prefix text + image)", len(arr))
 	}
-	if images[0].Type != "image_url" {
-		t.Errorf("images[0].type = %q, want %q", images[0].Type, "image_url")
+	if prefix, ok := arr[0].(openaiTextContent); !ok || prefix.Text != "Attached image(s) from tool result:" {
+		t.Errorf("arr[0] = %+v, want prefix text", arr[0])
 	}
-	if !strings.HasPrefix(images[0].ImageURL.URL, "data:image/png;base64,") {
-		t.Errorf("images[0].url prefix = %q, want data:image/png;base64,", images[0].ImageURL.URL[:40])
+	img, ok := arr[1].(openaiImageURL)
+	if !ok {
+		t.Fatalf("arr[1] type = %T, want openaiImageURL", arr[1])
+	}
+	if img.Type != "image_url" {
+		t.Errorf("image type = %q, want %q", img.Type, "image_url")
+	}
+	if !strings.HasPrefix(img.ImageURL.URL, "data:image/png;base64,") {
+		t.Errorf("url prefix = %q, want data:image/png;base64,", img.ImageURL.URL[:40])
 	}
 }
 
@@ -1608,19 +1616,133 @@ func TestTranslateMessages_ToolResultImageOnly(t *testing.T) {
 	if result[0].ToolCallID != "call_img2" {
 		t.Errorf("result[0].tool_call_id = %q, want %q", result[0].ToolCallID, "call_img2")
 	}
+	if result[0].Content != "(see attached image)" {
+		t.Errorf("result[0].content = %q, want placeholder %q", result[0].Content, "(see attached image)")
+	}
 
 	if result[1].Role != "user" {
 		t.Errorf("result[1].role = %q, want %q", result[1].Role, "user")
 	}
-	images, ok := result[1].Content.([]openaiImageURL)
+	arr, ok := result[1].Content.([]any)
 	if !ok {
-		t.Fatalf("result[1].content type = %T, want []openaiImageURL", result[1].Content)
+		t.Fatalf("result[1].content type = %T, want []any", result[1].Content)
 	}
-	if len(images) != 1 {
-		t.Fatalf("len(images) = %d, want 1", len(images))
+	if len(arr) != 2 {
+		t.Fatalf("len(arr) = %d, want 2 (prefix text + image)", len(arr))
 	}
-	if images[0].Type != "image_url" {
-		t.Errorf("images[0].type = %q, want %q", images[0].Type, "image_url")
+	if img, ok := arr[1].(openaiImageURL); !ok || img.Type != "image_url" {
+		t.Errorf("arr[1] = %+v, want image_url", arr[1])
+	}
+}
+
+// TestTranslateMessages_ToolResultImageAfterToolRun pins the wire shape that
+// strict tool-adjacency endpoints (DeepSeek) require: every tool message of
+// the turn is emitted in tool_use order, and only AFTER the full run does one
+// user message carry all collected images (prefix text + image_url blocks).
+func TestTranslateMessages_ToolResultImageAfterToolRun(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "call_read", Name: "Read", Input: json.RawMessage(`{"path":"icon.png"}`)},
+				{Type: types.ContentTypeToolUse, ID: "call_bash", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			},
+		},
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_read",
+					Content: json.RawMessage(`[
+						{"type":"text","text":"Image read OK"},
+						{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+					]`),
+				},
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_bash",
+					Content:   json.RawMessage(`[{"type":"text","text":"file1"}]`),
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 4 {
+		t.Fatalf("len(result) = %d, want 4 (assistant + tool + tool + user)", len(result))
+	}
+	if result[0].Role != "assistant" || len(result[0].ToolCalls) != 2 ||
+		result[0].ToolCalls[0].ID != "call_read" || result[0].ToolCalls[1].ID != "call_bash" {
+		t.Errorf("result[0] = %+v, want assistant with call_read+call_bash", result[0])
+	}
+	if result[1].Role != "tool" || result[1].ToolCallID != "call_read" || result[1].Content != "Image read OK" {
+		t.Errorf("result[1] = %+v, want tool call_read", result[1])
+	}
+	if result[2].Role != "tool" || result[2].ToolCallID != "call_bash" || result[2].Content != "file1" {
+		t.Errorf("result[2] = %+v, want tool call_bash", result[2])
+	}
+	if result[3].Role != "user" {
+		t.Fatalf("result[3].role = %q, want user (all images after the tool run)", result[3].Role)
+	}
+	arr, ok := result[3].Content.([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("result[3].content = %T (%v), want []any with prefix text + 1 image", result[3].Content, result[3].Content)
+	}
+	prefix, ok := arr[0].(openaiTextContent)
+	if !ok || prefix.Type != "text" || prefix.Text != "Attached image(s) from tool result:" {
+		t.Errorf("arr[0] = %+v, want prefix text %q", arr[0], "Attached image(s) from tool result:")
+	}
+	img, ok := arr[1].(openaiImageURL)
+	if !ok || img.Type != "image_url" || img.ImageURL.URL != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Errorf("arr[1] = %+v, want image_url data URL", arr[1])
+	}
+}
+
+// TestTranslateMessages_ToolResultImageOnlyPlaceholder: a tool result with
+// only images still emits its tool message, with omp's placeholder text
+// standing in for the image payload.
+func TestTranslateMessages_ToolResultImageOnlyPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "call_img3",
+					Content: json.RawMessage(`[
+						{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc123"}}
+					]`),
+				},
+			},
+		},
+	}
+
+	result := translateMessages(msgs)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2 (tool + user)", len(result))
+	}
+	if result[0].Role != "tool" || result[0].ToolCallID != "call_img3" {
+		t.Errorf("result[0] = %+v, want tool call_img3", result[0])
+	}
+	if result[0].Content != "(see attached image)" {
+		t.Errorf("result[0].content = %q, want placeholder %q", result[0].Content, "(see attached image)")
+	}
+	if result[1].Role != "user" {
+		t.Fatalf("result[1].role = %q, want user", result[1].Role)
+	}
+	arr, ok := result[1].Content.([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("result[1].content = %T (%v), want []any with prefix + 1 image", result[1].Content, result[1].Content)
+	}
+	if _, ok := arr[1].(openaiImageURL); !ok {
+		t.Errorf("arr[1] = %T, want openaiImageURL", arr[1])
 	}
 }
 
@@ -1658,12 +1780,16 @@ func TestTranslateMessages_ToolResultTextOnlyUnchanged(t *testing.T) {
 }
 
 // TestOpenAITranslateRequest_ToolResultImageURL verifies that a tool_result
-// with image blocks serializes to a tool message + companion user message
-// with image_url in the actual JSON request body.
+// with image blocks serializes to a tool message + trailing user message
+// with image_url in the actual JSON request body (vision-declared model).
 func TestOpenAITranslateRequest_ToolResultImageURL(t *testing.T) {
 	t.Parallel()
 
-	p := newTestProvider()
+	p := NewOpenAIProvider(&OpenAIConfig{
+		APIKey:          "test-key",
+		Model:           "gpt-4",
+		InputModalities: map[string][]string{"gpt-4": {"text", "image"}},
+	})
 
 	req := &Request{
 		Model:     "gpt-4",
@@ -1734,6 +1860,7 @@ func TestOpenAITranslateRequest_ToolResultImageURL(t *testing.T) {
 	}
 	var arr []struct {
 		Type     string `json:"type"`
+		Text     string `json:"text"`
 		ImageURL *struct {
 			URL string `json:"url"`
 		} `json:"image_url"`
@@ -1741,17 +1868,312 @@ func TestOpenAITranslateRequest_ToolResultImageURL(t *testing.T) {
 	if err := json.Unmarshal(msgs[2].Content, &arr); err != nil {
 		t.Fatalf("messages[2].content is not a JSON array: %v", err)
 	}
-	if len(arr) != 1 {
-		t.Fatalf("len(content) = %d, want 1 (image only)", len(arr))
+	if len(arr) != 2 {
+		t.Fatalf("len(content) = %d, want 2 (prefix text + image)", len(arr))
 	}
-	if arr[0].Type != "image_url" {
-		t.Errorf("content[0].type = %q, want %q", arr[0].Type, "image_url")
+	if arr[0].Type != "text" || arr[0].Text != "Attached image(s) from tool result:" {
+		t.Errorf("content[0] = %+v, want prefix text", arr[0])
 	}
-	if arr[0].ImageURL == nil {
-		t.Fatal("content[0].image_url is nil")
+	if arr[1].Type != "image_url" {
+		t.Errorf("content[1].type = %q, want %q", arr[1].Type, "image_url")
 	}
-	if !strings.HasPrefix(arr[0].ImageURL.URL, "data:image/png;base64,") {
-		t.Errorf("image_url.url prefix = %q, want %q", arr[0].ImageURL.URL[:40], "data:image/png;base64,")
+	if arr[1].ImageURL == nil {
+		t.Fatal("content[1].image_url is nil")
+	}
+	if !strings.HasPrefix(arr[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Errorf("image_url.url prefix = %q, want %q", arr[1].ImageURL.URL[:40], "data:image/png;base64,")
+	}
+}
+
+// TestOpenAIVisionSupported: declared image input enables image_url on the
+// wire; text-only declarations and undeclared models (omp's defensive
+// default) do not.
+func TestOpenAIVisionSupported(t *testing.T) {
+	t.Parallel()
+
+	p := NewOpenAIProvider(&OpenAIConfig{
+		APIKey: "k",
+		Model:  "glm-5.3-flash",
+		InputModalities: map[string][]string{
+			"glm-5.3-flash": {"text", "image", "video"},
+			"deepseek-chat": {"text"},
+		},
+	})
+	if !p.visionSupported("glm-5.3-flash") {
+		t.Error("visionSupported(glm-5.3-flash) = false, want true (declares image)")
+	}
+	if p.visionSupported("deepseek-chat") {
+		t.Error("visionSupported(deepseek-chat) = true, want false (text-only)")
+	}
+	if p.visionSupported("undeclared-model") {
+		t.Error("visionSupported(undeclared-model) = true, want false (defensive default)")
+	}
+	bare := NewOpenAIProvider(&OpenAIConfig{APIKey: "k", Model: "m"})
+	if bare.visionSupported("m") {
+		t.Error("visionSupported with no declarations = true, want false")
+	}
+}
+
+// TestOpenAITranslateRequest_VisionGatingToolResultImages: a text-only model
+// (DeepSeek form — models declared without image input) never receives
+// image_url parts; the omission is noted in the tool text. A model declaring
+// image input (GLM form) keeps the image in the trailing user message.
+func TestOpenAITranslateRequest_VisionGatingToolResultImages(t *testing.T) {
+	t.Parallel()
+
+	imageTurn := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "c1", Name: "Read", Input: json.RawMessage(`{"path":"icon.png"}`)},
+			},
+		},
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "c1",
+					Content: json.RawMessage(`[
+						{"type":"text","text":"Image read OK"},
+						{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+					]`),
+				},
+			},
+		},
+	}
+
+	type wireMsg struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCallID string          `json:"tool_call_id"`
+	}
+	decode := func(t *testing.T, body []byte) []wireMsg {
+		t.Helper()
+		var root struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &root); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		var msgs []wireMsg
+		if err := json.Unmarshal(root.Messages, &msgs); err != nil {
+			t.Fatalf("unmarshal messages: %v", err)
+		}
+		return msgs
+	}
+
+	// Text-only model: tool text gains the omission placeholder, and the
+	// request body contains no image_url at all.
+	p := NewOpenAIProvider(&OpenAIConfig{
+		APIKey:          "k",
+		Model:           "deepseek-chat",
+		InputModalities: map[string][]string{"deepseek-chat": {"text"}},
+	})
+	body, err := p.translateRequest(&Request{Model: "deepseek-chat", Messages: imageTurn}, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	msgs := decode(t, body)
+	if len(msgs) != 2 {
+		t.Fatalf("len(messages) = %d, want 2 (assistant + tool, no image user message)", len(msgs))
+	}
+	var toolText string
+	if err := json.Unmarshal(msgs[1].Content, &toolText); err != nil {
+		t.Fatalf("tool content is not a string: %v", err)
+	}
+	want := "Image read OK\n[image omitted: model does not support vision]"
+	if toolText != want {
+		t.Errorf("tool content = %q, want %q", toolText, want)
+	}
+	if strings.Contains(string(body), "image_url") {
+		t.Error("text-only model request contains image_url, want none")
+	}
+
+	// Vision model (GLM form): image survives in the trailing user message.
+	g := NewOpenAIProvider(&OpenAIConfig{
+		APIKey: "k",
+		Model:  "glm-5.3-flash",
+		InputModalities: map[string][]string{
+			"glm-5.3-flash": {"text", "image", "video"},
+		},
+	})
+	body2, err := g.translateRequest(&Request{Model: "glm-5.3-flash", Messages: imageTurn}, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	msgs2 := decode(t, body2)
+	if len(msgs2) != 3 {
+		t.Fatalf("len(messages) = %d, want 3 (assistant + tool + user)", len(msgs2))
+	}
+	if msgs2[2].Role != "user" {
+		t.Errorf("messages[2].role = %q, want user", msgs2[2].Role)
+	}
+	var arr []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	if err := json.Unmarshal(msgs2[2].Content, &arr); err != nil {
+		t.Fatalf("user content is not a JSON array: %v", err)
+	}
+	if len(arr) != 2 || arr[0].Type != "text" || arr[0].Text != "Attached image(s) from tool result:" {
+		t.Fatalf("user content = %+v, want prefix text + image", arr)
+	}
+	if arr[1].Type != "image_url" || arr[1].ImageURL == nil || arr[1].ImageURL.URL != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Errorf("image entry = %+v, want data URL image_url", arr[1])
+	}
+}
+
+// TestOpenAITranslateRequest_VisionGatingUserImages: a user-pasted image must
+// never reach a text-only model as an image_url part (sticky 400); instead the
+// user message keeps its text and gains one trailing omission note (omp
+// parity), even when the message is image-only. A vision model keeps the image.
+func TestOpenAITranslateRequest_VisionGatingUserImages(t *testing.T) {
+	t.Parallel()
+
+	textAndImage := []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{
+		{Type: types.ContentTypeText, Text: "what is in this picture?"},
+		{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}},
+	}}}
+	imageOnly := []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{
+		{Type: types.ContentTypeImage, Source: &types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}},
+	}}}
+
+	type contentPart struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+	}
+	decodeUser := func(t *testing.T, body []byte) []contentPart {
+		t.Helper()
+		var root struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &root); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(root.Messages) != 1 || root.Messages[0].Role != "user" {
+			t.Fatalf("messages = %+v, want exactly one user message", root.Messages)
+		}
+		var parts []contentPart
+		if err := json.Unmarshal(root.Messages[0].Content, &parts); err != nil {
+			t.Fatalf("user content is not a JSON array: %v", err)
+		}
+		return parts
+	}
+
+	// Text-only model (deepseek form): text preserved, image stripped, one
+	// trailing placeholder, and no image_url anywhere in the body.
+	p := NewOpenAIProvider(&OpenAIConfig{
+		APIKey:          "k",
+		Model:           "deepseek-chat",
+		InputModalities: map[string][]string{"deepseek-chat": {"text"}},
+	})
+	body, err := p.translateRequest(&Request{Model: "deepseek-chat", Messages: textAndImage}, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	parts := decodeUser(t, body)
+	want := []contentPart{
+		{Type: "text", Text: "what is in this picture?"},
+		{Type: "text", Text: nonVisionImagePlaceholder},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Errorf("user content = %+v, want text + omission placeholder", parts)
+	}
+	if strings.Contains(string(body), "image_url") {
+		t.Error("text-only model request contains image_url, want none")
+	}
+
+	// Image-only message on a text-only model still ships the placeholder.
+	bodyIO, err := p.translateRequest(&Request{Model: "deepseek-chat", Messages: imageOnly}, false)
+	if err != nil {
+		t.Fatalf("translateRequest(imageOnly) error: %v", err)
+	}
+	partsIO := decodeUser(t, bodyIO)
+	if len(partsIO) != 1 || partsIO[0].Type != "text" || partsIO[0].Text != nonVisionImagePlaceholder {
+		t.Errorf("image-only content = %+v, want single placeholder text part", partsIO)
+	}
+
+	// Capacity covers texts + images + the potential placeholder exactly —
+	// pre-sizing is the only observable this expression has.
+	out := translateMessagesVision(textAndImage, false)
+	arr, ok := out[0].Content.([]any)
+	if !ok {
+		t.Fatalf("content = %T, want []any", out[0].Content)
+	}
+	if cap(arr) != 2 {
+		t.Errorf("text-only cap = %d, want 2 (text + placeholder)", cap(arr))
+	}
+	outV := translateMessagesVision(textAndImage, true)
+	arrV, ok := outV[0].Content.([]any)
+	if !ok {
+		t.Fatalf("vision content = %T, want []any", outV[0].Content)
+	}
+	if cap(arrV) != 3 {
+		t.Errorf("vision cap = %d, want 3 (text + image + placeholder slot)", cap(arrV))
+	}
+
+	// Vision model (GLM form): the image survives as an image_url part and no
+	// placeholder is added.
+	g := NewOpenAIProvider(&OpenAIConfig{
+		APIKey: "k",
+		Model:  "glm-5.3-flash",
+		InputModalities: map[string][]string{
+			"glm-5.3-flash": {"text", "image"},
+		},
+	})
+	body2, err := g.translateRequest(&Request{Model: "glm-5.3-flash", Messages: textAndImage}, false)
+	if err != nil {
+		t.Fatalf("translateRequest() error: %v", err)
+	}
+	parts2 := decodeUser(t, body2)
+	if len(parts2) != 2 || parts2[0].Type != "text" || parts2[0].Text != "what is in this picture?" {
+		t.Fatalf("vision user content = %+v, want text + image", parts2)
+	}
+	if parts2[1].Type != "image_url" || parts2[1].ImageURL == nil || parts2[1].ImageURL.URL != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Errorf("vision image entry = %+v, want data URL image_url", parts2[1])
+	}
+	if strings.Contains(string(body2), nonVisionImagePlaceholder) {
+		t.Error("vision model request contains the omission placeholder, want none")
+	}
+}
+
+// TestTranslateMessagesVision_TextOnlyModelMatrix pins the tool-message text
+// for every result shape on a text-only model: text passes through verbatim,
+// image-only collapses to the omission note, and text+image gains exactly one
+// note regardless of image count — never an image_url part.
+func TestTranslateMessagesVision_TextOnlyModelMatrix(t *testing.T) {
+	t.Parallel()
+
+	tr := func(content string) []types.Message {
+		return []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "t1", Content: json.RawMessage(content)},
+		}}}
+	}
+
+	out := translateMessagesVision(tr(`[{"type":"text","text":"file1"}]`), false)
+	if len(out) != 1 || out[0].Role != "tool" || out[0].Content != "file1" {
+		t.Errorf("text-only result = %+v, want single tool message content %q", out, "file1")
+	}
+
+	out = translateMessagesVision(tr(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QQ"}}]`), false)
+	if len(out) != 1 || out[0].Content != nonVisionImagePlaceholder {
+		t.Errorf("image-only result = %+v, want single tool message with %q", out, nonVisionImagePlaceholder)
+	}
+
+	out = translateMessagesVision(tr(`[{"type":"text","text":"a"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QQ"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Qg"}}]`), false)
+	want := "a\n" + nonVisionImagePlaceholder
+	if len(out) != 1 || out[0].Content != want {
+		t.Errorf("text+2 images = %+v, want %q", out, want)
 	}
 }
 

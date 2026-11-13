@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -35,6 +36,10 @@ type OpenAIProvider struct {
 	baseURL     string
 	model       string
 	extraParams map[string]any
+	// inputModalities maps model → declared input modalities
+	// (settings.json models "input"). Governs whether image_url parts may
+	// reach the wire — see visionSupported.
+	inputModalities map[string][]string
 	// reasoningFallbacks freezes runtime effort-dialect negotiation
 	// conclusions for this instance's lifetime (reasoning_fallback.go).
 	reasoningFallbacks *reasoningFallbackState
@@ -48,6 +53,11 @@ type OpenAIConfig struct {
 	Model       string
 	Timeout     time.Duration
 	ExtraParams map[string]any // Provider-specific params merged into request body (e.g. {"tool_stream": true} for Zhipu GLM)
+	// InputModalities maps model name → declared input modalities
+	// (["text","image","video"], from settings.json provider models).
+	// Models absent from the map are treated as text-only — text-only
+	// endpoints reject image_url with a sticky 400.
+	InputModalities map[string][]string
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -67,8 +77,17 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
 		model:              cfg.Model,
 		extraParams:        cfg.ExtraParams,
+		inputModalities:    cfg.InputModalities,
 		reasoningFallbacks: newReasoningFallbackState(),
 	}
+}
+
+// visionSupported reports whether the model accepts image_url parts on the
+// wire. Only models whose settings declaration includes "image" count;
+// undeclared models default to text-only, mirroring omp's defensive guard
+// (misconfigured descriptors must not leak image_url to text-only endpoints).
+func (p *OpenAIProvider) visionSupported(model string) bool {
+	return slices.Contains(p.inputModalities[model], "image")
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +788,7 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 	}
 
 	// Messages
-	oReq.Messages = append(oReq.Messages, translateMessages(req.Messages)...)
+	oReq.Messages = append(oReq.Messages, translateMessagesVision(req.Messages, p.visionSupported(model))...)
 
 	// Tools
 	if len(req.Tools) > 0 {
@@ -790,8 +809,39 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 	return body, nil
 }
 
+// Wire texts for tool-result image assembly (omp-aligned).
+const (
+	// toolResultImageStandIn fills an image-only tool result — tool messages
+	// cannot carry image_url parts.
+	toolResultImageStandIn = "(see attached image)"
+	// nonVisionImagePlaceholder replaces images stripped for text-only models.
+	nonVisionImagePlaceholder = "[image omitted: model does not support vision]"
+	// toolResultImagePrefixText introduces the trailing user message that
+	// carries a turn's collected tool-result images.
+	toolResultImagePrefixText = "Attached image(s) from tool result:"
+)
+
+// joinTextWithImagePlaceholder appends the non-vision omission note to tool
+// text, so a text-only model still learns that an image existed (omp:
+// joinTextWithImagePlaceholder).
+func joinTextWithImagePlaceholder(text string) string {
+	if text == "" {
+		return nonVisionImagePlaceholder
+	}
+	return text + "\n" + nonVisionImagePlaceholder
+}
+
 // translateMessages converts Anthropic-shaped messages to OpenAI format.
+// Vision is assumed supported — production requests must instead resolve
+// per-model support via translateRequest → translateMessagesVision, since a
+// text-only endpoint rejects image_url with a sticky 400.
 func translateMessages(messages []types.Message) []openaiMessage {
+	return translateMessagesVision(messages, true)
+}
+
+// translateMessagesVision converts Anthropic-shaped messages to OpenAI
+// format, gating image_url parts on the target model's vision support.
+func translateMessagesVision(messages []types.Message, visionSupported bool) []openaiMessage {
 	var result []openaiMessage
 
 	for _, msg := range messages {
@@ -799,12 +849,21 @@ func translateMessages(messages []types.Message) []openaiMessage {
 		var assistantText strings.Builder
 		var assistantReasoning strings.Builder
 		var toolResults []openaiMessage
+		// Images collected from this turn's tool results. Tool messages are
+		// text-only, and strict endpoints (DeepSeek) require tool messages to
+		// immediately follow their tool_calls assistant message — so images
+		// are batched and appended as ONE user message after the whole run.
+		var toolResultImages []openaiImageURL
 		// For user messages: collect text and image content. If the message has
 		// any image blocks, OpenAI vision requires ONE message whose content is
 		// an array of {type:"text"} and {type:"image_url"} blocks rather than a
 		// plain string.
 		var userTextStrings []string
 		var userImages []openaiImageURL
+		// Set when a user image is dropped for a text-only model: one
+		// trailing omission note replaces every stripped image (omp parity —
+		// omittedImages is a bool, not a count).
+		userImagesOmitted := false
 
 		for _, cb := range msg.Content {
 			switch cb.Type {
@@ -817,12 +876,16 @@ func translateMessages(messages []types.Message) []openaiMessage {
 
 			case types.ContentTypeImage:
 				if msg.Role == types.RoleUser && cb.Source != nil {
-					userImages = append(userImages, openaiImageURL{
-						Type: "image_url",
-						ImageURL: openaiImageURLData{
-							URL: "data:" + cb.Source.MediaType + ";base64," + cb.Source.Data,
-						},
-					})
+					if visionSupported {
+						userImages = append(userImages, openaiImageURL{
+							Type: "image_url",
+							ImageURL: openaiImageURLData{
+								URL: "data:" + cb.Source.MediaType + ";base64," + cb.Source.Data,
+							},
+						})
+					} else {
+						userImagesOmitted = true
+					}
 				}
 
 			case types.ContentTypeToolUse:
@@ -836,15 +899,28 @@ func translateMessages(messages []types.Message) []openaiMessage {
 				})
 
 			case types.ContentTypeToolResult:
-				content, imageMessages := extractToolResultContent(cb.Content)
+				text, images := extractToolResultContent(cb.Content)
+				hasImages := len(images) > 0
+				// The tool message itself is always sent: text if present,
+				// a stand-in for image-only results, or the omission note
+				// when images are stripped for a text-only model (omp parity).
+				var content string
+				switch {
+				case hasImages && !visionSupported:
+					content = joinTextWithImagePlaceholder(text)
+				case text != "":
+					content = text
+				case hasImages:
+					content = toolResultImageStandIn
+				}
 				toolResults = append(toolResults, openaiMessage{
 					Role:       "tool",
 					ToolCallID: cb.ToolUseID,
 					Content:    content,
 				})
-				// OpenAI tool messages cannot carry images — surface them in
-				// a companion user message with image_url blocks.
-				toolResults = append(toolResults, imageMessages...)
+				if visionSupported {
+					toolResultImages = append(toolResultImages, images...)
+				}
 
 			case types.ContentTypeThinking:
 				// GLM Preserved Thinking requires the prior turn's reasoning
@@ -886,18 +962,35 @@ func translateMessages(messages []types.Message) []openaiMessage {
 		// that made the tool call, before any subsequent user text.
 		result = append(result, toolResults...)
 
+		// After the whole tool run, one user message carries every collected
+		// image (prefix text + image_url blocks) — never interleaved between
+		// tool messages (omp parity).
+		if len(toolResultImages) > 0 {
+			contentArray := []any{openaiTextContent{Type: "text", Text: toolResultImagePrefixText}}
+			for _, img := range toolResultImages {
+				contentArray = append(contentArray, img)
+			}
+			result = append(result, openaiMessage{Role: "user", Content: contentArray})
+		}
+
 		// Emit user content. With images present, build a single array-content
 		// message (text blocks first, then image blocks); without images, emit
 		// one string-content message per text block to preserve prior behavior.
+		// Images stripped for a text-only model still yield one array message —
+		// text plus a trailing omission note — so the turn is never silently
+		// empty (omp parity).
 		if msg.Role == types.RoleUser {
 			switch {
-			case len(userImages) > 0:
-				contentArray := make([]any, 0, len(userTextStrings)+len(userImages))
+			case len(userImages) > 0 || userImagesOmitted:
+				contentArray := make([]any, 0, len(userTextStrings)+len(userImages)+1)
 				for _, t := range userTextStrings {
 					contentArray = append(contentArray, openaiTextContent{Type: "text", Text: t})
 				}
 				for _, img := range userImages {
 					contentArray = append(contentArray, img)
+				}
+				if userImagesOmitted {
+					contentArray = append(contentArray, openaiTextContent{Type: "text", Text: nonVisionImagePlaceholder})
 				}
 				result = append(result, openaiMessage{Role: "user", Content: contentArray})
 			default:
@@ -956,10 +1049,10 @@ func extractSystemPrompt(raw json.RawMessage) string {
 }
 
 // extractToolResultContent parses tool_result.content (an array of
-// ContentBlocks) and separates text from image blocks. Images cannot be
-// placed in OpenAI tool messages, so they are returned as companion user
-// messages with image_url blocks.
-func extractToolResultContent(raw json.RawMessage) (text string, imageMsgs []openaiMessage) {
+// ContentBlocks) and separates text from image blocks. Tool messages cannot
+// carry images — the caller batches the returned blocks into a trailing user
+// message; sourceless image blocks are skipped without panic.
+func extractToolResultContent(raw json.RawMessage) (text string, images []openaiImageURL) {
 	if len(raw) == 0 {
 		return "", nil
 	}
@@ -978,7 +1071,6 @@ func extractToolResultContent(raw json.RawMessage) (text string, imageMsgs []ope
 	}
 
 	var texts []string
-	var images []openaiImageURL
 	for _, b := range blocks {
 		switch {
 		case b.Text != "":
@@ -992,16 +1084,7 @@ func extractToolResultContent(raw json.RawMessage) (text string, imageMsgs []ope
 			})
 		}
 	}
-
-	var userMsgs []openaiMessage
-	if len(images) > 0 {
-		// OpenAI user messages accept image_url arrays directly.
-		userMsgs = append(userMsgs, openaiMessage{
-			Role:    "user",
-			Content: images,
-		})
-	}
-	return strings.Join(texts, "\n"), userMsgs
+	return strings.Join(texts, "\n"), images
 }
 
 // ---------------------------------------------------------------------------

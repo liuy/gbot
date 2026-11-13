@@ -299,8 +299,9 @@ func TestOpenAITranslateMessages_Shapes(t *testing.T) {
 	}
 }
 
-// Tool-result images are lifted into a companion user message; a sourceless
-// image inside a tool result is skipped without panic.
+// Tool-result images are batched into one trailing user message after the
+// tool run (prefix text + image_url blocks); a sourceless image inside a
+// tool result is skipped without panic.
 func TestOpenAITranslateMessages_ToolResultImages(t *testing.T) {
 	t.Parallel()
 
@@ -309,14 +310,20 @@ func TestOpenAITranslateMessages_ToolResultImages(t *testing.T) {
 	}}}
 	out := translateMessages(msgs)
 	if len(out) != 2 {
-		t.Fatalf("messages = %+v, want tool + companion image message", out)
+		t.Fatalf("messages = %+v, want tool + trailing image message", out)
 	}
 	if out[0].Role != "tool" || out[0].Content != "out" {
 		t.Errorf("tool msg = %+v", out[0])
 	}
-	arr, ok := out[1].Content.([]openaiImageURL)
-	if !ok || len(arr) != 1 || arr[0].ImageURL.URL != "data:image/png;base64,QUJD" {
-		t.Errorf("image companion = %+v", out[1].Content)
+	arr, ok := out[1].Content.([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("image message content = %+v, want prefix + 1 image", out[1].Content)
+	}
+	if prefix, ok := arr[0].(openaiTextContent); !ok || prefix.Text != "Attached image(s) from tool result:" {
+		t.Errorf("prefix = %+v, want omp prefix text", arr[0])
+	}
+	if img, ok := arr[1].(openaiImageURL); !ok || img.ImageURL.URL != "data:image/png;base64,QUJD" {
+		t.Errorf("image = %+v, want data:image/png;base64,QUJD", arr[1])
 	}
 
 	// Empty-text block carrying a source is not an image.

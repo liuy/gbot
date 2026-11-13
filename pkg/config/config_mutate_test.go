@@ -21,6 +21,26 @@ func TestResolveInput_SingleModality(t *testing.T) {
 	}
 }
 
+// InputModalities snapshots every declared model's resolved inputs: explicit
+// declarations pass through and bare models resolve to the text-only default.
+func TestProviderInputModalities(t *testing.T) {
+	t.Parallel()
+	p := &Provider{Models: NewModelsFromMap(map[string]ModelConfig{
+		"glm-5.3-flash": {Input: []string{"text", "image", "video"}},
+		"deepseek-chat": {},
+	})}
+	got := p.InputModalities()
+	if len(got) != 2 {
+		t.Fatalf("len(InputModalities) = %d, want 2", len(got))
+	}
+	if want := []string{"text", "image", "video"}; !reflect.DeepEqual(got["glm-5.3-flash"], want) {
+		t.Errorf("glm-5.3-flash = %v, want %v", got["glm-5.3-flash"], want)
+	}
+	if want := []string{"text"}; !reflect.DeepEqual(got["deepseek-chat"], want) {
+		t.Errorf("deepseek-chat = %v, want %v (text-only default)", got["deepseek-chat"], want)
+	}
+}
+
 // No proxy means the shared default client, not a fresh one.
 func TestProxyHTTPClient_DefaultIdentity(t *testing.T) {
 	t.Parallel()

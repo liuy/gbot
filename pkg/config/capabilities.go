@@ -34,3 +34,13 @@ func (p *Provider) ResolveInput(model string) []string {
 	}
 	return []string{"text"}
 }
+
+// InputModalities returns every declared model's resolved input modalities,
+// for wiring into the LLM wire layer's vision gating.
+func (p *Provider) InputModalities() map[string][]string {
+	out := make(map[string][]string, p.Models.Len())
+	for _, name := range p.ModelNames() {
+		out[name] = p.ResolveInput(name)
+	}
+	return out
+}
