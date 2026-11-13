@@ -7,8 +7,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"time"
 
@@ -32,6 +34,13 @@ func init() {
 }
 
 func main() {
+	// windowsgui swallows panics too — log before the default crash print.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("startup panic", "panic", r, "stack", string(debug.Stack()))
+			panic(r)
+		}
+	}()
 	opts := app.ParseFlags(os.Args[1:])
 
 	// WeChat login subcommand: `gbot wechat login` or `gbot -d wechat login`.
@@ -78,7 +87,7 @@ func main() {
 
 	inst, err := app.Start(opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		slog.Error("startup fatal", "error", err)
 		os.Exit(1)
 	}
 	defer inst.Cleanup()
@@ -92,7 +101,7 @@ func main() {
 
 	if err := inst.RunTUI(); err != nil {
 		inst.Cleanup()
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		slog.Error("startup fatal", "error", err)
 		os.Exit(1)
 	}
 }
