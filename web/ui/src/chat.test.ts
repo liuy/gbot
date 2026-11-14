@@ -5727,6 +5727,8 @@ describe('chat mutation kills: committed history rendering', () => {
     expect(box).toBeTruthy()
     expect(box.textContent).toBe('upload failed')
     expect(box.className).toContain('border-red/40')
+    // The marker routes long-press share to the error's own text.
+    expect(box.dataset.blockKind).toBe('error')
   })
 
   it('an errored history tool renders the red duration style', () => {
@@ -5979,6 +5981,34 @@ describe('chat mutation kills: share source resolution', () => {
     expect(copyText).toHaveBeenCalledWith('queued while busy')
   })
 
+  it('long-press on an error-only box opens copy with the error text', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({ type: 'error', message: 'API error 400: invalid model' })
+    const box = document.querySelector('.text-red.break-all') as HTMLElement
+    expect(box).toBeTruthy()
+    sharePress(box)
+    expect(shareMenu()).toBeTruthy()
+    // Error text is shareable content (bug-report screenshots), not a
+    // copy-only capsule: the menu carries the share-image item too.
+    expect(document.querySelectorAll('.share-menu-item').length).toBe(2)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('API error 400: invalid model')
+  })
+  it('long-press on an error box inside a partial reply copies the error, not the reply', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'text_start' },
+      { type: 'text_delta', text: 'partial answer' },
+    ])
+    dispatch({ type: 'error', message: 'engine blew up' })
+    const box = document.querySelector('.text-red.break-all') as HTMLElement
+    sharePress(box)
+    clickCopy()
+    expect(copyText).toHaveBeenCalledWith('engine blew up')
+  })
   it('text press after an error frame falls back to the DOM text', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

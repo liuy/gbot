@@ -308,7 +308,7 @@ function markedBlockOf(row: HTMLElement, target: HTMLElement): HTMLElement | nul
   let el: HTMLElement | null = target
   while (el && el !== row) {
     const kind = el.dataset.blockKind
-    if ((kind === 'tool' || kind === 'text' || kind === 'user') && !el.closest('[data-tool-children]')) {
+    if ((kind === 'tool' || kind === 'text' || kind === 'user' || kind === 'error') && !el.closest('[data-tool-children]')) {
       return el
     }
     el = el.parentElement
@@ -484,7 +484,7 @@ function renderCommittedMessageDOM(
       }
     }
     if (m.error) {
-      content.appendChild(createNode('div', { className: errorBox(), text: m.error }))
+      content.appendChild(createNode('div', { className: errorBox(), text: m.error, attrs: { 'data-block-kind': 'error' } }))
     }
     return { outer, content, runningTools }
   }
@@ -526,7 +526,7 @@ function renderCommittedMessageDOM(
   }
 
   if (m.error) {
-    content.appendChild(createNode('div', { className: errorBox(), text: m.error }))
+    content.appendChild(createNode('div', { className: errorBox(), text: m.error, attrs: { 'data-block-kind': 'error' } }))
   }
   appendArtifactCards(m.blocks, content)
   return { outer, content, runningTools }
@@ -1512,10 +1512,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       last.error = text
       last.status = 'done'
       last.lastActivityAt = Date.now()
-      last.contentDiv.appendChild(createNode('div', { className: errorBox(), text }))
+      last.contentDiv.appendChild(createNode('div', { className: errorBox(), text, attrs: { 'data-block-kind': 'error' } }))
     } else {
       const { outer, content } = buildShell('assistant')
-      content.appendChild(createNode('div', { className: errorBox(), text }))
+      content.appendChild(createNode('div', { className: errorBox(), text, attrs: { 'data-block-kind': 'error' } }))
       const m: MessageState = {
         id: '',
         role: 'assistant',
