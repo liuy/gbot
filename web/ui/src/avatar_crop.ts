@@ -4,6 +4,7 @@ import { AVATAR_SIDE, encodeCanvas } from './avatar'
 import { createElement, createNode } from './dom'
 import { renderIcon } from './icons'
 import { t } from './i18n'
+import { isImeKeyEvent } from './utils'
 
 // Single active overlay: a second open supersedes the first as canceled —
 // same anti-double-scrim rule as artifact.ts confirmArtifactDownload.
@@ -137,6 +138,7 @@ export function openAvatarCropper(file: File): Promise<Blob | null> {
 
     let settled = false
     const onKey = (e: KeyboardEvent) => {
+      if (isImeKeyEvent(e)) return
       if (e.key === 'Escape') done(null)
     }
     // v2 has no destroy(): disconnectedCallback unbinds the pointer/wheel/

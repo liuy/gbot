@@ -1,7 +1,7 @@
 import type { ArtifactListItem, SessionListItem } from './types'
 import type { RemoteDevice } from './vnc'
 import type { PluginCard } from './plugin_host'
-import { bindLongPress } from './utils'
+import { bindLongPress, isImeKeyEvent } from './utils'
 import { createElement, createNode } from './dom'
 import { createIconButton } from './buttons'
 import { renderIcon, type IconName } from './icons'
@@ -498,6 +498,7 @@ export function createSidebar(opts: { mainContent: HTMLElement }): SidebarHandle
 
     input.addEventListener('blur', commit)
     input.addEventListener('keydown', (e) => {
+      if (isImeKeyEvent(e)) return
       if (e.key === 'Enter') {
         e.preventDefault()
         commit()

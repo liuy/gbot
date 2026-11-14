@@ -4,6 +4,7 @@ import { t, type StaticKey } from './i18n'
 import { renderIcon, type IconName } from './icons'
 import { loadRFB } from './rfb_loader'
 import { testRemoteDevice, type RemoteDevice } from './vnc'
+import { isImeKeyEvent } from './utils'
 
 // Remote-desktop console sheet: noVNC rendered into a bottom-sheet (mobile) /
 // centered card (>=700px) that connects through the server-side WS reverse
@@ -250,6 +251,7 @@ export function createVNCSheet(): VNCSheetHandles {
   const keyboardModeOff = () => chipOff(keyboardBtn)
   // Special keys ride keydown (they never surface as insertText).
   kbdInput.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (isImeKeyEvent(e)) return
     if (!rfb) return
     if (e.key === 'Backspace') {
       rfb.sendKey(0xff08, null, true)

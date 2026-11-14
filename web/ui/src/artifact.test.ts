@@ -1141,6 +1141,25 @@ describe('confirmArtifactDownload', () => {
     expect(await second).toBe(true)
     expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
   })
+
+  // 确认卡不抢焦点：键盘焦点可留在背后的 composer，组合拼音按 Esc 只是
+  // 取消候选词，不该连带关掉下载确认。
+  it('Escape during IME composition does not dismiss the confirm; plain Escape does', async () => {
+    let resolved: boolean | null = null
+    const pending = confirmArtifactDownload('app.apk').then((r) => {
+      resolved = r
+      return r
+    })
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }),
+    )
+    await Promise.resolve()
+    expect(resolved).toBeNull()
+    expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(2)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(await pending).toBe(false)
+    expect(document.querySelectorAll('.share-dl-scrim, .share-dl')).toHaveLength(0)
+  })
 })
 
 describe('collectArtifactWrites name derivation', () => {

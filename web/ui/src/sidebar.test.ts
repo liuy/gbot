@@ -917,6 +917,45 @@ describe('rename flow structure pins', () => {
     expect(span.textContent).toBe('Original')
     vi.useRealTimers()
   })
+
+  // IME 组合期的 Enter/Esc 属于拼音候选框：Enter 是上屏不是提交、Esc 是
+  // 取消候选不是取消整个重命名。
+  it('Enter and Escape during IME composition leave the rename input open', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = '新会话'
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }),
+    )
+    expect(sidebar.root.querySelector('[data-session-row] input')).not.toBeNull()
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true }),
+    )
+    expect(sidebar.root.querySelector('[data-session-row] input')).not.toBeNull()
+    expect(handler).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('plain Enter commits and plain Escape cancels (control for the IME guard)', () => {
+    const { sidebar } = setup()
+    const handler = vi.fn()
+    sidebar.onRename(handler)
+    const input = startRename(sidebar)
+    input.value = '新会话'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith('x1', '新会话')
+    expect(sidebar.root.querySelector('[data-session-row] input')).toBeNull()
+    const input2 = startRename(sidebar)
+    input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(sidebar.root.querySelector('[data-session-row] input')).toBeNull()
+    const span = sidebar.root.querySelector('[data-session-row] span') as HTMLElement
+    expect(span.textContent).toBe('Original')
+    expect(handler).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
 })
 
 describe('sidebar section structure pins', () => {

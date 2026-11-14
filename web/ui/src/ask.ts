@@ -1,6 +1,7 @@
 import type { AskResponsePayload } from './types'
 import { createElement, createNode } from './dom'
 import { createTextButton } from './buttons'
+import { isImeKeyEvent } from './utils'
 
 export interface AskData {
   id: string
@@ -188,6 +189,7 @@ function createInputAsk(
   submitBtn.addEventListener('click', submit)
   cancelBtn.addEventListener('click', cancel)
   input.addEventListener('keydown', (e) => {
+    if (isImeKeyEvent(e)) return
     if (e.key === 'Enter') {
       e.preventDefault()
       submit()

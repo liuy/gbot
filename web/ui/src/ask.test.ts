@@ -237,6 +237,22 @@ describe('createAsk', () => {
     expect(spy).toHaveBeenCalledWith({ text: 'secret', aborted: false })
   })
 
+  // IME 组合期的 Enter 是拼音上屏，不是提交；半拼音提交会泄露到 agent。
+  it('input ask Enter during IME composition does not submit; plain Enter does', () => {
+    const spy = vi.fn()
+    const a = createAsk(
+      { id: '1', kind: 'input', tool_name: 'Bash', prompt: 'q?' },
+      spy,
+    )
+    const input = a.root.querySelector('input') as HTMLInputElement
+    input.value = '你好'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true }))
+    expect(spy).not.toHaveBeenCalled()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith({ text: '你好', aborted: false })
+  })
+
   it('input ask Cancel button sends {aborted:true, timeout:false}', () => {
     const spy = vi.fn()
     const a = createAsk(

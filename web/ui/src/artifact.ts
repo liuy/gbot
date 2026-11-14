@@ -4,6 +4,7 @@ import { createElement } from './dom'
 import { renderIcon } from './icons'
 import { loadModelViewer } from './model_viewer_loader'
 import { t } from './i18n'
+import { isImeKeyEvent } from './utils'
 
 // Tool summaries carry the raw Write/Edit file_path. The current convention
 // is an absolute <projectspace>/artifacts/... path; the relative artifacts/
@@ -601,6 +602,7 @@ export function confirmArtifactDownload(name: string): Promise<boolean> {
     }
     activeConfirm = done
     const onKey = (e: KeyboardEvent) => {
+      if (isImeKeyEvent(e)) return
       if (e.key === 'Escape') done(false)
     }
     document.addEventListener('keydown', onKey)

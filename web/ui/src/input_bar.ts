@@ -1,6 +1,6 @@
 import { t } from './i18n'
 import { formatArtifactSize } from './artifact'
-import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost } from './utils'
+import { createPopupPanel, createAnchoredPopup, positionAnchoredPopup, createPopupHost, isImeKeyEvent } from './utils'
 import { createElement, createNode, cx } from './dom'
 import { renderIcon } from './icons'
 import { createIconButton } from './buttons'
@@ -886,6 +886,7 @@ export function createInputBar(initial: {
   })
   // Esc closes the popup.
   editTextarea.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (isImeKeyEvent(e)) return
     if (e.key === 'Escape') closeEditPopup()
   })
   // Outside-click dismiss — but clicks on another paste chip are exempt: the
@@ -1006,6 +1007,7 @@ export function createInputBar(initial: {
   })
 
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (isImeKeyEvent(e)) return
     // Mobile: Enter inserts newline (browser default). Send via button only.
     // Desktop: Enter sends, Shift+Enter for newline.
     // (pointer: coarse) detects true touch devices; maxTouchPoints misreports

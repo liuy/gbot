@@ -693,6 +693,15 @@ export function countStreamBlocks(blocks: Block[]): number {
   return n
 }
 
+// ── IME composition ────────────────────────────────────────────
+
+// IME 组合期的 keydown 归输入法（选词/上屏），不归页面：Enter 不发送、
+// Esc 不关弹层、方向键不导航。部分 IME 和老 Safari 组合期 keydown 的
+// isComposing 还没置 true、只报 keyCode 229 —— 229 兜底是承重的，不能删。
+export function isImeKeyEvent(e: KeyboardEvent): boolean {
+  return e.isComposing || e.keyCode === 229
+}
+
 export function streamTextChars(blocks: Block[]): number {
   let n = 0
   for (const b of blocks) {

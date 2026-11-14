@@ -740,6 +740,28 @@ describe('createVNCSheet', () => {
     expect(inst.sentKeys).toHaveLength(6)
   })
 
+  // 组合期的 Backspace/Enter 编辑的是本地拼音串，转发会给远程机器每个
+  // 拼音编辑键都注入幽灵按键。
+  it('special keydowns during IME composition are not forwarded; plain CapsLock still is', async () => {
+    const sheet = await openWin11()
+    const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement
+    const inst = instances()[0]
+    inst.sentKeys = []
+    for (const key of ['Enter', 'Backspace', 'CapsLock'] as const) {
+      const ev = new KeyboardEvent('keydown', { key, cancelable: true, isComposing: true })
+      kbd.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(false)
+    }
+    expect(inst.sentKeys).toEqual([])
+    const caps = new KeyboardEvent('keydown', { key: 'CapsLock', cancelable: true })
+    kbd.dispatchEvent(caps)
+    expect(caps.defaultPrevented).toBe(true)
+    expect(inst.sentKeys).toEqual([
+      { keysym: 0xffe5, down: true },
+      { keysym: 0xffe5, down: false },
+    ])
+  })
+
   it('the non-ASCII toast fades back out on its timer', async () => {
     const sheet = await openWin11()
     const kbd = sheet.root.querySelector('[data-vnc-kbd-input]') as HTMLTextAreaElement

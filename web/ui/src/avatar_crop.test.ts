@@ -249,6 +249,19 @@ describe('openAvatarCropper', () => {
     expect(revokeObjectURL).toHaveBeenCalledTimes(1)
   })
 
+  // 浮层的 document 级 Esc 监听看得到任何聚焦可编辑元素的按键——组合期
+  // Esc 恒指"取消候选"，不该关浮层。
+  it('Escape during IME composition keeps the overlay; plain Escape closes it', async () => {
+    const ctx = await openOverlay()
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }),
+    )
+    expect(document.querySelector('[data-avatar-crop-mask]')).not.toBeNull()
+    pressEscape()
+    await expect(ctx.p).resolves.toBeNull()
+    overlayGone()
+  })
+
   it('reopening after close keeps exactly one overlay; a stale Escape is inert', async () => {
     // Teardown contract: every close removes its own keydown listener —
     // without the assertion a leaked listener stays green (settled no-op).

@@ -2188,3 +2188,76 @@ describe('input bar mutation kills: attach panel close on selection and disabled
     expect(visiblePanel()).toBeNull()
   })
 })
+
+// IME 组合期（拼音选词中）的 keydown 属于输入法：Enter 是上屏不是发送、
+// Esc 是取消候选不是停流、方向键是候选导航不是历史。每条组合期用例都带
+// 普通 keydown 的 control，证明守卫没有吞掉非组合按键。
+describe('IME composition guard', () => {
+  const editPopup = () => document.body.querySelector('[data-edit-popup]') as HTMLElement
+  const editTa = () => editPopup().querySelector('textarea') as HTMLTextAreaElement
+
+  function openEditPopup(ib: ReturnType<typeof createInputBar>) {
+    bigPaste(ib.textarea, 'line1\nline2\nline3\nline4')
+    ;(ib.root.querySelector('[data-paste-chip]') as HTMLElement).click()
+  }
+
+  it('composition Enter does not send; the next plain Enter does', () => {
+    const ib = mount()
+    const sendSpy = vi.fn()
+    ib.onSend(sendSpy)
+    ib.textarea.value = '你好'
+    const ev = cancelableKeydown(ib.textarea, 'Enter', { isComposing: true })
+    expect(sendSpy).not.toHaveBeenCalled()
+    expect(ev.defaultPrevented).toBe(false)
+    expect(ib.textarea.value).toBe('你好')
+    cancelableKeydown(ib.textarea, 'Enter')
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    expect(sendSpy).toHaveBeenCalledWith('你好')
+    expect(ib.textarea.value).toBe('')
+  })
+
+  it('keyCode 229 Enter does not send (old Safari reports no isComposing)', () => {
+    const ib = mount()
+    const sendSpy = vi.fn()
+    ib.onSend(sendSpy)
+    ib.textarea.value = '你好'
+    const ev = cancelableKeydown(ib.textarea, 'Enter', { keyCode: 229 })
+    expect(sendSpy).not.toHaveBeenCalled()
+    expect(ev.defaultPrevented).toBe(false)
+    expect(ib.textarea.value).toBe('你好')
+  })
+
+  it('composition Escape while streaming does not stop the stream', () => {
+    const ib = mount()
+    const stopSpy = vi.fn()
+    ib.onStop(stopSpy)
+    ib.setStreaming(true)
+    const ev = cancelableKeydown(ib.textarea, 'Escape', { isComposing: true })
+    expect(stopSpy).not.toHaveBeenCalled()
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  it('composition ArrowUp/ArrowDown do not navigate history', () => {
+    const ib = mount()
+    const upSpy = vi.fn(() => 'old' as string | null)
+    const downSpy = vi.fn(() => 'old' as string | null)
+    ib.onHistoryUp(upSpy)
+    ib.onHistoryDown(downSpy)
+    const up = cancelableKeydown(ib.textarea, 'ArrowUp', { isComposing: true })
+    const down = cancelableKeydown(ib.textarea, 'ArrowDown', { isComposing: true })
+    expect(upSpy).not.toHaveBeenCalled()
+    expect(downSpy).not.toHaveBeenCalled()
+    expect(up.defaultPrevented).toBe(false)
+    expect(down.defaultPrevented).toBe(false)
+  })
+
+  it('composition Escape does not close the paste edit popup; plain Escape does', () => {
+    const ib = mount()
+    openEditPopup(ib)
+    const ev = cancelableKeydown(editTa(), 'Escape', { isComposing: true })
+    expect(editPopup().classList.contains('hidden')).toBe(false)
+    expect(ev.defaultPrevented).toBe(false)
+    cancelableKeydown(editTa(), 'Escape')
+    expect(editPopup().classList.contains('hidden')).toBe(true)
+  })
+})

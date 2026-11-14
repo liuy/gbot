@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { readFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import {
   parseDurationFromOutput,
@@ -28,6 +28,7 @@ import {
   positionAnchoredPopup,
   stripAnsi,
   createOutsideClick,
+  isImeKeyEvent,
 } from './utils'
 import type { Block } from './model'
 
@@ -947,7 +948,15 @@ describe('streamTextChars', () => {
 // rows and their replayed rows disagree and abort-rewind's text match misses.
 describe('VOICE_MSG_MARKER mirror', () => {
   it('equals the Go const VoiceMsgMarker literal', () => {
-    const goSrc = readFileSync(resolve(__dirname, '../../../pkg/context/voice_prompt.go'), 'utf-8')
+    // Stryker sandboxes copy only web/ui into .stryker-tmp/sandbox-N/, so a
+    // sandbox src dir sits two levels deeper than the real one. Both candidate
+    // roots are probed and a miss everywhere still fails the test.
+    const goPath = [
+      resolve(__dirname, '../../../pkg/context/voice_prompt.go'),
+      resolve(__dirname, '../../../../../pkg/context/voice_prompt.go'),
+    ].find((p) => existsSync(p))
+    if (!goPath) throw new Error('pkg/context/voice_prompt.go not found')
+    const goSrc = readFileSync(goPath, 'utf-8')
     const m = goSrc.match(/^const VoiceMsgMarker = "((?:[^"\\]|\\.)*)"/m)
     if (!m) throw new Error('const VoiceMsgMarker not found in pkg/context/voice_prompt.go')
     // Go source literals are already JS-escapable for this constant.
@@ -1340,5 +1349,25 @@ describe('createOutsideClick unit', () => {
     oc.remove()
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+describe('isImeKeyEvent', () => {
+  it('isComposing=true is an IME key (modern browsers)', () => {
+    expect(isImeKeyEvent(new KeyboardEvent('keydown', { isComposing: true }))).toBe(true)
+  })
+
+  it('keyCode 229 alone is an IME key (old Safari / some IMEs never set isComposing)', () => {
+    expect(isImeKeyEvent(new KeyboardEvent('keydown', { keyCode: 229 }))).toBe(true)
+  })
+
+  it('both signals together are an IME key', () => {
+    expect(isImeKeyEvent(new KeyboardEvent('keydown', { isComposing: true, keyCode: 229 }))).toBe(
+      true,
+    )
+  })
+
+  it('a plain Enter keydown is not an IME key', () => {
+    expect(isImeKeyEvent(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(false)
   })
 })
