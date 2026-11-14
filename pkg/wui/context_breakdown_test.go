@@ -229,7 +229,7 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 	}
 
 	// Verify the removed sub-section stays out of the wire: the categories
-	// already carry platform info / tool prompts / skill listing.
+	// already carry platform info / system tools / skill listing.
 	if _, present := msg["systemPromptSections"]; present {
 		t.Fatal("systemPromptSections still on the wire")
 	}

@@ -155,7 +155,6 @@ export const dict: Dict = {
   ctxCatSystemPrompt: '系統提示詞',
   ctxCatBasePrompt: '基礎提示詞',
   ctxCatPlatformInfo: '平台資訊',
-  ctxCatToolPrompts: '工具提示詞',
   ctxCatSkillListing: '技能清單',
   ctxCatMemoryFiles: '記憶文件',
   ctxCatSystemTools: '系統工具',

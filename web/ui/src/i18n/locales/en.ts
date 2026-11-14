@@ -180,7 +180,6 @@ export const dict = {
   ctxCatSystemPrompt: 'System prompt',
   ctxCatBasePrompt: 'Base prompt',
   ctxCatPlatformInfo: 'Platform info',
-  ctxCatToolPrompts: 'Tool prompts',
   ctxCatSkillListing: 'Skill listing',
   ctxCatMemoryFiles: 'Memory files',
   ctxCatSystemTools: 'System tools',

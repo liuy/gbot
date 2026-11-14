@@ -490,18 +490,18 @@ describe('Header context popover i18n', () => {
     header.setContextBreakdown(sampleBreakdown({
       categories: [
         { name: 'Platform info', id: 'platform_info', tokens: 300, percentage: 0.2, color: '39', isFree: false, isReserved: false },
-        { name: 'Tool prompts', id: 'tool_prompts', tokens: 1500, percentage: 0.8, color: '208', isFree: false, isReserved: false },
+        { name: 'Skill listing', id: 'skill_listing', tokens: 1500, percentage: 0.8, color: '208', isFree: false, isReserved: false },
         { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
       ],
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    // Platform info / tool prompts are category rows already; the dedicated
+    // Platform info / skill listing are category rows already; the dedicated
     // section was their verbatim repeat and is gone.
     expect(text).not.toContain('基础提示词')
     expect(text).not.toContain('Base prompt')
     expect(text).toContain('平台信息')
-    expect(text).toContain('工具提示词')
+    expect(text).toContain('技能清单')
   })
 
   it('renders section titles and API usage rows in zh', () => {

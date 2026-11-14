@@ -327,11 +327,11 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		},
 	})
 	e.mcpRegistry = reg
-	// stubTool feeds "Tool prompts" (non-empty Prompt); testTool feeds
-	// "System tools" (stubTool's empty Description estimates to 0 tokens).
-	// The Agent stub feeds "Custom agents": since the fix the category
-	// counts the Agent tool's request-side Prompt(), so without an Agent
-	// tool in the snapshot the category emits nothing.
+	// stubTool and testTool both feed "System tools": the merged category
+	// bills each built-in's full request entry (name + Prompt + schema). The
+	// Agent stub feeds "Custom agents", which owns the Agent tool's whole
+	// request entry — without an Agent tool in the snapshot the category
+	// emits nothing.
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
 	e.tools["Read"] = &testTool{name: "Read"}
 	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "Launch a new agent."}
@@ -345,7 +345,6 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	want := map[string]string{
 		"System prompt":      "system_prompt",
 		"Platform info":      "platform_info",
-		"Tool prompts":       "tool_prompts",
 		"Skill listing":      "skill_listing",
 		"Memory files":       "memory_files",
 		"System tools":       "system_tools",
@@ -372,6 +371,75 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		if !emitted[name] {
 			t.Errorf("category %q not emitted; its ID mapping is untested", name)
 		}
+	}
+}
+
+// "Tool prompts" merged into "System tools": the merged category bills each
+// built-in's full request entry (name + Prompt + schema), so a prompt-heavy
+// tool must make "System tools" — not a separate prompt category — dominate.
+func TestContextBreakdown_NoToolPromptsCategory(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: strings.Repeat("Run a shell command. ", 500)}
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello world ", 20))}},
+	}
+	e.ContextTokens = 5_000
+
+	bd := e.ContextBreakdown()
+	systemTools, messages := -1, -1
+	for _, c := range bd.Categories {
+		switch c.Name {
+		case "Tool prompts":
+			t.Error(`category "Tool prompts" still emitted; it merged into "System tools"`)
+		case "System tools":
+			systemTools = c.Tokens
+		case "Messages":
+			messages = c.Tokens
+		}
+	}
+	if systemTools < 0 {
+		t.Fatal(`"System tools" category not emitted`)
+	}
+	if messages < 0 {
+		t.Fatal(`"Messages" category not emitted`)
+	}
+	if systemTools <= messages {
+		t.Errorf("System tools = %d, Messages = %d; a prompt-heavy tool must make the merged System tools category dominate",
+			systemTools, messages)
+	}
+}
+
+// An undiscovered deferred tool never enters the request — callLLM routes
+// through FilterToolsForRequest, which partitions it out — so no category may
+// bill its request form. The detail list still shows it as deferred.
+func TestContextBreakdown_DeferredUndiscoveredExcluded(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	e.toolSearch = newToolSearchState()
+	e.tools["PlanSearch"] = tool.BuildTool(tool.ToolDef{
+		Name_:        "PlanSearch",
+		ShouldDefer_: true,
+		Prompt_:      strings.Repeat("plan search prompt body ", 200),
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) { return "plan search", nil },
+		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	})
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+	e.ContextTokens = 5_000
+
+	bd := e.ContextBreakdown()
+	for _, c := range bd.Categories {
+		if c.Name == "Tool prompts" || c.Name == "System tools" {
+			t.Errorf("category %q bills PlanSearch, which never enters the request", c.Name)
+		}
+	}
+	if len(bd.DeferredBuiltinTools) != 1 || bd.DeferredBuiltinTools[0].Name != "PlanSearch" {
+		t.Errorf("DeferredBuiltinTools = %v, want exactly PlanSearch", toolDetailSig(bd.DeferredBuiltinTools))
 	}
 }
 
@@ -1052,7 +1120,7 @@ func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	raw := strings.Repeat("word ", 500) // ~500 tokens
-	sections := (&Engine{}).estimateSystemPromptSections(raw, "", nil, "", "", tmpDir, "", nil)
+	sections := (&Engine{}).estimateSystemPromptSections(raw, "", nil, "", "", tmpDir, "")
 	if sections.base < 400 {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
@@ -1742,7 +1810,6 @@ func TestBuildCategories_AllCategories(t *testing.T) {
 	scaled := scaledComponents{
 		"System prompt":  1_000,
 		"Platform info":  900,
-		"Tool prompts":   800,
 		"Skill listing":  700,
 		"Memory files":   600,
 		"System tools":   500,
@@ -1755,7 +1822,6 @@ func TestBuildCategories_AllCategories(t *testing.T) {
 	want := []string{
 		"System prompt|1000|p10.0000|" + ColorSystemPrompt + "|free=false|res=false|system_prompt",
 		"Platform info|900|p9.0000|" + ColorPlatformInfo + "|free=false|res=false|platform_info",
-		"Tool prompts|800|p8.0000|" + ColorToolPrompts + "|free=false|res=false|tool_prompts",
 		"Skill listing|700|p7.0000|" + ColorSkillListing + "|free=false|res=false|skill_listing",
 		"Memory files|600|p6.0000|" + ColorMemoryFiles + "|free=false|res=false|memory_files",
 		"System tools|500|p5.0000|" + ColorSystemTools + "|free=false|res=false|system_tools",
@@ -1797,7 +1863,7 @@ func TestBuildCategories_ZeroTokenCategoriesDropped(t *testing.T) {
 
 func scaledSig(out scaledComponents) []string {
 	names := []string{
-		"System prompt", "Platform info", "Tool prompts", "Skill listing",
+		"System prompt", "Platform info", "Skill listing",
 		"Memory files", "System tools", "MCP tools", "Custom agents", "Messages",
 	}
 	sig := make([]string, 0, len(out)+1)
@@ -1820,13 +1886,12 @@ func TestScaleProportionally_ExactMap(t *testing.T) {
 	est := componentEstimates{
 		SystemPromptBase: 1_000,
 		PlatformInfo:     500,
-		ToolPrompts:      250,
-		Messages:         250,
+		Messages:         500,
 	}
 	got := scaledSig(scaleProportionally(est, 1_000))
 	want := []string{
-		"System prompt=500", "Platform info=250", "Tool prompts=125", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=125",
+		"System prompt=500", "Platform info=250", "Skill listing=0",
+		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=250",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1844,7 +1909,7 @@ func TestScaleProportionally_NeverDropsNonZeroCategory(t *testing.T) {
 	// remainder (-1) is then charged to the largest category.
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=4", "Platform info=1", "Tool prompts=0", "Skill listing=0",
+		"System prompt=4", "Platform info=1", "Skill listing=0",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=5",
 	}
 	if !slices.Equal(got, want) {
@@ -1857,15 +1922,15 @@ func TestScaleProportionally_LargestIsNotFirstCategory(t *testing.T) {
 	est := componentEstimates{
 		SystemPromptBase: 0,
 		PlatformInfo:     1,
-		ToolPrompts:      1,
 		SkillListing:     1,
+		MemoryFiles:      1,
 	}
 	// The remainder must land on the first category holding the maximum
 	// estimate (Platform info), not on estimates[0].
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=0", "Platform info=4", "Tool prompts=3", "Skill listing=3",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
+		"System prompt=0", "Platform info=4", "Skill listing=3",
+		"Memory files=3", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1877,12 +1942,12 @@ func TestScaleProportionally_TieGoesToFirstMax(t *testing.T) {
 	est := componentEstimates{
 		SystemPromptBase: 0,
 		PlatformInfo:     4,
-		ToolPrompts:      4,
+		SkillListing:     4,
 	}
 	// Ties resolve to the first maximum: >, not >=.
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=0", "Platform info=5", "Tool prompts=5", "Skill listing=0",
+		"System prompt=0", "Platform info=5", "Skill listing=5",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
@@ -1895,7 +1960,7 @@ func TestScaleProportionally_ZeroTargetKeepsRawEstimates(t *testing.T) {
 	est := componentEstimates{SystemPromptBase: 100, Messages: 200}
 	got := scaledSig(scaleProportionally(est, 0))
 	want := []string{
-		"System prompt=100", "Platform info=0", "Tool prompts=0", "Skill listing=0",
+		"System prompt=100", "Platform info=0", "Skill listing=0",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=200",
 	}
 	if !slices.Equal(got, want) {
@@ -1908,7 +1973,7 @@ func TestScaleProportionally_NegativeTargetKeepsRawEstimates(t *testing.T) {
 	est := componentEstimates{SystemPromptBase: 100, Messages: 200}
 	got := scaledSig(scaleProportionally(est, -5))
 	want := []string{
-		"System prompt=100", "Platform info=0", "Tool prompts=0", "Skill listing=0",
+		"System prompt=100", "Platform info=0", "Skill listing=0",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=200",
 	}
 	if !slices.Equal(got, want) {
@@ -1922,7 +1987,7 @@ func TestScaleProportionally_TargetOneScales(t *testing.T) {
 	// target 1 is a real scaling target, not the raw-estimate fallback.
 	got := scaledSig(scaleProportionally(est, 1))
 	want := []string{
-		"System prompt=1", "Platform info=0", "Tool prompts=0", "Skill listing=0",
+		"System prompt=1", "Platform info=0", "Skill listing=0",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
@@ -1938,7 +2003,7 @@ func TestScaleProportionally_ZeroSumEstimateReturnsAllKeys(t *testing.T) {
 	}
 	got := scaledSig(out)
 	want := []string{
-		"System prompt=0", "Platform info=0", "Tool prompts=0", "Skill listing=0",
+		"System prompt=0", "Platform info=0", "Skill listing=0",
 		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
@@ -1963,7 +2028,7 @@ func TestEstimateComponents_Exact(t *testing.T) {
 		sysText  = "system role message must be skipped"
 	)
 	est := e.estimateComponents(
-		sysPromptSections{base: 10, platform: 20, toolPrompts: 30, skill: 40},
+		sysPromptSections{base: 10, platform: 20, skill: 40},
 		[]context.MemoryFile{
 			{Path: "/m/one.md", Content: "memory one content"},
 			{Path: "/m/two.md", Content: "memory two content"},
@@ -1989,7 +2054,7 @@ func TestEstimateComponents_Exact(t *testing.T) {
 		nil, 0,
 	)
 
-	if est.SystemPromptBase != 10 || est.PlatformInfo != 20 || est.ToolPrompts != 30 || est.SkillListing != 40 {
+	if est.SystemPromptBase != 10 || est.PlatformInfo != 20 || est.SkillListing != 40 {
 		t.Errorf("sections not copied: %+v", est)
 	}
 	wantMem := e.EstimateTokensCalibrated("memory one content") + e.EstimateTokensCalibrated("memory two content")
@@ -2021,62 +2086,22 @@ func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	e := &Engine{}
-	tools := map[string]tool.Tool{
-		"Bash": &stubTool{name: "Bash", prompt: "Run a shell command. Args: command."},
-		"Read": &stubTool{name: "Read", prompt: "Read a file from the filesystem."},
-		"Grep": &stubTool{name: "Grep", prompt: "Search file contents with a regex."},
-	}
-	// Several disabled tools: a `break` where a `continue` belongs loses the
-	// enabled entries for (almost) every map iteration order.
-	for _, n := range []string{"OffA", "OffB", "OffC", "OffD", "OffE", "OffF", "OffG", "OffH"} {
-		tools[n] = namedDisabledTool{name: n}
-	}
 	skillListing := "- alpha: first skill\n- beta: second skill"
 	raw := "You are a test assistant with a long system prompt for estimation."
-	got := e.estimateSystemPromptSections(raw, "", nil, "", "", dir, skillListing, tools)
+	got := e.estimateSystemPromptSections(raw, "", nil, "", "", dir, skillListing)
 
 	wantBase := e.EstimateTokensCalibrated(raw)
 	wantSkill := e.EstimateTokensCalibrated(skillListing)
-	wantToolPrompts := 0
-	for _, n := range []string{"Bash", "Read", "Grep"} {
-		wantToolPrompts += e.EstimateTokensCalibrated(tools[n].Prompt())
-	}
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d", got.base, wantBase)
 	}
 	if got.skill != wantSkill {
 		t.Errorf("skill = %d, want %d", got.skill, wantSkill)
 	}
-	if got.toolPrompts != wantToolPrompts {
-		t.Errorf("toolPrompts = %d, want %d", got.toolPrompts, wantToolPrompts)
-	}
 	builder := context.NewBuilder(dir)
 	wantPlatform := e.EstimateTokensCalibrated(builder.RuntimeInfo())
 	if got.platform != wantPlatform {
 		t.Errorf("platform = %d, want %d", got.platform, wantPlatform)
-	}
-}
-
-// The Agent tool's Prompt() is the "Custom agents" category's entire
-// estimate; Tool prompts must not bill the same request bytes twice.
-func TestEstimateSystemPromptSections_ToolPromptsExcludeAgentTool(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	tools := map[string]tool.Tool{
-		"Bash":  &stubTool{name: "Bash", prompt: "Run a shell command."},
-		"Read":  &stubTool{name: "Read", prompt: "Read a file from disk."},
-		"Agent": &stubTool{name: "Agent", prompt: "AGENT-ONLY BOILERPLATE " + strings.Repeat("agent prompt body ", 40)},
-	}
-	want := e.EstimateTokensCalibrated("Run a shell command.") +
-		e.EstimateTokensCalibrated("Read a file from disk.")
-	// A map range order is randomized per call, so the exclusion must hold
-	// no matter which slot "Agent" takes: every non-Agent prompt stays
-	// counted, and a loop that stops at "Agent" fails some order.
-	for range 20 {
-		got := e.estimateSystemPromptSections("system prompt text", "", nil, "", "", t.TempDir(), "", tools)
-		if got.toolPrompts != want {
-			t.Errorf("toolPrompts = %d, want %d (Agent tool prompt must be excluded)", got.toolPrompts, want)
-		}
 	}
 }
 
@@ -2109,7 +2134,7 @@ func TestEstimateSystemPromptSections_StripsCategorizedSections(t *testing.T) {
 	b.SkillListing = skillListing
 	raw := b.Build()
 
-	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt, projDir, dir, skillListing, nil)
+	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt, projDir, dir, skillListing)
 
 	// Build writes template + "\n\n{{SOUL}}" before the three categorized
 	// sections, so the stripped remainder is exactly that prefix — with the
@@ -2146,7 +2171,7 @@ func TestEstimateSystemPromptSections_StripsOnlyTheBuildWrittenCopy(t *testing.T
 		"\n\n## Available Skills\n\n" + skillListing
 	raw := b.Build() + tail
 
-	got := (&Engine{}).estimateSystemPromptSections(raw, "claude-test", nil, memPrompt, "", dir, skillListing, nil)
+	got := (&Engine{}).estimateSystemPromptSections(raw, "claude-test", nil, memPrompt, "", dir, skillListing)
 
 	// The tail's RuntimeInfo copy carries model={{MODEL}} and
 	// modalities={{MODALITIES}}; the expansion replaces them there exactly
@@ -2161,9 +2186,7 @@ func TestEstimateSystemPromptSections_StripsOnlyTheBuildWrittenCopy(t *testing.T
 
 func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("", "", nil, "", "", t.TempDir(), "- skill: x", map[string]tool.Tool{
-		"Bash": &stubTool{name: "Bash", prompt: "Run a shell command."},
-	})
+	got := (&Engine{}).estimateSystemPromptSections("", "", nil, "", "", t.TempDir(), "- skill: x")
 	if got != (sysPromptSections{}) {
 		t.Errorf("sections = %+v, want the zero value when the raw prompt is empty", got)
 	}
@@ -2171,12 +2194,9 @@ func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 
 func TestEstimateSystemPromptSections_SkillListingEmpty(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("prompt text here", "", nil, "", "", t.TempDir(), "", nil)
+	got := (&Engine{}).estimateSystemPromptSections("prompt text here", "", nil, "", "", t.TempDir(), "")
 	if got.skill != 0 {
 		t.Errorf("skill = %d, want 0 for an empty listing", got.skill)
-	}
-	if got.toolPrompts != 0 {
-		t.Errorf("toolPrompts = %d, want 0 with no tools", got.toolPrompts)
 	}
 	if got.base == 0 {
 		t.Error("base = 0, want a non-zero estimate for a non-empty prompt")
@@ -2194,7 +2214,7 @@ func TestEstimateSystemPromptSections_ExpandsRequestStubs(t *testing.T) {
 	e := &Engine{}
 
 	raw := "You are {{MODEL}}. {{SYSTEM}}\n\n{{SOUL}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "", nil)
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "")
 
 	wantText := "You are claude-test. " + context.DefaultBasePrompt() + "\n\n"
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -2224,7 +2244,7 @@ func TestEstimateSystemPromptSections_ExpandsSystemAndSoulFiles(t *testing.T) {
 	}
 
 	e := &Engine{}
-	got := e.estimateSystemPromptSections("{{SYSTEM}}\n\n{{SOUL}}", "claude-test", nil, "", "", t.TempDir(), "", nil)
+	got := e.estimateSystemPromptSections("{{SYSTEM}}\n\n{{SOUL}}", "claude-test", nil, "", "", t.TempDir(), "")
 
 	wantText := strings.TrimSpace(systemMd) +
 		"\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" +
@@ -2243,7 +2263,7 @@ func TestEstimateSystemPromptSections_ReplacesOnlyFirstStubOccurrence(t *testing
 	e := &Engine{}
 
 	raw := "A {{MODEL}} B {{SYSTEM}} C {{SOUL}} D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "", nil)
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "")
 
 	wantText := "A claude-test B " + context.DefaultBasePrompt() + " C  D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -2261,13 +2281,13 @@ func TestEstimateSystemPromptSections_ExpandsModalitiesStub(t *testing.T) {
 	e := &Engine{}
 
 	raw := "A {{MODALITIES}} B {{MODALITIES}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", []string{"text", "image"}, "", "", t.TempDir(), "", nil)
+	got := e.estimateSystemPromptSections(raw, "claude-test", []string{"text", "image"}, "", "", t.TempDir(), "")
 	wantBase := e.EstimateTokensCalibrated("A text+image B {{MODALITIES}}")
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d (first {{MODALITIES}} expanded, second literal)", got.base, wantBase)
 	}
 
-	got = e.estimateSystemPromptSections("M={{MODALITIES}}", "claude-test", nil, "", "", t.TempDir(), "", nil)
+	got = e.estimateSystemPromptSections("M={{MODALITIES}}", "claude-test", nil, "", "", t.TempDir(), "")
 	wantBase = e.EstimateTokensCalibrated("M=text")
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d (nil modalities default to text)", got.base, wantBase)
@@ -2306,6 +2326,22 @@ func TestEstimateSystemTools_DiscoveredDeferredCounts(t *testing.T) {
 	want := e.estimateSingleTool(tools["Bash"]) + e.estimateSingleTool(tools["ToolSearch"])
 	if got != want {
 		t.Errorf("estimateSystemTools = %d, want %d", got, want)
+	}
+}
+
+// The Agent tool's request entry is billed wholesale to "Custom agents";
+// System tools must not double-bill it.
+func TestEstimateSystemTools_ExcludesAgentTool(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	tools := map[string]tool.Tool{
+		"Bash":  &stubTool{name: "Bash", prompt: "Run a shell command."},
+		"Agent": &stubTool{name: "Agent", prompt: "AGENT BOILERPLATE " + strings.Repeat("agent prompt body ", 40)},
+	}
+	want := e.EstimateTokensCalibrated("Bash" + "Run a shell command.")
+	if got := e.estimateSystemTools(tools, nil, nil); got != want {
+		t.Errorf("estimateSystemTools = %d, want %d (Agent excluded — its entry is the Custom agents category)",
+			got, want)
 	}
 }
 
@@ -2358,15 +2394,27 @@ func TestEstimateMCPLoadedTools_SumsLoadedTools(t *testing.T) {
 	}
 }
 
-func TestEstimateSingleTool_AddsSchema(t *testing.T) {
+// The estimate must mirror the request form buildToolDefs ships per tool —
+// name + Prompt() + InputSchema. Description() is UI-only and never enters
+// the request, so a huge Description must not inflate the estimate.
+func TestEstimateSingleTool_UsesRequestFormNotDescription(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	tl := &testTool{name: "Bash"}
-	desc, _ := tl.Description(nil)
-	schema := string(tl.InputSchema())
-	want := e.EstimateTokensCalibrated("Bash"+desc) + e.EstimateTokensCalibrated(schema)
+	desc := strings.Repeat("ui-only description body ", 400)
+	tl := tool.BuildTool(tool.ToolDef{
+		Name_:        "Bash",
+		Prompt_:      "Run a shell command.",
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) { return desc, nil },
+		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	})
+	want := e.EstimateTokensCalibrated("Bash"+"Run a shell command.") +
+		e.EstimateTokensCalibrated(`{"type":"object"}`)
 	if got := e.estimateSingleTool(tl); got != want {
-		t.Errorf("estimateSingleTool = %d, want %d", got, want)
+		t.Errorf("estimateSingleTool = %d, want %d (name+Prompt+schema; the %d-token Description must not count)",
+			got, want, e.EstimateTokensCalibrated(desc))
 	}
 }
 
@@ -2393,17 +2441,28 @@ func TestEstimateAgents_Empty(t *testing.T) {
 	}
 }
 
-// The category mirrors the request, not the registry: the estimate is
-// exactly the enabled Agent tool's Prompt() as buildToolDefs ships it.
-// Sub-agent system prompts never enter this — structurally, since the
-// signature carries no definitions to miscount.
-func TestEstimateAgents_MirrorsAgentToolPrompt(t *testing.T) {
+// The category mirrors the request, not the registry: the estimate is the
+// enabled Agent tool's full request entry (name + Prompt + schema) exactly
+// as buildToolDefs ships it. Sub-agent system prompts never enter this —
+// structurally, since the signature carries no definitions to miscount.
+func TestEstimateAgents_MirrorsAgentToolRequestEntry(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	tools := map[string]tool.Tool{"Agent": &stubTool{name: "Agent", prompt: "agent prompt"}}
-	want := e.EstimateTokensCalibrated("agent prompt")
-	if got := e.estimateAgents(tools); got != want {
-		t.Errorf("estimateAgents(tools) = %d, want %d (the tool's Prompt(), nothing else)",
+	schema := json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"` +
+		strings.Repeat("schema body ", 200) + `"}}}`)
+	tl := tool.BuildTool(tool.ToolDef{
+		Name_:        "Agent",
+		Prompt_:      "Launch a sub-agent with a task.",
+		InputSchema_: func() json.RawMessage { return schema },
+		Description_: func(json.RawMessage) (string, error) { return "launch agents", nil },
+		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	})
+	want := e.EstimateTokensCalibrated("Agent"+"Launch a sub-agent with a task.") +
+		e.EstimateTokensCalibrated(string(schema))
+	if got := e.estimateAgents(map[string]tool.Tool{"Agent": tl}); got != want {
+		t.Errorf("estimateAgents = %d, want %d (the tool's full request entry, nothing else)",
 			got, want)
 	}
 }
@@ -2579,6 +2638,9 @@ func contextToolSet() map[string]tool.Tool {
 	for _, n := range []string{"ToolSearch", "PlanSearch", "DocSearch"} {
 		tools[n] = deferredStubTool(n)
 	}
+	// Agent is enabled and non-deferred but still skipped: its whole request
+	// entry belongs to the "Custom agents" category.
+	tools["Agent"] = &stubTool{name: "Agent", prompt: "agent boilerplate"}
 	return tools
 }
 

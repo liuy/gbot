@@ -156,7 +156,6 @@ type APIUsageSnapshot struct {
 const (
 	ColorSystemPrompt = "12"  // blue
 	ColorPlatformInfo = "39"  // sky blue
-	ColorToolPrompts  = "51"  // cyan
 	ColorSkillListing = "201" // magenta
 	ColorMemoryFiles  = "220" // yellow
 	ColorSystemTools  = "45"  // green-cyan
@@ -243,7 +242,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 		// (matching Build's own gate).
 		memPrompt = context.FormatMemoryPrompt(workingDir, memoryDir)
 	}
-	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt, projectDir, workingDir, skillListing, toolsSnapshot)
+	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt, projectDir, workingDir, skillListing)
 	// The system prompt injects the typed-memory prompt (builder.go), not
 	// every memory file's contents — estimating the full file list here
 	// overstated this bucket ~4x and squeezed the message bucket. No legacy
@@ -307,16 +306,14 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 
 // sysPromptSections holds pre-computed system prompt section token estimates.
 type sysPromptSections struct {
-	base        int
-	platform    int
-	toolPrompts int
-	skill       int
+	base     int
+	platform int
+	skill    int
 }
 
 type componentEstimates struct {
 	SystemPromptBase int
 	PlatformInfo     int
-	ToolPrompts      int
 	SkillListing     int
 	MemoryFiles      int
 	SystemTools      int
@@ -338,7 +335,6 @@ func (e *Engine) estimateComponents(
 	est := componentEstimates{
 		SystemPromptBase: sections.base,
 		PlatformInfo:     sections.platform,
-		ToolPrompts:      sections.toolPrompts,
 		SkillListing:     sections.skill,
 	}
 
@@ -346,7 +342,7 @@ func (e *Engine) estimateComponents(
 		est.MemoryFiles += e.EstimateTokensCalibrated(f.Content)
 	}
 
-	// 3. System tools (built-in, non-deferred, non-MCP).
+	// 3. System tools (built-in, non-deferred, non-MCP, non-Agent).
 	est.SystemTools = e.estimateSystemTools(toolsSnapshot, toolSearchSnap, mcpReg)
 
 	// 4. MCP loaded tools.
@@ -387,7 +383,6 @@ func (e *Engine) estimateSystemPromptSections(
 	projectDir string,
 	workingDir string,
 	skillListing string,
-	toolsSnapshot map[string]tool.Tool,
 ) sysPromptSections {
 	if systemPromptRaw == "" {
 		return sysPromptSections{}
@@ -395,10 +390,10 @@ func (e *Engine) estimateSystemPromptSections(
 
 	// The platform section needs the Builder's RuntimeInfo; every other
 	// section is estimated from its parameter directly (skill listing,
-	// tool prompts, memory files), so no other Builder state is set here.
-	// ProjectDir must match the Builder that produced the raw prompt:
-	// RuntimeInfo omits the projectspace line and the workspace/artifacts
-	// bullets without it, and the strip below then fails to match.
+	// memory files), so no other Builder state is set here. ProjectDir must
+	// match the Builder that produced the raw prompt: RuntimeInfo omits the
+	// projectspace line and the workspace/artifacts bullets without it, and
+	// the strip below then fails to match.
 	builder := context.NewBuilder(workingDir)
 	builder.ProjectDir = projectDir
 	platformStr := builder.RuntimeInfo()
@@ -446,34 +441,16 @@ func (e *Engine) estimateSystemPromptSections(
 
 	base := e.EstimateTokensCalibrated(stripped)
 
-	// Tool prompts: sum each tool's Prompt() contribution. The Agent tool
-	// is excluded — its Prompt() is the "Custom agents" category's entire
-	// estimate, and counting it here would bill the same request bytes
-	// twice.
-	toolPromptsTotal := 0
-	for name, t := range toolsSnapshot {
-		if !t.IsEnabled() {
-			continue
-		}
-		if name == "Agent" {
-			continue
-		}
-		prompt := t.Prompt()
-		if prompt != "" {
-			toolPromptsTotal += e.EstimateTokensCalibrated(prompt)
-		}
-	}
-	toolPrompts := toolPromptsTotal
-
 	skill := 0
 	if skillListing != "" {
 		skill = e.EstimateTokensCalibrated(skillListing)
 	}
 
-	return sysPromptSections{base: base, platform: platform, toolPrompts: toolPrompts, skill: skill}
+	return sysPromptSections{base: base, platform: platform, skill: skill}
 }
 
-// excluding deferred tools and MCP tools.
+// excluding the Agent tool (its whole request entry is the "Custom agents"
+// category's estimate), deferred-undiscovered tools and MCP tools.
 func (e *Engine) estimateSystemTools(
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
@@ -485,6 +462,9 @@ func (e *Engine) estimateSystemTools(
 			continue
 		}
 		if isMCPToolName(name) {
+			continue
+		}
+		if name == "Agent" {
 			continue
 		}
 		if tool.IsDeferred(t) && toolSearchSnap != nil && !toolSearchSnap.IsDiscovered(name) {
@@ -523,11 +503,10 @@ func (e *Engine) estimateMCPLoadedTools(mcpReg *mcp.Registry) int {
 	return total
 }
 
-// name + description + input schema JSON.
+// name + prompt + input schema JSON — the full request form buildToolDefs
+// ships per tool. Description() is UI-only and never enters the request.
 func (e *Engine) estimateSingleTool(t tool.Tool) int {
-	desc, _ := t.Description(nil)
-	name := t.Name()
-	return e.EstimateTokensCalibrated(name+desc) + e.EstimateTokensCalibrated(string(t.InputSchema()))
+	return e.EstimateTokensCalibrated(t.Name()+t.Prompt()) + e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
 func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
@@ -536,8 +515,8 @@ func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
 
 // estimateAgents returns the Agent tool's contribution to the parent
 // request. Sub-agent system prompts only enter the sub-agent's own
-// request, so the parent-side agent cost is the Agent tool's full
-// Prompt() — the same text buildToolDefs ships as the tool description.
+// request, so the parent-side agent cost is the Agent tool's full request
+// entry — name + Prompt() + InputSchema, exactly what buildToolDefs ships.
 // Zero only when the request's tool set carries no enabled Agent tool
 // (no snapshot, tool absent, or disabled): the category mirrors what the
 // request carries, never what the registry knows — zero definitions
@@ -547,7 +526,7 @@ func (e *Engine) estimateAgents(toolsSnapshot map[string]tool.Tool) int {
 	if !ok || !t.IsEnabled() {
 		return 0
 	}
-	return e.EstimateTokensCalibrated(t.Prompt())
+	return e.estimateSingleTool(t)
 }
 
 func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
@@ -737,7 +716,6 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 	}{
 		{"System prompt", est.SystemPromptBase},
 		{"Platform info", est.PlatformInfo},
-		{"Tool prompts", est.ToolPrompts},
 		{"Skill listing", est.SkillListing},
 		{"Memory files", est.MemoryFiles},
 		{"System tools", est.SystemTools},
@@ -793,7 +771,6 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 var categoryOrder = []string{
 	"System prompt",
 	"Platform info",
-	"Tool prompts",
 	"Skill listing",
 	"Memory files",
 	"System tools",
@@ -808,7 +785,6 @@ var categoryOrder = []string{
 var categoryColors = map[string]string{
 	"System prompt":      ColorSystemPrompt,
 	"Platform info":      ColorPlatformInfo,
-	"Tool prompts":       ColorToolPrompts,
 	"Skill listing":      ColorSkillListing,
 	"Memory files":       ColorMemoryFiles,
 	"System tools":       ColorSystemTools,
@@ -826,7 +802,6 @@ var categoryColors = map[string]string{
 var categoryIDs = map[string]string{
 	"System prompt":      "system_prompt",
 	"Platform info":      "platform_info",
-	"Tool prompts":       "tool_prompts",
 	"Skill listing":      "skill_listing",
 	"Memory files":       "memory_files",
 	"System tools":       "system_tools",
@@ -1048,12 +1023,17 @@ func (e *Engine) buildDetails(
 		})
 	}
 
-	// System tools (per-tool) and deferred built-in tools.
+	// System tools (per-tool) and deferred built-in tools. The Agent tool
+	// is absent from the systemTools rows: its whole request entry is the
+	// "Custom agents" category, and a row here would double-bill it.
 	for name, t := range toolsSnapshot {
 		if !t.IsEnabled() {
 			continue
 		}
 		if isMCPToolName(name) {
+			continue
+		}
+		if name == "Agent" {
 			continue
 		}
 		if tool.IsDeferred(t) {
