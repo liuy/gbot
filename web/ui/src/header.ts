@@ -404,15 +404,6 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     }
   }
 
-  if (data.memoryFiles.length > 0) {
-    const sec = createSection(t('ctxMemoryFiles'))
-    panel.appendChild(sec)
-    for (const f of data.memoryFiles) {
-      const name = f.path.split('/').pop() ?? f.path
-      panel.appendChild(createDetailRow(name, f.tokens))
-    }
-  }
-
   if (data.systemTools.length > 0) {
     const sec = createSection(t('ctxSystemTools'))
     panel.appendChild(sec)

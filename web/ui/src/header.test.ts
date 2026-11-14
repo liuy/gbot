@@ -100,7 +100,6 @@ function sampleBreakdown(overrides: Partial<ContextBreakdownData> = {}): Context
     mcpToolsDeferred: [],
     deferredBuiltinTools: [],
     systemTools: [],
-    memoryFiles: [],
     agents: [],
     skills: [],
     messageBreakdown: null,
@@ -253,16 +252,15 @@ describe('Header context popover', () => {
   it('detail sections appear only when non-empty', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      memoryFiles: [{ path: '/home/user/.gbot/memory/user_name.md', tokens: 1500 }],
+      systemTools: [{ name: 'grep', tokens: 200 }],
       agents: [],
       skills: [],
       mcpToolsLoaded: [],
     }))
     clickTrigger()
     const panel = getPanel()
-    expect(panel!.textContent).toContain('Memory files')
-    expect(panel!.textContent).toContain('user_name.md')
-    expect(panel!.textContent).not.toContain('/home/user/.gbot/memory/user_name.md')
+    expect(panel!.textContent).toContain('System tools')
+    expect(panel!.textContent).toContain('grep')
     expect(panel!.textContent).not.toContain('Agents')
     expect(panel!.textContent).not.toContain('Skills')
     expect(panel!.textContent).not.toContain('MCP tools loaded')
@@ -455,6 +453,7 @@ describe('Header context popover i18n', () => {
     header.setContextBreakdown(sampleBreakdown({
       categories: [
         { name: 'Platform info', id: 'platform_info', tokens: 3000, percentage: 1.5, color: '39', isFree: false, isReserved: false },
+        { name: 'Memory files', id: 'memory_files', tokens: 9500, percentage: 4.8, color: '220', isFree: false, isReserved: false },
         { name: 'Free space', id: 'free_space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
         { name: 'Autocompact buffer', id: 'autocompact_buffer', tokens: 14000, percentage: 7.0, color: '160', isFree: false, isReserved: true },
       ],
@@ -462,6 +461,9 @@ describe('Header context popover i18n', () => {
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
     expect(text).toContain('平台信息')
+    // 2026-11-15: the user kept the "记忆文件" label — the bucket holds
+    // behavioral instructions + index, but the familiar name won.
+    expect(text).toContain('记忆文件')
     expect(text).toContain('剩余空间')
     expect(text).toContain('自动压缩缓冲区')
     expect(text).not.toContain('Platform info')
@@ -505,7 +507,6 @@ describe('Header context popover i18n', () => {
   it('renders section titles and API usage rows in zh', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      memoryFiles: [{ path: '/m/user_name.md', tokens: 1500 }],
       systemTools: [{ name: 'grep', tokens: 200 }],
       mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
       mcpToolsDeferred: [{ name: 'fetch', serverName: 'ddg', tokens: 0, isLoaded: false }],
@@ -520,7 +521,9 @@ describe('Header context popover i18n', () => {
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    expect(text).toContain('记忆文件')
+    // The memory-files section is gone: it is always one row (MEMORY.md)
+    // whose tokens are the "Memory files" category row verbatim.
+    expect(text).not.toContain('MEMORY.md')
     expect(text).toContain('系统工具')
     expect(text).toContain('已加载 MCP 工具')
     expect(text).toContain('延迟加载 MCP 工具')
@@ -690,7 +693,6 @@ describe('Header Compact button', () => {
       mcpToolsDeferred: [],
       deferredBuiltinTools: [],
       systemTools: [],
-      memoryFiles: [],
       agents: [],
       skills: [],
     }
@@ -1299,27 +1301,26 @@ describe('Header context breakdown structure', () => {
 
   it('sections and detail rows: heading classes and name/value spans', () => {
     const panel = openWith(sampleBreakdown({
-      memoryFiles: [{ path: '/m/notes.md', tokens: 500 }],
+      systemTools: [{ name: 'grep', tokens: 200 }],
     }))
     expect(panel.children.length).toBe(4) // head, category list, section, detail row
     const sec = panel.children[2] as HTMLElement
     expect(sec.className).toBe('pt-2 pb-1 px-4')
     expect(sec.children.length).toBe(1)
     expect(sec.children[0].className).toBe('mono text-[11px] text-t3 uppercase tracking-wider')
-    expect(sec.children[0].textContent).toBe('Memory files')
+    expect(sec.children[0].textContent).toBe('System tools')
     const row = panel.children[3] as HTMLElement
     expect(row.className).toBe('flex items-center justify-between px-4 py-1')
     expect(row.children.length).toBe(2)
     expect(row.children[0].className).toBe('text-[13px] text-t2 truncate')
-    expect(row.children[0].textContent).toBe('notes.md')
+    expect(row.children[0].textContent).toBe('grep')
     expect(row.children[1].className).toBe('mono text-[12px] text-t3 ml-2 shrink-0')
-    expect(row.children[1].textContent).toBe('500')
+    expect(row.children[1].textContent).toBe('200')
   })
 
   it('empty detail sections render no heading at all', () => {
     const panel = openWith(sampleBreakdown())
     const text = panel.textContent ?? ''
-    expect(text).not.toContain('Memory files')
     expect(text).not.toContain('System tools')
     expect(text).not.toContain('MCP tools deferred')
   })

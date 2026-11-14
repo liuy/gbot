@@ -200,12 +200,14 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	// Go's RWMutex forbids recursive RLock (a queued writer between the two
 	// acquisitions would deadlock).
 	workingDir := e.workingDir
+	projectDir := e.projectDir
 	memoryDir := e.memoryDir
 	skillListing := e.skillListing
 	agentDefs := agentDefsClone(e.agentDefs)
 	systemPromptRaw := e.systemPrompt
 	mcpReg := e.mcpRegistry
 	model := e.model
+	modalities := e.inputModalities
 	e.mu.RUnlock()
 
 	breakdown := &ContextBreakdown{
@@ -225,8 +227,22 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	freeTokens := contextWindow - totalExact
 	reserved := min(computeReservedTokens(contextWindow, maxTokens), max(freeTokens, 0))
 
-	// Compute expensive data once, shared by estimates and details.
-	sections := e.estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot)
+	// Compute expensive data once, shared by estimates and details. The
+	// typed-memory section is extracted from the raw prompt itself — the
+	// bytes Build actually wrote — so the strip and the MemoryFiles bucket
+	// are consistent by construction even after mid-session MEMORY.md edits.
+	// Recomputing from disk drifts the moment the file changes: the fresh
+	// text no longer matches the prompt, the strip below turns into a no-op,
+	// and the memory bytes land in both "System prompt" and "Memory files".
+	memPrompt := extractMemorySection(systemPromptRaw)
+	if memPrompt == "" {
+		// No typed-memory segment in the raw prompt — a stale prompt built
+		// before memory was enabled, or a hand-set system prompt. Fall back
+		// to the disk recompute, which returns "" when memory is disabled
+		// (matching Build's own gate).
+		memPrompt = context.FormatMemoryPrompt(workingDir, memoryDir)
+	}
+	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt, projectDir, workingDir, skillListing, toolsSnapshot)
 	// The system prompt injects the typed-memory prompt (builder.go), not
 	// every memory file's contents — estimating the full file list here
 	// overstated this bucket ~4x and squeezed the message bucket. No legacy
@@ -234,7 +250,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	// IsAutoMemoryEnabled is false, and LoadMemoryFiles returns nil under
 	// that same gate, so the legacy path could only ever produce nil.
 	var memFiles []context.MemoryFile
-	if memPrompt := context.FormatMemoryPrompt(workingDir, memoryDir); memPrompt != "" {
+	if memPrompt != "" {
 		memDir := memoryDir
 		if memDir == "" {
 			memDir = long.GetMemoryPath(workingDir)
@@ -364,6 +380,10 @@ func (e *Engine) estimateComponents(
 // Source: analyzeContext.ts:289-298 — countSystemPromptSections
 func (e *Engine) estimateSystemPromptSections(
 	systemPromptRaw string,
+	model string,
+	modalities []string,
+	memPrompt string,
+	projectDir string,
 	workingDir string,
 	skillListing string,
 	toolsSnapshot map[string]tool.Tool,
@@ -375,15 +395,55 @@ func (e *Engine) estimateSystemPromptSections(
 	// The platform section needs the Builder's RuntimeInfo; every other
 	// section is estimated from its parameter directly (skill listing,
 	// tool prompts, memory files), so no other Builder state is set here.
+	// ProjectDir must match the Builder that produced the raw prompt:
+	// RuntimeInfo omits the projectspace line and the workspace/artifacts
+	// bullets without it, and the strip below then fails to match.
 	builder := context.NewBuilder(workingDir)
-
-	// Estimate base from the actual system prompt content. Using a fresh
-	// Builder here would miss runtime additions (SOUL.md, skills, agents,
-	// memory index, etc.), severely underestimating the base section.
-	base := e.EstimateTokensCalibrated(systemPromptRaw)
-
+	builder.ProjectDir = projectDir
 	platformStr := builder.RuntimeInfo()
 	platform := e.EstimateTokensCalibrated(platformStr)
+
+	// The memory, platform and skills sections carry their own categories,
+	// so the base estimate strips their exact Build()-written spellings out
+	// of the raw prompt first — estimating the full raw text counted the
+	// same bytes twice (the ~9.5k memory section made "System prompt" 97%
+	// memory). The remainder keeps the template + SOUL + runtime additions
+	// a fresh Builder cannot reconstruct, which is why the estimate starts
+	// from the raw prompt at all.
+	stripped := systemPromptRaw
+	stripped = strings.Replace(stripped, platformStr, "", 1)
+	if memPrompt != "" {
+		stripped = strings.Replace(stripped, "\n\n"+memPrompt, "", 1)
+	}
+	if skillListing != "" {
+		stripped = strings.Replace(stripped, "\n\n## Available Skills\n\n"+skillListing, "", 1)
+	}
+
+	// The request path (engine.go callLLM) hot-expands {{SYSTEM}}/{{SOUL}}/
+	// {{MODEL}} before the prompt reaches the API; estimating the stub form
+	// left those thousands of tokens invisible to every category, which
+	// scaleProportionally then smeared into the other buckets. Expansion
+	// runs after the strip above: the strip spellings are Build()'s stub
+	// forms (RuntimeInfo carries model={{MODEL}}), and the {{MODEL}} inside
+	// the platform section is that category's own estimate, not base's.
+	systemText, _ := context.LoadSystemFile()
+	if systemText == "" {
+		systemText = context.DefaultBasePrompt()
+	}
+	stripped = strings.Replace(stripped, "{{SYSTEM}}", systemText, 1)
+
+	soulText := ""
+	if soul, _ := context.LoadSoulFile(); soul != "" {
+		soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+	}
+	stripped = strings.Replace(stripped, "{{SOUL}}", soulText, 1)
+	stripped = strings.Replace(stripped, "{{MODEL}}", model, 1)
+	if len(modalities) == 0 {
+		modalities = []string{"text"}
+	}
+	stripped = strings.Replace(stripped, "{{MODALITIES}}", strings.Join(modalities, "+"), 1)
+
+	base := e.EstimateTokensCalibrated(stripped)
 
 	// Tool prompts: sum each tool's Prompt() contribution.
 	toolPromptsTotal := 0
@@ -742,7 +802,7 @@ var categoryColors = map[string]string{
 	"Platform info":      ColorPlatformInfo,
 	"Tool prompts":       ColorToolPrompts,
 	"Skill listing":      ColorSkillListing,
-	"Memory files":       ColorMemoryFiles,
+	"Memory files":      ColorMemoryFiles,
 	"System tools":       ColorSystemTools,
 	"MCP tools":          ColorMCPLoaded,
 	"Deferred tools":     ColorMCPDeferred,
@@ -760,7 +820,7 @@ var categoryIDs = map[string]string{
 	"Platform info":      "platform_info",
 	"Tool prompts":       "tool_prompts",
 	"Skill listing":      "skill_listing",
-	"Memory files":       "memory_files",
+	"Memory files":      "memory_files",
 	"System tools":       "system_tools",
 	"MCP tools":          "mcp_tools",
 	"Custom agents":      "custom_agents",
@@ -1089,6 +1149,39 @@ func (e *Engine) buildDetails(
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
+
+// extractMemorySection pulls the typed-memory segment back out of the raw
+// system prompt. Build writes it as "\n\n" + FormatMemoryPrompt(...) and the
+// segment starts with the "# auto memory" heading, so it runs from that
+// heading to the next section boundary or the end of the prompt. The
+// boundaries are the exact spellings the production assembly writes after the
+// memory section — Build's skills header and AppendVoiceBlock's tail — not a
+// generic "\n\n# " heading match: MEMORY.md content routinely carries level-1
+// headings of its own ("# Memory"), which a heading-level boundary would cut
+// the segment at. The returned text is the segment without the leading
+// "\n\n", i.e. exactly the string Build passed to WriteString, which is why
+// the strip and the MemoryFiles estimate can share it byte for byte. Returns
+// "" when the prompt carries no typed-memory segment.
+func extractMemorySection(raw string) string {
+	const marker = "\n\n# auto memory"
+	start := strings.Index(raw, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := raw[start+len("\n\n"):]
+	end := len(rest)
+	for _, boundary := range []string{
+		"\n\n## Available Skills",
+		"\n\n" + context.VoicePromptBlock,
+	} {
+		// Cut against the not-yet-clamped window: an absent boundary
+		// returns the window itself, so end stays put with no found-flag
+		// to get wrong.
+		before, _, _ := strings.Cut(rest[:end], boundary)
+		end = len(before)
+	}
+	return rest[:end]
+}
 
 func computeReservedTokens(contextWindow, maxTokens int) int {
 	if contextWindow <= 0 {

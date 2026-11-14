@@ -342,7 +342,7 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		"Platform info":      "platform_info",
 		"Tool prompts":       "tool_prompts",
 		"Skill listing":      "skill_listing",
-		"Memory files":       "memory_files",
+		"Memory files":      "memory_files",
 		"System tools":       "system_tools",
 		"MCP tools":          "mcp_tools",
 		"Custom agents":      "custom_agents",
@@ -1013,7 +1013,7 @@ func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	raw := strings.Repeat("word ", 500) // ~500 tokens
-	sections := (&Engine{}).estimateSystemPromptSections(raw, tmpDir, "", nil)
+	sections := (&Engine{}).estimateSystemPromptSections(raw, "", nil, "", "", tmpDir, "", nil)
 	if sections.base < 400 {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
@@ -1136,12 +1136,129 @@ func TestContextBreakdown_MemoryEstimatesActualInjection(t *testing.T) {
 	}
 }
 
+// Mid-session MEMORY.md edits change what a fresh FormatMemoryPrompt returns.
+// The breakdown must strip and estimate the section the prompt actually
+// carries (Build's copy at prompt-build time), not the recomputed disk state —
+// otherwise the strip turns into a no-op and the memory bytes land in both
+// "System prompt" and "Memory files" until the next prompt rebuild.
+func TestContextBreakdown_MemoryStripSurvivesDiskEdit(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	// Isolated home so the {{SYSTEM}}/{{SOUL}} expansion below is
+	// deterministic: DefaultBasePrompt fallback, empty soul.
+	t.Setenv("HOME", t.TempDir())
+
+	e := newTestEngineForBreakdown(t)
+	memDir := t.TempDir()
+	idxV1 := "# Memory\n\n" + strings.Repeat("- [Alpha](mem_alpha.md) — hook line a\n", 150)
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(idxV1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	memPromptV1 := context.FormatMemoryPrompt(e.workingDir, memDir)
+	if memPromptV1 == "" {
+		t.Fatal("FormatMemoryPrompt returned empty; typed memory must be enabled")
+	}
+	b := context.NewBuilder(e.workingDir)
+	b.ProjectDir = e.projectDir
+	b.MemoryDirOverride = memDir
+	raw := b.Build()
+	e.SetSystemPrompt(raw)
+	e.memoryDir = memDir
+	e.ContextTokens = 50_000
+
+	// The mid-session edit: the index on disk no longer matches what Build
+	// wrote into the prompt.
+	idxV2 := "# Memory\n\n- [Beta](mem_beta.md) — hook b\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(idxV2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bd := e.ContextBreakdown()
+
+	// The detail bucket mirrors the section the prompt actually carries (v1),
+	// not the freshly recomputed v2.
+	if len(bd.MemoryFiles) != 1 {
+		t.Fatalf("memory file details = %d, want 1 (the typed-memory prompt as one entry); paths: %v",
+			len(bd.MemoryFiles), memoryDetailPaths(bd.MemoryFiles))
+	}
+	if got, want := bd.MemoryFiles[0].Tokens, e.EstimateTokensCalibrated(memPromptV1); got != want {
+		t.Errorf("memory entry tokens = %d, want %d (the section inside the prompt, not the edited disk state)", got, want)
+	}
+
+	// The base estimate must strip v1 out of the raw prompt, so the scaled
+	// pie matches the pie derived from v1 inputs (template base, platform
+	// info, v1 memory) — not the double-counted v2 form.
+	wantBase := e.EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n")
+	wantPlatform := e.EstimateTokensCalibrated(b.RuntimeInfo())
+	wantScaled := scaleProportionally(componentEstimates{
+		SystemPromptBase: wantBase,
+		PlatformInfo:     wantPlatform,
+		MemoryFiles:      e.EstimateTokensCalibrated(memPromptV1),
+	}, 50_000)
+	for _, name := range []string{"System prompt", "Platform info", "Memory files"} {
+		got, ok := categoryByName(bd.Categories, name)
+		if !ok {
+			t.Errorf("category %q missing from the breakdown", name)
+			continue
+		}
+		if got.Tokens != wantScaled[name] {
+			t.Errorf("scaled %s = %d, want %d (strip must hit the section the prompt carries)", name, got.Tokens, wantScaled[name])
+		}
+	}
+}
+
 func memoryDetailPaths(ds []MemoryFileDetail) []string {
 	out := make([]string, len(ds))
 	for i, d := range ds {
 		out[i] = d.Path
 	}
 	return out
+}
+
+// Each extraction boundary, asserted on the exact extracted bytes.
+func TestExtractMemorySection_Boundaries(t *testing.T) {
+	t.Parallel()
+	const seg = "# auto memory\n\nbody of the memory section\n\n## MEMORY.md\n\n# Memory\n\n- [A](a.md) — hook\n"
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "segment runs to the end of the prompt",
+			raw:  "template\n\n{{SOUL}}\n\n# Environment\n\nRuntime: x\n\n" + seg,
+			want: seg,
+		},
+		{
+			name: "segment ends at the skills section",
+			raw:  "template\n\n" + seg + "\n\n## Available Skills\n\n- skill: x",
+			want: seg,
+		},
+		{
+			name: "segment ends at the appended voice block",
+			raw:  "template\n\n" + seg + "\n\n" + context.VoicePromptBlock,
+			want: seg,
+		},
+		{
+			name: "level-1 headings inside MEMORY.md content do not cut the segment",
+			raw:  "template\n\n" + seg,
+			want: seg,
+		},
+		{
+			name: "memory section at the very start of the prompt",
+			raw:  "\n\n" + seg + "\n\n## Available Skills\n\n- skill: x",
+			want: seg,
+		},
+		{
+			name: "no memory section in the prompt",
+			raw:  "template\n\n## Available Skills\n\n- skill: x",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		if got := extractMemorySection(tc.raw); got != tc.want {
+			t.Errorf("%s: extractMemorySection = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1588,7 +1705,7 @@ func TestBuildCategories_AllCategories(t *testing.T) {
 		"Platform info":  900,
 		"Tool prompts":   800,
 		"Skill listing":  700,
-		"Memory files":   600,
+		"Memory files":  600,
 		"System tools":   500,
 		"MCP tools":      400,
 		"Custom agents":  300,
@@ -1877,7 +1994,7 @@ func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	}
 	skillListing := "- alpha: first skill\n- beta: second skill"
 	raw := "You are a test assistant with a long system prompt for estimation."
-	got := e.estimateSystemPromptSections(raw, dir, skillListing, tools)
+	got := e.estimateSystemPromptSections(raw, "", nil, "", "", dir, skillListing, tools)
 
 	wantBase := e.EstimateTokensCalibrated(raw)
 	wantSkill := e.EstimateTokensCalibrated(skillListing)
@@ -1901,9 +2018,88 @@ func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	}
 }
 
+// The memory, platform and skills sections each carry their own category, so
+// the base estimate must be the raw prompt with those exact Build()-written
+// sections removed — estimating the full raw text counts the ~9.5k memory
+// prompt twice (once as "System prompt", once as "Memory files").
+func TestEstimateSystemPromptSections_StripsCategorizedSections(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	// Isolated home so the {{SYSTEM}}/{{SOUL}} expansion below is
+	// deterministic: DefaultBasePrompt fallback, empty soul.
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	projDir := t.TempDir()
+	memDir := t.TempDir()
+	idx := "# Memory\n\n- [Alpha](mem_alpha.md) — hook a\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(idx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	memPrompt := context.FormatMemoryPrompt(dir, memDir)
+	if memPrompt == "" {
+		t.Fatal("FormatMemoryPrompt returned empty; typed memory must be enabled")
+	}
+
+	skillListing := "- alpha — runs checks\n- beta — files results"
+	b := context.NewBuilder(dir)
+	b.ProjectDir = projDir
+	b.MemoryDirOverride = memDir
+	b.SkillListing = skillListing
+	raw := b.Build()
+
+	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt, projDir, dir, skillListing, nil)
+
+	// Build writes template + "\n\n{{SOUL}}" before the three categorized
+	// sections, so the stripped remainder is exactly that prefix — with the
+	// request-path stubs expanded ({{SYSTEM}} → DefaultBasePrompt, no
+	// SOUL.md → {{SOUL}} → empty).
+	wantBase := (&Engine{}).EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n")
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (template+SOUL only; the memory/platform/skills sections are double-counted)",
+			got.base, wantBase)
+	}
+}
+
+// Each section is stripped exactly once — the Build()-written copy. A second
+// copy living in the runtime-addition tail (an agent preamble quoting the
+// memory prompt, say) is real base content and must survive.
+func TestEstimateSystemPromptSections_StripsOnlyTheBuildWrittenCopy(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	memDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("# Memory\n\n- [A](a.md) — hook\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	memPrompt := context.FormatMemoryPrompt(dir, memDir)
+	if memPrompt == "" {
+		t.Fatal("FormatMemoryPrompt returned empty; typed memory must be enabled")
+	}
+
+	b := context.NewBuilder(dir)
+	b.MemoryDirOverride = memDir
+	skillListing := "- alpha — runs checks\n- beta — files results"
+	b.SkillListing = skillListing
+	tail := "\n\n# Agent preamble\n\n" + b.RuntimeInfo() + "\n\n" + memPrompt +
+		"\n\n## Available Skills\n\n" + skillListing
+	raw := b.Build() + tail
+
+	got := (&Engine{}).estimateSystemPromptSections(raw, "claude-test", nil, memPrompt, "", dir, skillListing, nil)
+
+	// The tail's RuntimeInfo copy carries model={{MODEL}} and
+	// modalities={{MODALITIES}}; the expansion replaces them there exactly
+	// as the request path would (first occurrence in the stripped text).
+	wantTail := strings.Replace(tail, "{{MODEL}}", "claude-test", 1)
+	wantTail = strings.Replace(wantTail, "{{MODALITIES}}", "text", 1)
+	wantBase := (&Engine{}).EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n" + wantTail)
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (Build's copies stripped once, the tail copies kept)", got.base, wantBase)
+	}
+}
+
 func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("", t.TempDir(), "- skill: x", map[string]tool.Tool{
+	got := (&Engine{}).estimateSystemPromptSections("", "", nil, "", "", t.TempDir(), "- skill: x", map[string]tool.Tool{
 		"Bash": &stubTool{name: "Bash", prompt: "Run a shell command."},
 	})
 	if got != (sysPromptSections{}) {
@@ -1913,7 +2109,7 @@ func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 
 func TestEstimateSystemPromptSections_SkillListingEmpty(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("prompt text here", t.TempDir(), "", nil)
+	got := (&Engine{}).estimateSystemPromptSections("prompt text here", "", nil, "", "", t.TempDir(), "", nil)
 	if got.skill != 0 {
 		t.Errorf("skill = %d, want 0 for an empty listing", got.skill)
 	}
@@ -1922,6 +2118,97 @@ func TestEstimateSystemPromptSections_SkillListingEmpty(t *testing.T) {
 	}
 	if got.base == 0 {
 		t.Error("base = 0, want a non-zero estimate for a non-empty prompt")
+	}
+}
+
+// The request path (engine.go callLLM) hot-expands {{SYSTEM}}/{{SOUL}}/
+// {{MODEL}} before the prompt reaches the API. Estimating the stub form
+// leaves the real SYSTEM/SOUL tokens invisible to every category, which
+// proportional scaling then smears across the board. Isolated home with no
+// SYSTEM.md/SOUL.md pins the DefaultBasePrompt fallback and empty-soul
+// branches of the expansion.
+func TestEstimateSystemPromptSections_ExpandsRequestStubs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	e := &Engine{}
+
+	raw := "You are {{MODEL}}. {{SYSTEM}}\n\n{{SOUL}}"
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "", nil)
+
+	wantText := "You are claude-test. " + context.DefaultBasePrompt() + "\n\n"
+	wantBase := e.EstimateTokensCalibrated(wantText)
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (stub form estimates at %d — the whole default base prompt was invisible)",
+			got.base, wantBase, e.EstimateTokensCalibrated(raw))
+	}
+}
+
+// SYSTEM.md and SOUL.md present in the isolated home: {{SYSTEM}} expands to
+// the file's contents (not the default fallback), {{SOUL}} gets the request
+// path's persona wrapper header verbatim.
+func TestEstimateSystemPromptSections_ExpandsSystemAndSoulFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	gbotDir := filepath.Join(home, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	systemMd := strings.Repeat("custom system rule\n", 200)
+	if err := os.WriteFile(filepath.Join(gbotDir, "SYSTEM.md"), []byte(systemMd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	soulMd := "Speak with pirate flair."
+	if err := os.WriteFile(filepath.Join(gbotDir, "SOUL.md"), []byte(soulMd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &Engine{}
+	got := e.estimateSystemPromptSections("{{SYSTEM}}\n\n{{SOUL}}", "claude-test", nil, "", "", t.TempDir(), "", nil)
+
+	wantText := strings.TrimSpace(systemMd) +
+		"\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" +
+		strings.TrimSpace(soulMd)
+	wantBase := e.EstimateTokensCalibrated(wantText)
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (SYSTEM.md contents + SOUL persona wrapper must be counted)", got.base, wantBase)
+	}
+}
+
+// Only the FIRST occurrence of each stub is expanded — the request path
+// replaces with count 1 (the request-path tests pin exactly-once there), so
+// a second occurrence is literal base content and must survive.
+func TestEstimateSystemPromptSections_ReplacesOnlyFirstStubOccurrence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	e := &Engine{}
+
+	raw := "A {{MODEL}} B {{SYSTEM}} C {{SOUL}} D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "", nil)
+
+	wantText := "A claude-test B " + context.DefaultBasePrompt() + " C  D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
+	wantBase := e.EstimateTokensCalibrated(wantText)
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (exactly one occurrence of each stub expanded)", got.base, wantBase)
+	}
+}
+
+// {{MODALITIES}} expands with the engine's modality list joined by "+" —
+// the request path's exact spelling (callLLM) — and only its first
+// occurrence; an empty list defaults to ["text"], again matching the
+// request path.
+func TestEstimateSystemPromptSections_ExpandsModalitiesStub(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	e := &Engine{}
+
+	raw := "A {{MODALITIES}} B {{MODALITIES}}"
+	got := e.estimateSystemPromptSections(raw, "claude-test", []string{"text", "image"}, "", "", t.TempDir(), "", nil)
+	wantBase := e.EstimateTokensCalibrated("A text+image B {{MODALITIES}}")
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (first {{MODALITIES}} expanded, second literal)", got.base, wantBase)
+	}
+
+	got = e.estimateSystemPromptSections("M={{MODALITIES}}", "claude-test", nil, "", "", t.TempDir(), "", nil)
+	wantBase = e.EstimateTokensCalibrated("M=text")
+	if got.base != wantBase {
+		t.Errorf("base = %d, want %d (nil modalities default to text)", got.base, wantBase)
 	}
 }
 

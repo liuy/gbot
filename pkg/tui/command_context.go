@@ -500,7 +500,7 @@ func generateSuggestions(bd *engine.ContextBreakdown) []contextSuggestion {
 		if memPct >= memoryHighPercent || memTokens >= memoryHighTokens {
 			out = append(out, contextSuggestion{
 				Severity: "info",
-				Title:    "Memory files are large",
+				Title:    "Memory files is large",
 				Detail: fmt.Sprintf(
 					"Memory files: %s (%.1f%%). Consider trimming.",
 					utils.FormatTokenCount(memTokens), memPct),

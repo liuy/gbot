@@ -255,6 +255,13 @@ func TestRenderContextView_AgentsSection(t *testing.T) {
 // TestRenderContextView_MemoryFilesSection verifies memory file rendering.
 func TestRenderContextView_MemoryFilesSection(t *testing.T) {
 	bd := buildTestBreakdown()
+	// The header is asserted on the section renderer directly: at the view
+	// level the category legend also carries the name, which would mask a
+	// dropped section header.
+	section := renderMemorySection(bd)
+	if !strings.Contains(section, "Memory files") {
+		t.Errorf("missing 'Memory files' section header, got:\n%s", section)
+	}
 	output := renderContextView(bd, 80)
 
 	if !strings.Contains(output, "Memory files") {
@@ -366,13 +373,13 @@ func TestGenerateSuggestions_MemoryBloat(t *testing.T) {
 
 	found := false
 	for _, s := range suggs {
-		if s.Title == "Memory files are large" {
+		if s.Title == "Memory files is large" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected 'Memory files are large' suggestion at 10% / 10K tokens")
+		t.Error("expected 'Memory files is large' suggestion at 10% / 10K tokens")
 	}
 }
 

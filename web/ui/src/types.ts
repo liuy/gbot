@@ -81,7 +81,6 @@ export type ContextCategoryData = {
 }
 export type MCPToolDetailData = { name: string; serverName: string; tokens: number; isLoaded: boolean }
 export type SystemToolDetailData = { name: string; tokens: number }
-export type MemoryFileDetailData = { path: string; tokens: number }
 export type AgentDetailData = { agentType: string; source: string; tokens: number }
 export type SkillDetailData = { name: string; source: string; tokens: number }
 export type MessageBreakdownData = {
@@ -99,7 +98,6 @@ export type ContextBreakdownData = {
   isAutoCompact: boolean; categories: ContextCategoryData[]
   mcpToolsLoaded: MCPToolDetailData[]; mcpToolsDeferred: MCPToolDetailData[]
   deferredBuiltinTools: SystemToolDetailData[]; systemTools: SystemToolDetailData[]
-  memoryFiles: MemoryFileDetailData[]
   agents: AgentDetailData[]; skills: SkillDetailData[]
   messageBreakdown: MessageBreakdownData | null; apiUsage: APIUsageData | null
 }
