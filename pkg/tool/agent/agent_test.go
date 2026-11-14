@@ -507,7 +507,7 @@ func TestFormatAgentLine(t *testing.T) {
 		Tools:           []string{"Read", "Bash"},
 		DisallowedTools: nil,
 	}
-	line := formatAgentLine(def)
+	line := FormatAgentLine(def)
 	if !strings.Contains(line, "Test") {
 		t.Errorf("formatAgentLine should contain agent type, got %q", line)
 	}

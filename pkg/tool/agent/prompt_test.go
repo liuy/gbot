@@ -98,7 +98,7 @@ func TestFormatAgentLine_InPromptTest(t *testing.T) {
 		WhenToUse: "Find files",
 		Tools:     []string{"Read"},
 	}
-	line := formatAgentLine(def)
+	line := FormatAgentLine(def)
 	if !strings.Contains(line, "Explore") {
 		t.Errorf("line should contain agent type: %q", line)
 	}

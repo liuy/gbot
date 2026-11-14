@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -352,7 +353,7 @@ func (e *Engine) estimateComponents(
 	est.MCPLoaded = e.estimateMCPLoadedTools(mcpReg)
 
 	// 5. Custom agents.
-	est.Agents = e.estimateAgents(agentDefs)
+	est.Agents = e.estimateAgents(toolsSnapshot)
 
 	// 6. Messages (breakdown + total).
 	total := 0
@@ -445,10 +446,16 @@ func (e *Engine) estimateSystemPromptSections(
 
 	base := e.EstimateTokensCalibrated(stripped)
 
-	// Tool prompts: sum each tool's Prompt() contribution.
+	// Tool prompts: sum each tool's Prompt() contribution. The Agent tool
+	// is excluded — its Prompt() is the "Custom agents" category's entire
+	// estimate, and counting it here would bill the same request bytes
+	// twice.
 	toolPromptsTotal := 0
-	for _, t := range toolsSnapshot {
+	for name, t := range toolsSnapshot {
 		if !t.IsEnabled() {
+			continue
+		}
+		if name == "Agent" {
 			continue
 		}
 		prompt := t.Prompt()
@@ -527,19 +534,20 @@ func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
 	return e.EstimateTokensCalibrated(desc) + e.EstimateTokensCalibrated(string(schema))
 }
 
-func (e *Engine) estimateAgents(defs []*types.AgentDefinition) int {
-	if len(defs) == 0 {
+// estimateAgents returns the Agent tool's contribution to the parent
+// request. Sub-agent system prompts only enter the sub-agent's own
+// request, so the parent-side agent cost is the Agent tool's full
+// Prompt() — the same text buildToolDefs ships as the tool description.
+// Zero only when the request's tool set carries no enabled Agent tool
+// (no snapshot, tool absent, or disabled): the category mirrors what the
+// request carries, never what the registry knows — zero definitions
+// still ship the tool's boilerplate prompt.
+func (e *Engine) estimateAgents(toolsSnapshot map[string]tool.Tool) int {
+	t, ok := toolsSnapshot["Agent"]
+	if !ok || !t.IsEnabled() {
 		return 0
 	}
-	total := 0
-	for _, d := range defs {
-		text := d.AgentType + " " + d.WhenToUse
-		if d.SystemPrompt != nil {
-			text += " " + d.SystemPrompt()
-		}
-		total += e.EstimateTokensCalibrated(text)
-	}
-	return total
+	return e.EstimateTokensCalibrated(t.Prompt())
 }
 
 func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
@@ -802,7 +810,7 @@ var categoryColors = map[string]string{
 	"Platform info":      ColorPlatformInfo,
 	"Tool prompts":       ColorToolPrompts,
 	"Skill listing":      ColorSkillListing,
-	"Memory files":      ColorMemoryFiles,
+	"Memory files":       ColorMemoryFiles,
 	"System tools":       ColorSystemTools,
 	"MCP tools":          ColorMCPLoaded,
 	"Deferred tools":     ColorMCPDeferred,
@@ -820,7 +828,7 @@ var categoryIDs = map[string]string{
 	"Platform info":      "platform_info",
 	"Tool prompts":       "tool_prompts",
 	"Skill listing":      "skill_listing",
-	"Memory files":      "memory_files",
+	"Memory files":       "memory_files",
 	"System tools":       "system_tools",
 	"MCP tools":          "mcp_tools",
 	"Custom agents":      "custom_agents",
@@ -1086,7 +1094,9 @@ func (e *Engine) buildDetails(
 		}
 	}
 
-	// Agents.
+	// Agents. Detail rows share the Agent prompt's own line assembly, so
+	// the rows approximate the category's estimate (per-line estimates
+	// never sum exactly to the whole-prompt estimate).
 	for _, d := range agentDefs {
 		if d == nil {
 			continue
@@ -1094,7 +1104,7 @@ func (e *Engine) buildDetails(
 		ds.agents = append(ds.agents, AgentDetail{
 			AgentType: d.AgentType,
 			Source:    "built-in",
-			Tokens:    e.EstimateTokensCalibrated(d.AgentType + " " + d.WhenToUse),
+			Tokens:    e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d)),
 		})
 	}
 

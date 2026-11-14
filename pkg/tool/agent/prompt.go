@@ -40,7 +40,7 @@ func AgentPrompt(allowedAgentTypes []string) string {
 	filtered := formatAgentList(defs, allowedAgentTypes)
 	var lines []string
 	for _, def := range filtered {
-		lines = append(lines, formatAgentLine(def))
+		lines = append(lines, FormatAgentLine(def))
 	}
 	result := fmt.Sprintf(agentToolPrompt, strings.Join(lines, "\n"))
 	// Remove General references if General is not in allowed types
@@ -57,9 +57,11 @@ func agentPrompt() string {
 	return AgentPrompt(nil)
 }
 
-// formatAgentLine formats one agent definition as a prompt line.
+// FormatAgentLine formats one agent definition as a prompt line.
 // Source: prompt.ts:43-46 — formatAgentLine
-func formatAgentLine(def *types.AgentDefinition) string {
+// Exported because /context's agent detail rows estimate from the same
+// line text, keeping the "Custom agents" category and its rows one source.
+func FormatAgentLine(def *types.AgentDefinition) string {
 	toolsDesc := getToolsDescription(def)
 	return fmt.Sprintf("- %s: %s (Tools: %s)", def.AgentType, def.WhenToUse, toolsDesc)
 }

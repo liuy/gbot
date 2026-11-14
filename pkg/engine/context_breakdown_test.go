@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -328,8 +329,12 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	e.mcpRegistry = reg
 	// stubTool feeds "Tool prompts" (non-empty Prompt); testTool feeds
 	// "System tools" (stubTool's empty Description estimates to 0 tokens).
+	// The Agent stub feeds "Custom agents": since the fix the category
+	// counts the Agent tool's request-side Prompt(), so without an Agent
+	// tool in the snapshot the category emits nothing.
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
 	e.tools["Read"] = &testTool{name: "Read"}
+	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "Launch a new agent."}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			{Type: types.ContentTypeText, Text: "Hello world"},
@@ -342,7 +347,7 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 		"Platform info":      "platform_info",
 		"Tool prompts":       "tool_prompts",
 		"Skill listing":      "skill_listing",
-		"Memory files":      "memory_files",
+		"Memory files":       "memory_files",
 		"System tools":       "system_tools",
 		"MCP tools":          "mcp_tools",
 		"Custom agents":      "custom_agents",
@@ -964,6 +969,40 @@ func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
 	}
 	if len(bd.Agents) == 0 {
 		t.Error("expected agent details")
+	}
+}
+
+// Agent detail rows share the Agent prompt's own line assembly, so each
+// row's tokens are the FormatAgentLine text (Tools segment included) —
+// the rows plus the boilerplate sum back to the category's estimate.
+func TestContextBreakdown_AgentDetailRowsUsePromptLines(t *testing.T) {
+	t.Parallel()
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "agent prompt"}
+	defs := []*types.AgentDefinition{
+		{AgentType: "Alpha", WhenToUse: "when alpha"},
+		{AgentType: "Beta", WhenToUse: "when beta", Tools: []string{"Read", "Bash"}},
+	}
+	e.SetAgentDefs(defs)
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+	e.ContextTokens = 10_000
+
+	bd := e.ContextBreakdown()
+	if len(bd.Agents) != len(defs) {
+		t.Fatalf("Agents = %d entries, want %d", len(bd.Agents), len(defs))
+	}
+	for i, d := range defs {
+		want := e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d))
+		if bd.Agents[i].AgentType != d.AgentType {
+			t.Errorf("Agents[%d].AgentType = %q, want %q", i, bd.Agents[i].AgentType, d.AgentType)
+		}
+		if bd.Agents[i].Tokens != want {
+			t.Errorf("agent %q tokens = %d, want %d (FormatAgentLine estimate)",
+				d.AgentType, bd.Agents[i].Tokens, want)
+		}
 	}
 }
 
@@ -1705,7 +1744,7 @@ func TestBuildCategories_AllCategories(t *testing.T) {
 		"Platform info":  900,
 		"Tool prompts":   800,
 		"Skill listing":  700,
-		"Memory files":  600,
+		"Memory files":   600,
 		"System tools":   500,
 		"MCP tools":      400,
 		"Custom agents":  300,
@@ -2015,6 +2054,29 @@ func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	wantPlatform := e.EstimateTokensCalibrated(builder.RuntimeInfo())
 	if got.platform != wantPlatform {
 		t.Errorf("platform = %d, want %d", got.platform, wantPlatform)
+	}
+}
+
+// The Agent tool's Prompt() is the "Custom agents" category's entire
+// estimate; Tool prompts must not bill the same request bytes twice.
+func TestEstimateSystemPromptSections_ToolPromptsExcludeAgentTool(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	tools := map[string]tool.Tool{
+		"Bash":  &stubTool{name: "Bash", prompt: "Run a shell command."},
+		"Read":  &stubTool{name: "Read", prompt: "Read a file from disk."},
+		"Agent": &stubTool{name: "Agent", prompt: "AGENT-ONLY BOILERPLATE " + strings.Repeat("agent prompt body ", 40)},
+	}
+	want := e.EstimateTokensCalibrated("Run a shell command.") +
+		e.EstimateTokensCalibrated("Read a file from disk.")
+	// A map range order is randomized per call, so the exclusion must hold
+	// no matter which slot "Agent" takes: every non-Agent prompt stays
+	// counted, and a loop that stops at "Agent" fails some order.
+	for range 20 {
+		got := e.estimateSystemPromptSections("system prompt text", "", nil, "", "", t.TempDir(), "", tools)
+		if got.toolPrompts != want {
+			t.Errorf("toolPrompts = %d, want %d (Agent tool prompt must be excluded)", got.toolPrompts, want)
+		}
 	}
 }
 
@@ -2329,22 +2391,36 @@ func TestEstimateAgents_Empty(t *testing.T) {
 	if got := e.estimateAgents(nil); got != want {
 		t.Errorf("estimateAgents(nil) = %d, want %d", got, want)
 	}
-	if got := e.estimateAgents([]*types.AgentDefinition{}); got != want {
-		t.Errorf("estimateAgents(empty) = %d, want %d", got, want)
+}
+
+// The category mirrors the request, not the registry: the estimate is
+// exactly the enabled Agent tool's Prompt() as buildToolDefs ships it.
+// Sub-agent system prompts never enter this — structurally, since the
+// signature carries no definitions to miscount.
+func TestEstimateAgents_MirrorsAgentToolPrompt(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	tools := map[string]tool.Tool{"Agent": &stubTool{name: "Agent", prompt: "agent prompt"}}
+	want := e.EstimateTokensCalibrated("agent prompt")
+	if got := e.estimateAgents(tools); got != want {
+		t.Errorf("estimateAgents(tools) = %d, want %d (the tool's Prompt(), nothing else)",
+			got, want)
 	}
 }
 
-func TestEstimateAgents_IncludesSystemPrompt(t *testing.T) {
+// The category mirrors what the request carries: without an enabled Agent
+// tool in the snapshot there is no agent cost in the request to report,
+// even with definitions registered.
+func TestEstimateAgents_ZeroWithoutAgentToolInRequest(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	defs := []*types.AgentDefinition{
-		{AgentType: "Alpha", WhenToUse: "when alpha"},
-		{AgentType: "Beta", WhenToUse: "when beta", SystemPrompt: func() string { return "beta system prompt body" }},
+	want := 0
+	if got := e.estimateAgents(map[string]tool.Tool{}); got != want {
+		t.Errorf("estimateAgents with no Agent tool = %d, want %d", got, want)
 	}
-	want := e.EstimateTokensCalibrated("Alpha when alpha") +
-		e.EstimateTokensCalibrated("Beta when beta beta system prompt body")
-	if got := e.estimateAgents(defs); got != want {
-		t.Errorf("estimateAgents = %d, want %d", got, want)
+	disabled := map[string]tool.Tool{"Agent": namedDisabledTool{name: "Agent"}}
+	if got := e.estimateAgents(disabled); got != want {
+		t.Errorf("estimateAgents with disabled Agent tool = %d, want %d", got, want)
 	}
 }
 
@@ -2629,7 +2705,7 @@ func TestBuildDetails_Agents(t *testing.T) {
 	want := []AgentDetail{{
 		AgentType: "Alpha",
 		Source:    "built-in",
-		Tokens:    e.EstimateTokensCalibrated("Alpha when alpha"),
+		Tokens:    e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[1])),
 	}}
 	if !slices.Equal(ds.agents, want) {
 		t.Errorf("agents = %v, want %v", ds.agents, want)
