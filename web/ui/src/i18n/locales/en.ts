@@ -167,7 +167,6 @@ export const dict = {
   ctxAssistantText: 'Assistant text',
   ctxUserText: 'User text',
   ctxTopTools: 'Top tools',
-  ctxSystemPrompt: 'System prompt',
   ctxMemoryFiles: 'Memory files',
   ctxSystemTools: 'System tools',
   ctxMcpLoaded: 'MCP tools loaded',

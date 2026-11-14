@@ -186,10 +186,6 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 		SystemTools: []engine.SystemToolDetail{
 			{Name: "Bash", Tokens: 1000},
 		},
-		SystemPromptSections: []engine.SystemPromptSectionDetail{
-			{Name: "Base prompt", ID: "base_prompt", Tokens: 2000},
-			{Name: "Tool prompts", ID: "tool_prompts", Tokens: 3000},
-		},
 		MemoryFiles: []engine.MemoryFileDetail{
 			{Path: "CLAUDE.md", Tokens: 1500},
 		},
@@ -232,21 +228,10 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// Verify every section is present
-	sps, ok := msg["systemPromptSections"].([]any)
-	if !ok || len(sps) != 2 {
-		t.Fatalf("systemPromptSections: ok=%v len=%d", ok, len(sps))
-	}
-	sps0 := sps[0].(map[string]any)
-	if sps0["name"] != "Base prompt" {
-		t.Errorf("sps0 name = %v", sps0["name"])
-	}
-	if sps0["id"] != "base_prompt" {
-		t.Errorf("sps0 id = %v, want base_prompt", sps0["id"])
-	}
-	sps1 := sps[1].(map[string]any)
-	if sps1["id"] != "tool_prompts" {
-		t.Errorf("sps1 id = %v, want tool_prompts", sps1["id"])
+	// Verify the removed sub-section stays out of the wire: the categories
+	// already carry platform info / tool prompts / skill listing.
+	if _, present := msg["systemPromptSections"]; present {
+		t.Fatal("systemPromptSections still on the wire")
 	}
 
 	mfs, ok := msg["memoryFiles"].([]any)
@@ -394,11 +379,6 @@ func TestConvertersCopyEveryField(t *testing.T) {
 	sys := convertSystemTools([]engine.SystemToolDetail{{Name: "Bash", Tokens: 1000}})
 	if len(sys) != 1 || sys[0].Name != "Bash" || sys[0].Tokens != 1000 {
 		t.Errorf("systemTools = %+v, want {Bash 1000}", sys)
-	}
-
-	sec := convertPromptSections([]engine.SystemPromptSectionDetail{{Name: "Base prompt", ID: "base_prompt", Tokens: 2000}})
-	if len(sec) != 1 || sec[0].Name != "Base prompt" || sec[0].ID != "base_prompt" || sec[0].Tokens != 2000 {
-		t.Errorf("promptSections = %+v, want all three fields", sec)
 	}
 
 	mem := convertMemoryFiles([]engine.MemoryFileDetail{{Path: "CLAUDE.md", Tokens: 1500}})

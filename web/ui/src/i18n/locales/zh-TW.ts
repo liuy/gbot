@@ -142,7 +142,6 @@ export const dict: Dict = {
   ctxAssistantText: '助理文字',
   ctxUserText: '使用者文字',
   ctxTopTools: '工具用量',
-  ctxSystemPrompt: '系統提示詞',
   ctxMemoryFiles: '記憶檔案',
   ctxSystemTools: '系統工具',
   ctxMcpLoaded: '已載入 MCP 工具',

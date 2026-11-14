@@ -100,7 +100,6 @@ function sampleBreakdown(overrides: Partial<ContextBreakdownData> = {}): Context
     mcpToolsDeferred: [],
     deferredBuiltinTools: [],
     systemTools: [],
-    systemPromptSections: [],
     memoryFiles: [],
     agents: [],
     skills: [],
@@ -484,43 +483,28 @@ describe('Header context popover i18n', () => {
     expect(text).toContain('Legacy server')
   })
 
-  it('renders system prompt sub-rows translated from semantic ids in zh', () => {
+  it('system prompt sub-rows do not render: the categories list already covers them', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      systemPromptSections: [
-        { name: 'Base prompt', id: 'base_prompt', tokens: 6000 },
-        { name: 'Platform info', id: 'platform_info', tokens: 300 },
-        { name: 'Tool prompts', id: 'tool_prompts', tokens: 1500 },
+      categories: [
+        { name: 'Platform info', id: 'platform_info', tokens: 300, percentage: 0.2, color: '39', isFree: false, isReserved: false },
+        { name: 'Tool prompts', id: 'tool_prompts', tokens: 1500, percentage: 0.8, color: '208', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
       ],
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    expect(text).toContain('基础提示词')
+    // Platform info / tool prompts are category rows already; the dedicated
+    // section was their verbatim repeat and is gone.
+    expect(text).not.toContain('基础提示词')
+    expect(text).not.toContain('Base prompt')
     expect(text).toContain('平台信息')
     expect(text).toContain('工具提示词')
-    expect(text).not.toContain('Base prompt')
-    expect(text).not.toContain('Platform info')
-    expect(text).not.toContain('Tool prompts')
-  })
-
-  it('falls back to the raw name for system prompt sub-rows with unknown or absent ids', () => {
-    header.setContext(500, 200000)
-    header.setContextBreakdown(sampleBreakdown({
-      systemPromptSections: [
-        { name: 'Future section', id: 'future_section', tokens: 100 },
-        { name: 'Legacy section', tokens: 200 },
-      ],
-    }))
-    clickTrigger()
-    const text = getPanel()!.textContent ?? ''
-    expect(text).toContain('Future section')
-    expect(text).toContain('Legacy section')
   })
 
   it('renders section titles and API usage rows in zh', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      systemPromptSections: [{ name: 'Core', tokens: 1000 }],
       memoryFiles: [{ path: '/m/user_name.md', tokens: 1500 }],
       systemTools: [{ name: 'grep', tokens: 200 }],
       mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
@@ -536,7 +520,6 @@ describe('Header context popover i18n', () => {
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    expect(text).toContain('系统提示词')
     expect(text).toContain('记忆文件')
     expect(text).toContain('系统工具')
     expect(text).toContain('已加载 MCP 工具')
@@ -707,7 +690,6 @@ describe('Header Compact button', () => {
       mcpToolsDeferred: [],
       deferredBuiltinTools: [],
       systemTools: [],
-      systemPromptSections: [],
       memoryFiles: [],
       agents: [],
       skills: [],
@@ -1317,19 +1299,19 @@ describe('Header context breakdown structure', () => {
 
   it('sections and detail rows: heading classes and name/value spans', () => {
     const panel = openWith(sampleBreakdown({
-      systemPromptSections: [{ name: 'Core', tokens: 500 }],
+      memoryFiles: [{ path: '/m/notes.md', tokens: 500 }],
     }))
     expect(panel.children.length).toBe(4) // head, category list, section, detail row
     const sec = panel.children[2] as HTMLElement
     expect(sec.className).toBe('pt-2 pb-1 px-4')
     expect(sec.children.length).toBe(1)
     expect(sec.children[0].className).toBe('mono text-[11px] text-t3 uppercase tracking-wider')
-    expect(sec.children[0].textContent).toBe('System prompt')
+    expect(sec.children[0].textContent).toBe('Memory files')
     const row = panel.children[3] as HTMLElement
     expect(row.className).toBe('flex items-center justify-between px-4 py-1')
     expect(row.children.length).toBe(2)
     expect(row.children[0].className).toBe('text-[13px] text-t2 truncate')
-    expect(row.children[0].textContent).toBe('Core')
+    expect(row.children[0].textContent).toBe('notes.md')
     expect(row.children[1].className).toBe('mono text-[12px] text-t3 ml-2 shrink-0')
     expect(row.children[1].textContent).toBe('500')
   })

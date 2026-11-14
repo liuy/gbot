@@ -53,11 +53,6 @@ func buildTestBreakdown() *engine.ContextBreakdown {
 		{Name: "Write", Tokens: 500},
 	}
 
-	bd.SystemPromptSections = []engine.SystemPromptSectionDetail{
-		{Name: "Base prompt", Tokens: 6000},
-		{Name: "Tool prompts", Tokens: 15000},
-	}
-
 	bd.MemoryFiles = []engine.MemoryFileDetail{
 		{Path: "/home/user/project/CLAUDE.md", Tokens: 2000},
 		{Path: "/home/user/.gbot/projects/xyz/user_role.md", Tokens: 1000},

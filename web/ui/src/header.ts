@@ -404,14 +404,6 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     }
   }
 
-  if (data.systemPromptSections.length > 0) {
-    const sec = createSection(t('ctxSystemPrompt'))
-    panel.appendChild(sec)
-    for (const s of data.systemPromptSections) {
-      panel.appendChild(createDetailRow(idLabel(s.id, s.name), s.tokens))
-    }
-  }
-
   if (data.memoryFiles.length > 0) {
     const sec = createSection(t('ctxMemoryFiles'))
     panel.appendChild(sec)

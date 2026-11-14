@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	stdctx "context"
 	"encoding/json"
 	"fmt"
@@ -369,46 +370,26 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	}
 }
 
-// TestContextBreakdown_SystemPromptSectionIDs verifies every emitted system
-// prompt section carries a stable semantic ID for wui-side i18n. Sections with
-// zero tokens are dropped, so every entry in the fixture's expected set must
-// emit for its ID mapping to be covered.
-func TestContextBreakdown_SystemPromptSectionIDs(t *testing.T) {
+// TestContextBreakdown_NoSystemPromptSections pins the removal: the
+// per-section sub-breakdown duplicated the category rows (platform info,
+// tool prompts, skill listing are categories already), so the payload must
+// stay free of that field.
+func TestContextBreakdown_NoSystemPromptSections(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("You are a test assistant.")
 	e.SetSkillListing("test-skill: a test")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
 	e.ContextTokens = 50_000
 
-	want := map[string]string{
-		"Base prompt":   "base_prompt",
-		"Platform info": "platform_info",
-		"Tool prompts":  "tool_prompts",
-		"Skill listing": "skill_listing",
-	}
-
 	bd := e.ContextBreakdown()
-	if len(bd.SystemPromptSections) == 0 {
-		t.Fatal("SystemPromptSections is empty")
+	payload, err := json.Marshal(bd)
+	if err != nil {
+		t.Fatalf("marshal breakdown: %v", err)
 	}
-	emitted := map[string]bool{}
-	for _, s := range bd.SystemPromptSections {
-		id, ok := want[s.Name]
-		if !ok {
-			t.Fatalf("unexpected section name %q", s.Name)
-		}
-		if s.ID == "" {
-			t.Errorf("section %q has empty ID", s.Name)
-		}
-		if s.ID != id {
-			t.Errorf("section %q ID = %q, want %q", s.Name, s.ID, id)
-		}
-		emitted[s.Name] = true
-	}
-	for name := range want {
-		if !emitted[name] {
-			t.Errorf("section %q not emitted; its ID mapping is untested", name)
-		}
+	// Match the quoted JSON key, not the bare name: t.TempDir() embeds the
+	// test's own name into the projectspace path, which MemoryFiles carries.
+	if bytes.Contains(payload, []byte(`"SystemPromptSections"`)) {
+		t.Error("payload still carries SystemPromptSections")
 	}
 }
 
@@ -1871,31 +1852,9 @@ func TestEstimateComponents_Exact(t *testing.T) {
 	if est.Messages != wantMessages {
 		t.Errorf("Messages = %d, want %d (raw total %d)", est.Messages, wantMessages, total)
 	}
-	mb := est.MessagesByCategory
-	if mb == nil {
-		t.Fatal("MessagesByCategory is nil")
-	}
-	if mb.AttachmentTokens != a1+a2 {
-		t.Errorf("AttachmentTokens = %d, want %d", mb.AttachmentTokens, a1+a2)
-	}
-	if mb.UserTextTokens != u1+u2 {
-		t.Errorf("UserTextTokens = %d, want %d", mb.UserTextTokens, u1+u2)
-	}
-	if mb.ToolCallTokens != call {
-		t.Errorf("ToolCallTokens = %d, want %d", mb.ToolCallTokens, call)
-	}
-	if mb.ToolResultTokens != result {
-		t.Errorf("ToolResultTokens = %d, want %d", mb.ToolResultTokens, result)
-	}
-	if mb.AssistantTextTokens != 0 {
-		t.Errorf("AssistantTextTokens = %d, want 0", mb.AssistantTextTokens)
-	}
-	if want := []AttachmentByType{{Name: "queued_item", Tokens: a1 + a2}}; !slices.Equal(mb.AttachmentsByType, want) {
-		t.Errorf("AttachmentsByType = %v, want %v", mb.AttachmentsByType, want)
-	}
-	if want := []ToolCallByType{{Name: "Bash", CallTokens: call, ResultTokens: result}}; !slices.Equal(mb.ToolCallsByType, want) {
-		t.Errorf("ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
-	}
+	// The per-category classification lives on the buildDetails path
+	// (TestContextBreakdown_MessageBreakdown covers it); estimation only
+	// produces the Messages total.
 }
 
 // ---------------------------------------------------------------------------
@@ -2223,27 +2182,10 @@ func TestUpsertToolCall_NewEntryFields(t *testing.T) {
 // buildDetails — per-item detail slices.
 // ---------------------------------------------------------------------------
 
-func TestBuildDetails_SystemPromptSections(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	ds := e.buildDetails(
-		sysPromptSections{base: 5, platform: 0, toolPrompts: 3, skill: 1},
-		nil, nil, nil, "", nil, nil, nil,
-	)
-	want := []SystemPromptSectionDetail{
-		{Name: "Base prompt", ID: "base_prompt", Tokens: 5},
-		{Name: "Tool prompts", ID: "tool_prompts", Tokens: 3},
-		{Name: "Skill listing", ID: "skill_listing", Tokens: 1},
-	}
-	if !slices.Equal(ds.systemPromptSections, want) {
-		t.Errorf("systemPromptSections = %v, want %v", ds.systemPromptSections, want)
-	}
-}
-
 func TestBuildDetails_MemoryFiles(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	ds := e.buildDetails(sysPromptSections{}, []context.MemoryFile{
+	ds := e.buildDetails([]context.MemoryFile{
 		{Path: "/m/one.md", Content: "memory one content"},
 		{Path: "/m/two.md", Content: "memory two content"},
 	}, nil, nil, "", nil, nil, nil)
@@ -2294,7 +2236,7 @@ func TestBuildDetails_SystemAndDeferredTools(t *testing.T) {
 	e := &Engine{}
 	tools := contextToolSet()
 	ts := newToolSearchState()
-	ds := e.buildDetails(sysPromptSections{}, nil, tools, ts, "", nil, nil, nil)
+	ds := e.buildDetails(nil, tools, ts, "", nil, nil, nil)
 
 	wantSystem := make([]string, 0, 4)
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
@@ -2320,7 +2262,7 @@ func TestBuildDetails_DiscoveredDeferredIsSkipped(t *testing.T) {
 	tools := contextToolSet()
 	ts := newToolSearchState()
 	ts.DiscoverTools([]string{"ToolSearch", "PlanSearch", "DocSearch"})
-	ds := e.buildDetails(sysPromptSections{}, nil, tools, ts, "", nil, nil, nil)
+	ds := e.buildDetails(nil, tools, ts, "", nil, nil, nil)
 
 	// A discovered deferred tool is neither a loaded system tool nor a
 	// deferred entry: the deferred branch always continues past it.
@@ -2341,7 +2283,7 @@ func TestBuildDetails_NilToolSearchDropsDeferredEntry(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 	tools := contextToolSet()
-	ds := e.buildDetails(sysPromptSections{}, nil, tools, nil, "", nil, nil, nil)
+	ds := e.buildDetails(nil, tools, nil, "", nil, nil, nil)
 	// With no tool-search state the deferred tool is not listed as deferred
 	// (the dump mirrors what the request carries), and it is not a loaded
 	// system tool either.
@@ -2371,7 +2313,7 @@ func TestBuildDetails_MCPLoadedAndDeferred(t *testing.T) {
 	})
 	e := &Engine{}
 	tools := map[string]tool.Tool{"mcp__srv__loaded": NewMCPTool(reg.GetTools()[0], nil)}
-	ds := e.buildDetails(sysPromptSections{}, nil, tools, nil, "", nil, nil, reg)
+	ds := e.buildDetails(nil, tools, nil, "", nil, nil, reg)
 
 	wantLoaded := []MCPToolDetail{{
 		Name: "loaded", ServerName: "srv", IsLoaded: true,
@@ -2396,7 +2338,7 @@ func TestBuildDetails_Agents(t *testing.T) {
 		nil,
 		{AgentType: "Alpha", WhenToUse: "when alpha"},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", defs, nil, nil)
+	ds := e.buildDetails(nil, nil, nil, "", defs, nil, nil)
 	want := []AgentDetail{{
 		AgentType: "Alpha",
 		Source:    "built-in",
@@ -2411,7 +2353,7 @@ func TestBuildDetails_Skills(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 	listing := "  alpha: first skill\n\n\tbeta: second skill\t\n"
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, listing, nil, nil, nil)
+	ds := e.buildDetails(nil, nil, nil, listing, nil, nil, nil)
 	want := []SkillDetail{
 		{Name: "alpha: first skill", Source: "plugin", Tokens: e.EstimateTokensCalibrated("alpha: first skill")},
 		{Name: "beta: second skill", Source: "plugin", Tokens: e.EstimateTokensCalibrated("beta: second skill")},
@@ -2423,7 +2365,7 @@ func TestBuildDetails_Skills(t *testing.T) {
 
 func TestBuildDetails_SkillsEmptyListing(t *testing.T) {
 	t.Parallel()
-	ds := (&Engine{}).buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, nil, nil)
+	ds := (&Engine{}).buildDetails(nil, nil, nil, "", nil, nil, nil)
 	if len(ds.skills) != 0 {
 		t.Errorf("skills = %v, want empty for an empty listing", ds.skills)
 	}
@@ -2449,7 +2391,7 @@ func TestBuildDetails_MessageBreakdownRoles(t *testing.T) {
 			Content:    []types.ContentBlock{types.NewTextBlock("second user text")},
 			Attachment: &types.Attachment{Type: types.AttachmentTypeQueued, Prompt: "second attachment prompt"}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	mb := ds.messageBreakdown
 	if mb == nil {
 		t.Fatal("messageBreakdown is nil")
@@ -2493,7 +2435,7 @@ func TestBuildDetails_ToolCallsSortedAllKept(t *testing.T) {
 			},
 		})
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	got := make([]string, 0, len(ds.messageBreakdown.ToolCallsByType))
 	for _, tc := range ds.messageBreakdown.ToolCallsByType {
 		got = append(got, tc.Name)
@@ -2909,7 +2851,7 @@ func TestBuildDetails_ToolCallsSixAllKept(t *testing.T) {
 			},
 		})
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	got := make([]string, 0, len(ds.messageBreakdown.ToolCallsByType))
 	for _, tc := range ds.messageBreakdown.ToolCallsByType {
 		got = append(got, tc.Name)
@@ -2953,7 +2895,7 @@ func TestBuildDetails_EqualCallTokensKeepInsertionOrder(t *testing.T) {
 			{Type: types.ContentTypeToolUse, Name: "ToolB", Input: input},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	if len(ds.messageBreakdown.ToolCallsByType) != 2 {
 		t.Fatalf("ToolCallsByType = %v, want 2 entries", ds.messageBreakdown.ToolCallsByType)
 	}
@@ -2995,7 +2937,7 @@ func TestBuildDetails_ToolResultAttribution(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(bashOut)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	mb := ds.messageBreakdown
 	bashCall := e.EstimateTokensCalibrated("Bash" + bashIn)
 	readCall := e.EstimateTokensCalibrated("Read" + readIn)
@@ -3039,7 +2981,7 @@ func TestBuildDetails_SortsToolBucketsByCallPlusResult(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "tu-2", Content: json.RawMessage(smallOut)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	heavyCall := e.EstimateTokensCalibrated("HeavyCall" + string(bigIn))
 	lightCall := e.EstimateTokensCalibrated("LightCall" + string(smallIn))
 	heavyRes := e.EstimateTokensCalibrated(bigOut)
@@ -3074,7 +3016,7 @@ func TestBuildDetails_OrphanToolResultBucketsAsUnknown(t *testing.T) {
 			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(callIn)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	call := e.EstimateTokensCalibrated("Bash" + callIn)
 	orphan := e.EstimateTokensCalibrated(orphanA) + e.EstimateTokensCalibrated(orphanB)
 	// TS (:825-827) sends every unmatched tool_use_id — missing field or
@@ -3106,7 +3048,7 @@ func TestBuildDetails_ToolResultIgnoresNonToolUseIDs(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "tu-x", Content: json.RawMessage(out)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	want := []ToolCallByType{{
 		Name:         "unknown",
 		CallTokens:   0,
@@ -3132,7 +3074,7 @@ func TestBuildDetails_PrescanSeedsFromAssistantMessagesOnly(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(out)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	want := []ToolCallByType{{
 		Name:         "unknown",
 		CallTokens:   0,
@@ -3161,7 +3103,7 @@ func TestBuildDetails_ToolResultWithoutIDNeverMatchesEmptyID(t *testing.T) {
 			{Type: types.ContentTypeToolResult, Content: json.RawMessage(callOut)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	want := []ToolCallByType{
 		{Name: "Bash", CallTokens: e.EstimateTokensCalibrated("Bash" + callIn), ResultTokens: 0},
 		{Name: "unknown", CallTokens: 0, ResultTokens: e.EstimateTokensCalibrated(callOut)},
@@ -3189,7 +3131,7 @@ func TestBuildDetails_ToolResultResolvesToolUseLaterInHistory(t *testing.T) {
 			{Type: types.ContentTypeToolUse, ID: "tu-9", Name: "Write", Input: json.RawMessage(callIn)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	want := []ToolCallByType{{
 		Name:         "Write",
 		CallTokens:   e.EstimateTokensCalibrated("Write" + callIn),
@@ -3218,7 +3160,7 @@ func TestBuildDetails_ToolUseWithoutNameSharesUnknownBucket(t *testing.T) {
 			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(callOut)},
 		}},
 	}
-	ds := e.buildDetails(sysPromptSections{}, nil, nil, nil, "", nil, messages, nil)
+	ds := e.buildDetails(nil, nil, nil, "", nil, messages, nil)
 	want := []ToolCallByType{{
 		Name:         "unknown",
 		CallTokens:   e.EstimateTokensCalibrated(callIn),
@@ -3226,43 +3168,6 @@ func TestBuildDetails_ToolUseWithoutNameSharesUnknownBucket(t *testing.T) {
 	}}
 	if !slices.Equal(ds.messageBreakdown.ToolCallsByType, want) {
 		t.Errorf("ToolCallsByType = %v, want %v", ds.messageBreakdown.ToolCallsByType, want)
-	}
-}
-
-func TestEstimateComponents_ToolResultAttribution(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	const (
-		bashIn  = `{"command":"ls -la"}`
-		readIn  = `{"file_path":"/a/main.go"}`
-		bashOut = `"file1 file2 file3"`
-		readOut = `"p"`
-		orphan  = `"output whose tool_use_id matches nothing"`
-	)
-	messages := []types.Message{
-		// Results scanned before their calls: the estimate path emits buckets
-		// in TS map-merge order — every call bucket first, then result-only
-		// buckets — because results are merged after the scan.
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolResult, ToolUseID: "tu-2", Content: json.RawMessage(readOut)},
-			{Type: types.ContentTypeToolResult, ToolUseID: "tu-missing", Content: json.RawMessage(orphan)},
-			{Type: types.ContentTypeToolResult, ToolUseID: "tu-1", Content: json.RawMessage(bashOut)},
-		}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeToolUse, ID: "tu-1", Name: "Bash", Input: json.RawMessage(bashIn)},
-			{Type: types.ContentTypeToolUse, ID: "tu-2", Name: "Read", Input: json.RawMessage(readIn)},
-		}},
-	}
-	mb := e.estimateComponents(
-		sysPromptSections{}, nil, nil, nil, nil, messages, nil, 0,
-	).MessagesByCategory
-	want := []ToolCallByType{
-		{Name: "Bash", CallTokens: e.EstimateTokensCalibrated("Bash" + bashIn), ResultTokens: e.EstimateTokensCalibrated(bashOut)},
-		{Name: "Read", CallTokens: e.EstimateTokensCalibrated("Read" + readIn), ResultTokens: e.EstimateTokensCalibrated(readOut)},
-		{Name: "unknown", CallTokens: 0, ResultTokens: e.EstimateTokensCalibrated(orphan)},
-	}
-	if !slices.Equal(mb.ToolCallsByType, want) {
-		t.Errorf("estimate ToolCallsByType = %v, want %v", mb.ToolCallsByType, want)
 	}
 }
 
@@ -3513,31 +3418,5 @@ func TestCB_AttachmentTiesKeepInsertionOrder(t *testing.T) {
 	want := []AttachmentByType{{Name: "zeta", Tokens: tk}, {Name: "alpha", Tokens: tk}}
 	if got := bd.MessageBreakdown.AttachmentsByType; !slices.Equal(got, want) {
 		t.Errorf("AttachmentsByType = %v, want tie order %v", got, want)
-	}
-}
-
-func TestEstimateComponents_AttachmentMultiType(t *testing.T) {
-	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt("x")
-	const (
-		a1 = "queued attachment prompt body"
-		a2 = "document attachment prompt body longer"
-	)
-	mb := e.estimateComponents(
-		sysPromptSections{}, nil, nil, nil, nil,
-		[]types.Message{
-			{Role: types.RoleUser, Attachment: &types.Attachment{Type: "queued_item", Prompt: a1}},
-			{Role: types.RoleUser, Attachment: &types.Attachment{Type: "doc", Prompt: a2}},
-		},
-		nil, 0,
-	).MessagesByCategory
-	// The estimate path emits buckets in arrival order; only buildDetails
-	// sorts for display.
-	want := []AttachmentByType{
-		{Name: "queued_item", Tokens: e.EstimateTokensCalibrated(a1)},
-		{Name: "doc", Tokens: e.EstimateTokensCalibrated(a2)},
-	}
-	if !slices.Equal(mb.AttachmentsByType, want) {
-		t.Errorf("AttachmentsByType = %v, want %v", mb.AttachmentsByType, want)
 	}
 }

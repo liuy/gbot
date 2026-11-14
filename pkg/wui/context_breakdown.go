@@ -10,23 +10,22 @@ import (
 )
 
 type contextBreakdownOutbound struct {
-	Type                 string                    `json:"type"`
-	Model                string                    `json:"model"`
-	ContextWindow        int                       `json:"contextWindow"`
-	TotalTokens          int                       `json:"totalTokens"`
-	Percentage           float64                   `json:"percentage"`
-	IsAutoCompact        bool                      `json:"isAutoCompact"`
-	Categories           []contextCategoryWire     `json:"categories"`
-	MCPToolsLoaded       []mcpToolDetailWire       `json:"mcpToolsLoaded"`
-	MCPToolsDeferred     []mcpToolDetailWire       `json:"mcpToolsDeferred"`
-	DeferredBuiltinTools []systemToolDetailWire    `json:"deferredBuiltinTools"`
-	SystemTools          []systemToolDetailWire    `json:"systemTools"`
-	SystemPromptSections []systemPromptSectionWire `json:"systemPromptSections"`
-	MemoryFiles          []memoryFileDetailWire    `json:"memoryFiles"`
-	Agents               []agentDetailWire         `json:"agents"`
-	Skills               []skillDetailWire         `json:"skills"`
-	MessageBreakdown     *messageBreakdownWire     `json:"messageBreakdown"`
-	APIUsage             *apiUsageSnapshotWire     `json:"apiUsage"`
+	Type                 string                 `json:"type"`
+	Model                string                 `json:"model"`
+	ContextWindow        int                    `json:"contextWindow"`
+	TotalTokens          int                    `json:"totalTokens"`
+	Percentage           float64                `json:"percentage"`
+	IsAutoCompact        bool                   `json:"isAutoCompact"`
+	Categories           []contextCategoryWire  `json:"categories"`
+	MCPToolsLoaded       []mcpToolDetailWire    `json:"mcpToolsLoaded"`
+	MCPToolsDeferred     []mcpToolDetailWire    `json:"mcpToolsDeferred"`
+	DeferredBuiltinTools []systemToolDetailWire `json:"deferredBuiltinTools"`
+	SystemTools          []systemToolDetailWire `json:"systemTools"`
+	MemoryFiles          []memoryFileDetailWire `json:"memoryFiles"`
+	Agents               []agentDetailWire      `json:"agents"`
+	Skills               []skillDetailWire      `json:"skills"`
+	MessageBreakdown     *messageBreakdownWire  `json:"messageBreakdown"`
+	APIUsage             *apiUsageSnapshotWire  `json:"apiUsage"`
 }
 
 type contextCategoryWire struct {
@@ -48,12 +47,6 @@ type mcpToolDetailWire struct {
 
 type systemToolDetailWire struct {
 	Name   string `json:"name"`
-	Tokens int    `json:"tokens"`
-}
-
-type systemPromptSectionWire struct {
-	Name   string `json:"name"`
-	ID     string `json:"id"`
 	Tokens int    `json:"tokens"`
 }
 
@@ -119,14 +112,6 @@ func convertSystemTools(in []engine.SystemToolDetail) []systemToolDetailWire {
 	out := make([]systemToolDetailWire, len(in))
 	for i, t := range in {
 		out[i] = systemToolDetailWire{Name: t.Name, Tokens: t.Tokens}
-	}
-	return out
-}
-
-func convertPromptSections(in []engine.SystemPromptSectionDetail) []systemPromptSectionWire {
-	out := make([]systemPromptSectionWire, len(in))
-	for i, t := range in {
-		out[i] = systemPromptSectionWire{Name: t.Name, ID: t.ID, Tokens: t.Tokens}
 	}
 	return out
 }
@@ -231,7 +216,6 @@ func buildContextBreakdown(bd *engine.ContextBreakdown) []byte {
 		MCPToolsDeferred:     convertMCPTools(bd.MCPToolsDeferred),
 		DeferredBuiltinTools: convertSystemTools(bd.DeferredBuiltinTools),
 		SystemTools:          convertSystemTools(bd.SystemTools),
-		SystemPromptSections: convertPromptSections(bd.SystemPromptSections),
 		MemoryFiles:          convertMemoryFiles(bd.MemoryFiles),
 		Agents:               convertAgents(bd.Agents),
 		Skills:               convertSkills(bd.Skills),

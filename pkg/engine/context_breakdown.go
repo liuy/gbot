@@ -43,7 +43,6 @@ type ContextBreakdown struct {
 	MCPToolsDeferred     []MCPToolDetail
 	DeferredBuiltinTools []SystemToolDetail
 	SystemTools          []SystemToolDetail
-	SystemPromptSections []SystemPromptSectionDetail
 	MemoryFiles          []MemoryFileDetail
 	Agents               []AgentDetail
 	Skills               []SkillDetail
@@ -91,19 +90,6 @@ type MCPToolDetail struct {
 type SystemToolDetail struct {
 	Name   string
 	Tokens int
-}
-
-// SystemPromptSectionDetail describes one section of the system prompt.
-// Source: analyzeContext.ts:111-115
-type SystemPromptSectionDetail struct {
-	Name   string
-	Tokens int
-
-	// ID is the stable semantic identifier the web UI translates client-side;
-	// Name stays English for the TUI and as the wui fallback. It reuses the
-	// ContextCategory id strings where both exist so one dictionary covers
-	// the pie chart row and this sub-row.
-	ID string
 }
 
 // MemoryFileDetail describes one loaded memory file.
@@ -270,7 +256,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	scaled := scaleProportionally(estimates, totalExact)
 
 	detailSlices := e.buildDetails(
-		sections, memFiles, toolsSnapshot, toolSearchSnap,
+		memFiles, toolsSnapshot, toolSearchSnap,
 		skillListing, agentDefs, messages, mcpReg,
 	)
 
@@ -287,7 +273,6 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	breakdown.MCPToolsDeferred = detailSlices.mcpDeferred
 	breakdown.DeferredBuiltinTools = detailSlices.deferredBuiltin
 	breakdown.SystemTools = detailSlices.systemTools
-	breakdown.SystemPromptSections = detailSlices.systemPromptSections
 	breakdown.MemoryFiles = detailSlices.memoryFiles
 	breakdown.Agents = detailSlices.agents
 	breakdown.Skills = detailSlices.skills
@@ -312,16 +297,15 @@ type sysPromptSections struct {
 }
 
 type componentEstimates struct {
-	SystemPromptBase   int
-	PlatformInfo       int
-	ToolPrompts        int
-	SkillListing       int
-	MemoryFiles        int
-	SystemTools        int
-	MCPLoaded          int
-	Agents             int
-	Messages           int
-	MessagesByCategory *MessageBreakdown
+	SystemPromptBase int
+	PlatformInfo     int
+	ToolPrompts      int
+	SkillListing     int
+	MemoryFiles      int
+	SystemTools      int
+	MCPLoaded        int
+	Agents           int
+	Messages         int
 }
 
 func (e *Engine) estimateComponents(
@@ -335,11 +319,10 @@ func (e *Engine) estimateComponents(
 	reserved int,
 ) componentEstimates {
 	est := componentEstimates{
-		MessagesByCategory: &MessageBreakdown{},
-		SystemPromptBase:   sections.base,
-		PlatformInfo:       sections.platform,
-		ToolPrompts:        sections.toolPrompts,
-		SkillListing:       sections.skill,
+		SystemPromptBase: sections.base,
+		PlatformInfo:     sections.platform,
+		ToolPrompts:      sections.toolPrompts,
+		SkillListing:     sections.skill,
 	}
 
 	for _, f := range memFiles {
@@ -356,7 +339,6 @@ func (e *Engine) estimateComponents(
 	est.Agents = e.estimateAgents(agentDefs)
 
 	// 6. Messages (breakdown + total).
-	attribution := newToolAttribution(messages)
 	total := 0
 	for i := range messages {
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
@@ -366,16 +348,12 @@ func (e *Engine) estimateComponents(
 		if messages[i].Attachment != nil {
 			attTokens := e.EstimateTokensCalibrated(messages[i].Attachment.Prompt)
 			total += attTokens
-			est.MessagesByCategory.AttachmentTokens += attTokens
-			est.MessagesByCategory.upsertAttachment(attachmentBucket(messages[i].Attachment), attTokens)
 		}
 		for _, block := range messages[i].Content {
 			t := e.tokenCountForBlock(block)
 			total += t
-			classifyMessageBlock(messages[i], block, t, est.MessagesByCategory, attribution)
 		}
 	}
-	attribution.merge(est.MessagesByCategory)
 	// Pad by 4/3 to match EstimateMessagesTokens.
 	est.Messages = int(math.Ceil(float64(total) * 4.0 / 3.0))
 
@@ -972,19 +950,17 @@ func BuildGrid(cats []ContextCategory, contextWindow int) [][]GridSquare {
 // -----------------------------------------------------------------------
 
 type detailSlices struct {
-	mcpLoaded            []MCPToolDetail
-	mcpDeferred          []MCPToolDetail
-	deferredBuiltin      []SystemToolDetail
-	systemTools          []SystemToolDetail
-	systemPromptSections []SystemPromptSectionDetail
-	memoryFiles          []MemoryFileDetail
-	agents               []AgentDetail
-	skills               []SkillDetail
-	messageBreakdown     *MessageBreakdown
+	mcpLoaded        []MCPToolDetail
+	mcpDeferred      []MCPToolDetail
+	deferredBuiltin  []SystemToolDetail
+	systemTools      []SystemToolDetail
+	memoryFiles      []MemoryFileDetail
+	agents           []AgentDetail
+	skills           []SkillDetail
+	messageBreakdown *MessageBreakdown
 }
 
 func (e *Engine) buildDetails(
-	sections sysPromptSections,
 	memFiles []context.MemoryFile,
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
@@ -995,21 +971,6 @@ func (e *Engine) buildDetails(
 ) detailSlices {
 	ds := detailSlices{
 		messageBreakdown: &MessageBreakdown{},
-	}
-
-	for _, s := range []struct {
-		name   string
-		id     string
-		tokens int
-	}{
-		{"Base prompt", "base_prompt", sections.base},
-		{"Platform info", "platform_info", sections.platform},
-		{"Tool prompts", "tool_prompts", sections.toolPrompts},
-		{"Skill listing", "skill_listing", sections.skill},
-	} {
-		if s.tokens > 0 {
-			ds.systemPromptSections = append(ds.systemPromptSections, SystemPromptSectionDetail{Name: s.name, ID: s.id, Tokens: s.tokens})
-		}
 	}
 
 	for _, f := range memFiles {
