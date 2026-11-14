@@ -315,6 +315,45 @@ func TestSettingsPut_WritesFileAndBacksUp(t *testing.T) {
 	}
 }
 
+// T26 — handler end-to-end: a PUT that deletes the default model still
+// returns ok, and the file's default comes back pointing at the surviving
+// model (the SaveProviders guard ran inside the same request).
+func TestSettingsPut_DeletingDefaultModelRepairsDefault(t *testing.T) {
+	srv := newSettingsServer(t)
+	seedSettings(t, settingsFixture)
+	body := `[{
+      "name": "zhipu",
+      "type": "openai",
+      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "keys": ["zhipu-test-key"],
+      "models": {"glm-5.3-flash": {"context": "1M", "input": ["text", "image"]}}
+    }]`
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/settings/providers", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer putResp.Body.Close()
+	respBody, _ := io.ReadAll(putResp.Body)
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", putResp.StatusCode, respBody)
+	}
+	var got settingsProviders
+	resp := getJSON(t, srv.URL+"/api/settings/providers", &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d", resp.StatusCode)
+	}
+	if got.Default.Provider != "zhipu" || got.Default.Model != "glm-5.3-flash" {
+		t.Fatalf("default = %s/%s, want repaired zhipu/glm-5.3-flash", got.Default.Provider, got.Default.Model)
+	}
+	if len(got.Providers) != 1 || got.Providers[0]["name"] != "zhipu" {
+		t.Fatalf("providers = %+v, want the single saved zhipu entry", got.Providers)
+	}
+}
+
 func TestSettingsPut_Validation(t *testing.T) {
 	srv := newSettingsServer(t)
 	path, old := seedSettings(t, settingsFixture)

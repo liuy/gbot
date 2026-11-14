@@ -2,6 +2,7 @@ import type { Dict } from '../index'
 
 export const dict: Dict = {
   settingsTitle: '設定',
+  degradedBanner: '沒有可用的模型服務 — 打開設定修復',
   addProviderTitle: '新增提供者',
   editProviderTitle: '編輯提供者',
   addProviderBtn: '新增提供者',

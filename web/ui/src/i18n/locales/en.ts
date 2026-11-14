@@ -24,6 +24,7 @@ import { pluralCat } from '../index'
 
 export const dict = {
   settingsTitle: 'Settings',
+  degradedBanner: 'No usable model provider — open Settings to fix',
   addProviderTitle: 'Add provider',
   editProviderTitle: 'Edit provider',
   addProviderBtn: 'Add Provider',

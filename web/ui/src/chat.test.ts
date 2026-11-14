@@ -3597,6 +3597,44 @@ describe('chat integration', () => {
     stateCb!('connected')
     expect(banner.style.opacity).toBe('0')
   })
+  it('degraded banner shows on a degraded config frame and hides when healthy', () => {
+    mount()
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+      degraded: 'no providers could be created',
+    })
+    const banner = document.querySelector('[data-degraded-banner]') as HTMLElement
+    expect(banner).toBeTruthy()
+    expect(banner.style.opacity).toBe('1')
+    expect(banner.textContent).toContain('open Settings to fix')
+    expect(banner.textContent).toContain('no providers could be created')
+    // A healthy config frame clears the banner.
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: 't', model: 'm' },
+      thinking: 'auto',
+    })
+    expect(banner.style.opacity).toBe('0')
+  })
+  it('degraded banner click opens the settings page', () => {
+    mount()
+    dispatch({
+      type: 'config',
+      models: [],
+      current: { provider: '', model: '' },
+      thinking: 'auto',
+      degraded: 'settings.json parse failed',
+    })
+    const banner = document.querySelector('[data-degraded-banner]') as HTMLElement
+    banner.click()
+    const page = Array.from(document.querySelectorAll('.fixed.inset-0'))
+      .find((el) => (el.textContent ?? '').includes('PROVIDERS')) as HTMLElement
+    expect(page.style.display).not.toBe('none')
+  })
 
   it('permission ask renders three buttons and sends decision on click', () => {
     mount()

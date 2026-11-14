@@ -706,34 +706,6 @@ func TestPinReload_AbortsOnBadHooksJSON(t *testing.T) {
 	}
 }
 
-// CreateAllProviders and ResolvePrimary aborts carry the same envelope.
-func TestPinReload_AbortsOnBadProviders(t *testing.T) {
-	env := newReloadTestEnv(t, pinSettings)
-	writeSettingsFile(t, env.home, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["$PIN_NO_SUCH_KEY"],"models":{"m":{}}}],"model":{"default":"t/m"}}`)
-	rep := env.orchestrator().Reload(context.Background())
-	if rep.Applied || rep.Phase != 0 {
-		t.Fatalf("Applied=%v Phase=%d, want abort at phase 0", rep.Applied, rep.Phase)
-	}
-	if !strings.Contains(rep.Err, "no providers could be created") {
-		t.Errorf("Err = %q, want the providers error", rep.Err)
-	}
-	if len(rep.Files) != 1 || rep.Files[0].Status != StatusFailed || rep.Files[0].Path != displaySettingsPath() {
-		t.Errorf("Files = %+v, want one failed settings row", rep.Files)
-	}
-
-	writeSettingsFile(t, env.home, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"ghost/m"}}`)
-	rep2 := env.orchestrator().Reload(context.Background())
-	if rep2.Applied || rep2.Phase != 0 {
-		t.Fatalf("Applied=%v Phase=%d, want abort at phase 0 for a bad default model", rep2.Applied, rep2.Phase)
-	}
-	if !strings.Contains(rep2.Err, "ghost") {
-		t.Errorf("Err = %q, want the resolve error naming ghost", rep2.Err)
-	}
-	if len(rep2.Files) != 1 || rep2.Files[0].Status != StatusFailed || rep2.Files[0].Path != displaySettingsPath() || rep2.Files[0].ErrLine == "" {
-		t.Errorf("Files = %+v, want one failed settings row with ErrLine", rep2.Files)
-	}
-}
-
 // Single-flight refusal: exact envelope with a live LastReloadAt.
 func TestPinReload_SingleFlightEnvelope(t *testing.T) {
 	env := newReloadTestEnv(t, pinSettings)

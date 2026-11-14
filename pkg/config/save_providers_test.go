@@ -104,8 +104,11 @@ func TestSaveProviders_CreatesFileWhenMissing(t *testing.T) {
 
 func TestSaveProviders_PreservesOtherKeys(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// The default points at the provider being installed, so the dangling-
+	// default guard leaves the model bytes alone and every key stays
+	// verbatim (the test's actual subject).
 	seed := `{
-  "model": {"default": "zhipu/glm-5.3"},
+  "model": {"default": "minimax/abab6.5s-chat"},
   "permission_mode": "default",
   "theme": "dark",
   "web": {"anysearch": "as_sk_x"},
@@ -350,6 +353,109 @@ func compactJSON(t *testing.T, raw json.RawMessage) string {
 	return buf.String()
 }
 
+// T22 — deleting the default model from its provider repairs model.default
+// to the surviving first model, so the next boot/reload skips tier 1.
+func TestSaveProviders_DanglingDefaultRepairedToSiblingModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"t/old"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"old":{},"new":{}}}]}`, 0600)
+
+	p := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	p.Models.Set("new", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Model["default"]; got != "t/new" {
+		t.Fatalf("model.default = %q, want repaired t/new", got)
+	}
+}
+
+// T23 — deleting the entire default provider repoints default at the first
+// surviving provider's first model.
+func TestSaveProviders_DefaultProviderDeletedFallsBackToSibling(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"p2/m2"},"providers":[{"name":"p1","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m1":{}}},{"name":"p2","type":"openai","url":"http://127.0.0.1:2","keys":["k"],"models":{"m2":{}}}]}`, 0600)
+
+	p := config.Provider{Name: "p1", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	p.Models.Set("m1", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Model["default"]; got != "p1/m1" {
+		t.Fatalf("model.default = %q, want repaired p1/m1", got)
+	}
+}
+
+// T24 — no salvageable provider in the new list: default is removed
+// outright, while other tiers survive the repair.
+func TestSaveProviders_NoLiveProviderDropsDefaultKeepsTiers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"t/m","pro":"t/m"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`, 0600)
+
+	p := config.Provider{Name: "dead", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"$TEST_GBOT_PIN_UNSET_KEY"}}
+	p.Models.Set("x", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Model map[string]string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw.Model["default"]; ok {
+		t.Fatalf("model.default = %q, want it removed (no provider to point at)", raw.Model["default"])
+	}
+	if raw.Model["pro"] != "t/m" {
+		t.Fatalf("model.pro = %q, want preserved (guard only repairs default)", raw.Model["pro"])
+	}
+}
+
+// T25 — a still-valid default leaves the model bytes untouched (no-op
+// branch is byte-stable; the repair branch only asserts values because Go
+// map serialization alphabetizes tier keys).
+func TestSaveProviders_ValidDefaultBytesUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seed := `{"model":{"default":"t/m"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`
+	seedSettingsFile(t, seed, 0600)
+
+	p := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	p.Models.Set("m", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var seedRaw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(seed), &seedRaw); err != nil {
+		t.Fatal(err)
+	}
+	if compactJSON(t, raw["model"]) != compactJSON(t, seedRaw["model"]) {
+		t.Fatalf("model bytes changed on a valid default:\n got %s\nwant %s", raw["model"], seedRaw["model"])
+	}
+}
+
 func TestSaveDefaultModel_SetsDefaultKeepsTiers(t *testing.T) {
 	// Load() reads .gbot/settings.json relative to CWD.
 	t.Chdir(t.TempDir())
@@ -381,5 +487,188 @@ func TestSaveDefaultModel_SetsDefaultKeepsTiers(t *testing.T) {
 	bak, err := os.ReadFile(filepath.Join(home, ".gbot", "settings.json.bak"))
 	if err != nil || !strings.Contains(string(bak), "old/a") {
 		t.Errorf("backup missing or wrong: err=%v", err)
+	}
+}
+
+// An explicitly empty default ("model": {}) is a no-op: the guard must not
+// invent a default for a spec that never declared one.
+func TestSaveProviders_EmptyDefaultIsNoOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`, 0600)
+
+	p := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	p.Models.Set("m", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := compactJSON(t, raw["model"]); got != "{}" {
+		t.Fatalf("model = %s, want the empty spec untouched", got)
+	}
+}
+
+// A valid default must keep the model bytes untouched even when the default
+// provider is NOT the first entry — the validity scan may not stop early,
+// and the no-op branch must not rewrite tier order.
+func TestSaveProviders_ValidDefaultNotFirstBytesUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Tier order is deliberately non-alphabetical: a repair-rewrite would
+	// re-marshal alphabetically and expose itself.
+	seedSettingsFile(t, `{"model":{"zz":"t/m","default":"t/m"},"providers":[{"name":"s","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"sm":{}}},{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`, 0600)
+
+	sp := config.Provider{Name: "s", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	sp.Models.Set("sm", config.ModelConfig{})
+	tp := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	tp.Models.Set("m", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{sp, tp}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := compactJSON(t, raw["model"]), `{"zz":"t/m","default":"t/m"}`; got != want {
+		t.Fatalf("model = %s, want the valid spec byte-untouched (%s)", got, want)
+	}
+}
+
+// The validity check pairs provider name AND model: a same-named model on a
+// DIFFERENT provider must not satisfy it (the default would still dangle).
+func TestSaveProviders_OtherProvidersModelDoesNotSatisfyDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"t/m"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"other":{}}}]}`, 0600)
+
+	sp := config.Provider{Name: "s", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	sp.Models.Set("m", config.ModelConfig{})
+	tp := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	tp.Models.Set("other", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{sp, tp}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Model["default"]; got != "s/m" {
+		t.Fatalf("model.default = %q, want repaired s/m (t lost its m)", got)
+	}
+}
+
+// The repair picks the first VIABLE provider: audio-only, keyless, and
+// model-less entries are all skipped in declaration order.
+func TestSaveProviders_RepairSkipsUnviableProviders(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"t/m"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`, 0600)
+
+	audio := config.Provider{Name: "aud", URL: "http://127.0.0.1:1", Keys: []string{"k"}, Type: config.ProviderTypeAudio}
+	audio.Models.Set("stt", config.ModelConfig{})
+	keyless := config.Provider{Name: "keyless", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"$TEST_GBOT_PIN_UNSET_KEY2"}}
+	keyless.Models.Set("km", config.ModelConfig{})
+	modelless := config.Provider{Name: "modelless", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	viable := config.Provider{Name: "good", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	viable.Models.Set("m3", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{audio, keyless, modelless, viable}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Model["default"]; got != "good/m3" {
+		t.Fatalf("model.default = %q, want the first viable provider good/m3", got)
+	}
+}
+
+// A bare (slash-less) default that the new list still resolves — a
+// hand-edited "m2" while provider t keeps defining m2 — is valid: an
+// unrelated provider's save must leave the model bytes untouched, not
+// silently rewrite it to provider/first-model.
+func TestSaveProviders_BareValidDefaultBytesUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seed := `{"model":{"default":"m2"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m1":{},"m2":{}}}]}`
+	seedSettingsFile(t, seed, 0600)
+
+	sp := config.Provider{Name: "s", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	sp.Models.Set("sm", config.ModelConfig{})
+	tp := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	tp.Models.Set("m1", config.ModelConfig{})
+	tp.Models.Set("m2", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{sp, tp}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := compactJSON(t, raw["model"]), `{"default":"m2"}`; got != want {
+		t.Fatalf("model = %s, want the bare-but-valid default byte-untouched (%s)", got, want)
+	}
+}
+
+// A bare default that no provider defines is dangling and gets the standard
+// repair: first viable provider's first model.
+func TestSaveProviders_BareDanglingDefaultRepaired(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"zzz"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m1":{}}}]}`, 0600)
+
+	sp := config.Provider{Name: "s", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	sp.Models.Set("sm", config.ModelConfig{})
+	tp := config.Provider{Name: "t", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"k"}}
+	tp.Models.Set("m1", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{sp, tp}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Model["default"]; got != "s/sm" {
+		t.Fatalf("model.default = %q, want repaired s/sm", got)
+	}
+}
+
+// When the repair removes the default and no other tier remains, the whole
+// model key is dropped from the file.
+func TestSaveProviders_EmptySpecDropsModelKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedSettingsFile(t, `{"model":{"default":"t/m"},"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}]}`, 0600)
+
+	p := config.Provider{Name: "dead", URL: "http://127.0.0.1:1", Type: "openai", Keys: []string{"$TEST_GBOT_PIN_UNSET_KEY3"}}
+	p.Models.Set("x", config.ModelConfig{})
+	if err := config.SaveProviders([]config.Provider{p}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["model"]; ok {
+		t.Fatalf("model key = %s, want it removed once the spec is empty", raw["model"])
 	}
 }

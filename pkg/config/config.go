@@ -693,6 +693,9 @@ func SaveProviders(providers []Provider) error {
 		return err
 	}
 	raw["providers"] = providersJSON
+	if err := repairDanglingDefault(raw, providers); err != nil {
+		return err
+	}
 
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -721,6 +724,66 @@ func SaveProviders(providers []Provider) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// repairDanglingDefault keeps model.default consistent with the providers
+// list this save installs: deleting the default model (or its whole
+// provider) would otherwise leave a dangling default that the next
+// boot/reload trips over. Second line of defense — the degrade ladder
+// already tolerates the dangling state; this keeps the file from encoding
+// it. Only the "default" tier is repaired; other tiers dangle benignly
+// (callers WARN and inherit the parent model). A valid default leaves the
+// model bytes untouched (byte stability), a repaired one is rewritten.
+func repairDanglingDefault(raw map[string]json.RawMessage, providers []Provider) error {
+	specRaw, ok := raw["model"]
+	if !ok {
+		return nil
+	}
+	var spec ModelSpec
+	if err := json.Unmarshal(specRaw, &spec); err != nil || spec["default"] == "" {
+		return nil
+	}
+	providerName, modelName, hasSlash := strings.Cut(spec["default"], "/")
+	if !hasSlash {
+		// A bare default carries no provider prefix — resolveProviderModel
+		// resolves it cross-provider — so the whole string is the model
+		// name and ANY provider owning it keeps the default valid.
+		modelName = spec["default"]
+	}
+	for i := range providers {
+		if hasSlash && providers[i].Name != providerName {
+			continue
+		}
+		if providers[i].Models.Has(modelName) {
+			return nil
+		}
+	}
+	repaired := false
+	for i := range providers {
+		p := &providers[i]
+		// Viable = would boot into the provider map: resolvable key, real
+		// models, not STT-only. A keyless provider would re-dangle the
+		// default at the next boot, defeating the repair.
+		if p.ProviderType() == ProviderTypeAudio || p.Models.Len() == 0 || p.ResolveKey() == "" {
+			continue
+		}
+		spec["default"] = p.Name + "/" + p.FirstModelName()
+		repaired = true
+		break
+	}
+	if !repaired {
+		delete(spec, "default")
+		if len(spec) == 0 {
+			delete(raw, "model")
+			return nil
+		}
+	}
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	raw["model"] = specJSON
+	return nil
 }
 
 // SaveRemoteDevices replaces the "desktops" key of ~/.gbot/settings.json with

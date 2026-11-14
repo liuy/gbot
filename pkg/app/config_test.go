@@ -1,7 +1,6 @@
 package app
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/config"
@@ -36,23 +35,5 @@ func TestBuildProviderConfigMap_Empty(t *testing.T) {
 	m := buildProviderConfigMap(cfg)
 	if len(m) != 0 {
 		t.Errorf("len(m) = %d, want 0", len(m))
-	}
-}
-
-func TestResolvePrimaryProvider_NoProviderInMap(t *testing.T) {
-	cfg := &config.Config{
-		Model: config.ModelSpec{"default": "unknown/model"},
-		Providers: []config.Provider{
-			{Name: "unknown", Models: config.NewModelsFromMap(map[string]config.ModelConfig{
-				"model": {},
-			})},
-		},
-	}
-	_, _, _, err := resolvePrimaryProvider(cfg, config.ProviderMap{})
-	if err == nil {
-		t.Fatal("expected error for provider not in map, got nil")
-	}
-	if !strings.Contains(err.Error(), "unknown") {
-		t.Errorf("error %q does not mention provider name %q", err.Error(), "unknown")
 	}
 }

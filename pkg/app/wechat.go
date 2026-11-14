@@ -97,6 +97,13 @@ func startWeChatConnector(d startWeChatDeps) error {
 			slog.Warn("wechat: new session failed", "error", err)
 		}
 
+		// Tier-2 boot pairs an empty provider name with an empty model;
+		// persisting "/" would defeat the factory's empty-model fallback
+		// on restore, so the degraded contract is the empty string.
+		displayModel := d.primaryProviderCfg.Name + "/" + d.model
+		if d.model == "" {
+			displayModel = ""
+		}
 		d.engineMgr.Add(&engine.EngineViewState{
 			Engine:          wcEng,
 			Repl:            tui.NewReplSnapshot(),
@@ -107,7 +114,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 			ID:              engineID,
 			Name:            engineName,
 			ActiveSessionID: wcEng.SessionID(),
-			Model:           d.primaryProviderCfg.Name + "/" + d.model,
+			Model:           displayModel,
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
 			System:          false,

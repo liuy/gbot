@@ -2,11 +2,12 @@ package app
 
 import (
 	"github.com/liuy/gbot/pkg/config"
-	"github.com/liuy/gbot/pkg/llm"
 )
 
-func loadConfig() (*config.Config, error) {
-	return config.Load()
+// loadConfigForgiving is the boot-time settings loader: a broken file is
+// skipped and reported, never fatal (invariant: boot must not die on config).
+func loadConfigForgiving() (*config.Config, *config.Degraded) {
+	return config.LoadForgiving()
 }
 
 // buildProviderConfigMap converts cfg.Providers ([]Provider) into the
@@ -18,11 +19,4 @@ func buildProviderConfigMap(cfg *config.Config) map[string]*config.Provider {
 		m[cfg.Providers[i].Name] = &cfg.Providers[i]
 	}
 	return m
-}
-
-// resolvePrimaryProvider resolves Config.Model into a concrete provider, model name,
-// and Provider config. Delegates to config.Config.ResolvePrimary (moved there so
-// the reload orchestrator shares one implementation).
-func resolvePrimaryProvider(cfg *config.Config, providerMap config.ProviderMap) (llm.Provider, string, *config.Provider, error) {
-	return cfg.ResolvePrimary(providerMap)
 }

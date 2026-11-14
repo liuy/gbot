@@ -91,3 +91,11 @@ export const disconnectBannerClass = tv({
   base: 'absolute top-[calc(2.75rem+env(safe-area-inset-top,0px))] inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0',
 })
 export const disconnectText = tv({ base: 'text-[12px] text-red' })
+// Same slide language as the disconnect banner, but amber and two stacked
+// lines: the localized title plus the server-supplied reason (data, never
+// translated). Sits directly below the header exactly like its sibling.
+export const degradedBannerClass = tv({
+  base: 'absolute top-[calc(2.75rem+env(safe-area-inset-top,0px))] inset-x-0 z-50 card-bg border-b border-hairline px-4 py-1.5 flex flex-col items-center justify-center transition-all duration-300 overflow-hidden max-h-0 opacity-0',
+})
+export const degradedBannerText = tv({ base: 'text-[12px] text-amber' })
+export const degradedReasonText = tv({ base: 'text-[11px] text-t3' })

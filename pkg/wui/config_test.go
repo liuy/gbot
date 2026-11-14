@@ -135,6 +135,77 @@ func TestBuildConfigMessage_Empty(t *testing.T) {
 	}
 }
 
+// T20 — the config frame carries the degrade reason while degraded, and
+// omits the key entirely when the source reports healthy.
+func TestBuildConfigMessage_DegradedField(t *testing.T) {
+	c := newTestConnectorWithConfig(t, hub.NewHub(), nil, nil)
+	c.SetDegradedFn(func() string { return "boom" })
+
+	payload := c.buildConfig(c.activeSlotTest(t))
+	if !strings.Contains(string(payload), `"degraded":"boom"`) {
+		t.Fatalf("config frame lacks the degraded field: %s", payload)
+	}
+
+	c.SetDegradedFn(func() string { return "" })
+	payload = c.buildConfig(c.activeSlotTest(t))
+	if strings.Contains(string(payload), `"degraded"`) {
+		t.Fatalf("healthy config frame must omit the degraded key: %s", payload)
+	}
+	var msg struct {
+		Degraded string `json:"degraded"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty after unmarshal", msg.Degraded)
+	}
+}
+
+// T20b — a connector constructed with empty maps (degraded boot) draws the
+// picker, stt availability, and model_switch from the live providersFn, so a
+// reload recovery takes effect without a restart.
+func TestBuildConfigMessage_ProvidersFnSuppliesLiveMaps(t *testing.T) {
+	c := newTestConnectorWithConfig(t, hub.NewHub(), nil, nil)
+	c.mock().providerFn = func() llm.Provider { return &stubLLMProvider{name: "t"} }
+
+	chatCfg := &config.Provider{Name: "t"}
+	chatCfg.Models.Set("m1", config.ModelConfig{})
+	audioCfg := &config.Provider{Name: "a", Type: config.ProviderTypeAudio, URL: "http://127.0.0.1:1"}
+	audioCfg.Models.Set("stt-x", config.ModelConfig{})
+	c.SetProvidersFn(func() (map[string]llm.Provider, map[string]*config.Provider) {
+		return map[string]llm.Provider{"t": &stubLLMProvider{name: "t"}},
+			map[string]*config.Provider{"t": chatCfg, "a": audioCfg}
+	})
+	c.SetSTTDefault("a/stt-x")
+
+	payload := c.buildConfig(c.activeSlotTest(t))
+	var msg struct {
+		Models []struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"models"`
+		Stt bool `json:"stt"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(msg.Models) != 1 || msg.Models[0].Provider != "t" || msg.Models[0].Model != "m1" {
+		t.Fatalf("models = %+v, want the closure's t/m1 (not the empty construction maps)", msg.Models)
+	}
+	if !msg.Stt {
+		t.Fatal("stt = false, want true — the audio provider from the closure must resolve")
+	}
+
+	// model_switch must hit the closure's provider table too.
+	c.handleModelSwitch("t", "m1")
+	c.mock().mu.Lock()
+	defer c.mock().mu.Unlock()
+	if len(c.mock().setProviderCalls) != 1 || c.mock().setProviderCalls[0] != "t" {
+		t.Fatalf("setProviderCalls = %v, want [t] via the closure maps", c.mock().setProviderCalls)
+	}
+}
+
 func TestTakeover_PushesConfigAfterConnectStatus(t *testing.T) {
 	c := newTestConnectorWithConfig(t, hub.NewHub(), buildTestProviders(), buildTestProviderConfigs())
 	c.mock().providerFn = func() llm.Provider { return &stubLLMProvider{name: "zhipu"} }

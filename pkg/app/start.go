@@ -169,29 +169,23 @@ func Start(opts Options) (*Instance, error) {
 		slog.Info("app: previous instance exit", "info", v)
 	}
 
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+	cfg, cfgWarn := loadConfigForgiving()
+	if cfgWarn != nil {
+		slog.Warn("config: settings load failed, using defaults", "reason", cfgWarn.Reason)
 	}
 
 	startPprofServer(cfg.PprofAddr)
 
-	providerMap, err := config.CreateAllProviders(cfg)
-	if err != nil {
-		return nil, err
+	// The degrade ladder: boot never dies on config (user ruling). Broken
+	// settings fall back tier by tier — see config.ResolveBoot.
+	boot := config.ResolveBoot(cfg)
+	for _, note := range boot.Notes {
+		slog.Warn("config: " + note)
 	}
-	// No empty-map guard here: CreateAllProviders already fails with
-	// "no providers could be created" when it ends up with zero providers,
-	// so a nil error implies a non-empty map.
-
-	provider, model, primaryProviderCfg, err := resolvePrimaryProvider(cfg, providerMap)
-	if err != nil {
-		// Live, not redundant with the check above: a provider can be
-		// configured (so ResolveModel picks it) yet have no usable key, and
-		// be skipped by CreateAllProviders while a sibling provider keeps the
-		// map non-empty. Falling through here would hand a nil
-		// primaryProviderCfg to ResolveContext below.
-		return nil, err
+	providerMap, provider, model, primaryProviderCfg := boot.Providers, boot.Provider, boot.Model, boot.Primary
+	configParseWarn := ""
+	if cfgWarn != nil {
+		configParseWarn = cfgWarn.Reason
 	}
 
 	skillReg := skills.NewRegistry(workingDir)
@@ -402,6 +396,8 @@ func Start(opts Options) (*Instance, error) {
 		SkillCmds:          skillCmdsForTUI,
 		PermissionChecker:  permCheckerIface,
 		McpReg:             mcpRegistry,
+		Degraded:           boot.Degraded,
+		ConfigParseWarn:    configParseWarn,
 	})
 	// The signal-exit goroutine closes the registry through this seam —
 	// Registry.Close is Once-idempotent, so this and a deferred Instance
@@ -442,6 +438,13 @@ func Start(opts Options) (*Instance, error) {
 		} else {
 			slog.Warn("restore: no provider prefix in model, falling back to default",
 				"model", modelArg, "engine_id", id)
+		}
+		// A degraded boot persisted meta.json with Model:""; after the user
+		// repairs settings and restarts, the empty arg must adopt the env's
+		// real default model rather than rely on the provider's embedded
+		// fallback (which only exists on some provider types).
+		if modelArg == "" {
+			modelArg = env.Model
 		}
 		var engineHub *hub.Hub
 		var handler *tui.TUIHandler
@@ -530,7 +533,9 @@ func Start(opts Options) (*Instance, error) {
 		newEng.SetSharedDeps(&deps)
 		newEng.SetSkillRegistry(skillReg)
 
-		if !env.Cfg.SessionNotes.Disabled && store != nil && contextWindow > 0 {
+		// Degraded boots skip session memory: every extraction would be a
+		// doomed sub-engine query plus error-log noise.
+		if env.Degraded == nil && !env.Cfg.SessionNotes.Disabled && store != nil && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
 			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
 				editTool := fileedit.New()
@@ -611,7 +616,10 @@ func Start(opts Options) (*Instance, error) {
 		slog.Warn("dream: config error, dream disabled", "error", dreamCfgErr)
 		dreamEnabled = false
 	}
-	if dreamEnabled && store != nil && contextWindow > 0 {
+	// Degraded boots skip the dream engine: every tick would be a doomed
+	// query plus error-log noise. Only the provider-level signal gates this —
+	// a tier-3 boot whose providers were rescued by a good file still dreams.
+	if dreamEnabled && boot.Degraded == nil && store != nil && contextWindow > 0 {
 		memoryDir := long.GetMemoryPath(workingDir)
 		dreamEng, dreamHandler, dreamModel, dreamCtxWindow := createDreamEngine(dreamEngineDeps{
 			Cfg:                cfg,
@@ -714,6 +722,24 @@ func Start(opts Options) (*Instance, error) {
 		wc := wui.New(engineMgr, providerMap, buildProviderConfigMap(cfg))
 		wc.SetSTTDefault(cfg.STT.Default)
 		wc.SetTTSDefault(cfg.TTS.Default)
+		// Live degrade/provider sources: both read the env holder at frame
+		// build time, so a successful reload clears the banner and repopulates
+		// the picker without a restart (construction-time maps are empty on a
+		// degraded boot).
+		wc.SetDegradedFn(func() string {
+			env := holder.Load()
+			if env.ConfigParseWarn != "" {
+				return env.ConfigParseWarn
+			}
+			if env.Degraded != nil {
+				return env.Degraded.Reason
+			}
+			return ""
+		})
+		wc.SetProvidersFn(func() (map[string]llm.Provider, map[string]*config.Provider) {
+			env := holder.Load()
+			return env.ProviderMap, buildProviderConfigMap(env.Cfg)
+		})
 		if supervisedMode() {
 			supervisedClose.Store(func() { wc.CloseForUpgrade() })
 		}

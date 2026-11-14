@@ -16,12 +16,24 @@ type ProviderMap map[string]llm.Provider
 // CreateAllProviders creates llm.Provider instances for all configured providers.
 // Each provider must have at least one model defined.
 func CreateAllProviders(cfg *Config) (ProviderMap, error) {
-	m := make(ProviderMap)
+	refreshFreeModels(cfg)
 
-	// Fetch free models for providers with a fetch ledger (non-empty
-	// FreeFetched).
-	// Done once at startup; failures are logged and skipped (user can
-	// still use other providers).
+	provider, modelName, err := cfg.ResolveModel()
+	if err != nil {
+		return nil, err
+	}
+
+	m := buildProviderMap(cfg, provider.Name, modelName)
+	if len(m) == 0 {
+		return nil, fmt.Errorf("no providers could be created (check API keys and models)")
+	}
+	return m, nil
+}
+
+// refreshFreeModels fetches free models for providers with a fetch ledger
+// (non-empty FreeFetched). Done once at startup; failures are logged and
+// skipped (user can still use other providers).
+func refreshFreeModels(cfg *Config) {
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		// Audio providers are STT-only; the free-model mirror is an LLM
@@ -70,20 +82,19 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 		p.FreeFetched = newIDs
 		slog.Info("free models loaded", "provider", p.Name, "count", len(models))
 	}
+}
 
-	provider, modelName, err := cfg.ResolveModel()
-	if err != nil {
-		return nil, err
-	}
-
-	// The resolved model determines which model each provider uses.
-	// For the resolved provider, use the matched model name.
-	// For other providers, use their first model.
+// buildProviderMap constructs llm.Provider instances for every provider that
+// has a resolvable key and at least one model. The provider named by
+// overrideProvider embeds overrideModel as its default (preserving the
+// resolved-model fidelity the original CreateAllProviders loop had); every
+// other provider embeds its first declared model. Audio providers are
+// STT-only: they have no llm.Provider representation and would fall through
+// the switch into the anthropic default below.
+func buildProviderMap(cfg *Config, overrideProvider, overrideModel string) ProviderMap {
+	m := make(ProviderMap)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		// Audio providers are STT-only: they have no llm.Provider
-		// representation and would fall through the switch into the
-		// anthropic default below.
 		if p.ProviderType() == ProviderTypeAudio {
 			continue
 		}
@@ -96,11 +107,9 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 			continue
 		}
 
-		// Pick model: use resolved model if this is the resolved provider,
-		// otherwise use first model.
 		model := p.FirstModelName()
-		if p == provider && modelName != "" {
-			model = modelName
+		if p.Name == overrideProvider && overrideModel != "" {
+			model = overrideModel
 		}
 
 		switch p.ProviderType() {
@@ -133,11 +142,7 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 			})
 		}
 	}
-
-	if len(m) == 0 {
-		return nil, fmt.Errorf("no providers could be created (check API keys and models)")
-	}
-	return m, nil
+	return m
 }
 
 // ResolvePrimary resolves the configured model into a live provider, its

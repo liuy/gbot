@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1067,46 +1068,200 @@ func TestPinStart_DaemonChdir(t *testing.T) {
 	}
 }
 
-func TestPinStart_BadConfigError(t *testing.T) {
-	_, err := pinBoot(t, `{"providers":`, Options{NoTUI: true})
-	if err == nil {
-		t.Fatal("Start with invalid settings.json succeeded, want error")
+// Tier 3: an unparseable settings.json must boot degraded (nullProvider,
+// empty provider map, empty model) instead of exiting — the Windows-desktop
+// brick path. The broken file must also be preserved byte-for-byte: boot
+// never rewrites settings.json, only a user save does.
+func TestPinStart_BrokenSettingsBootsDegraded(t *testing.T) {
+	home := pinHome(t, `{"providers":`)
+	t.Setenv("HOME", home)
+	t.Setenv("GBOT_PPROF_ADDR", "off")
+	port := freeTCPPort(t)
+	t.Setenv("GBOT_WS_ADDR", "127.0.0.1:"+port)
+	startInTempProject(t)
+	settingsPath := filepath.Join(home, ".gbot", "settings.json")
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings before boot: %v", err)
 	}
-	if !strings.Contains(err.Error(), "loading config") {
-		t.Errorf("err = %v, want 'loading config' prefix", err)
+
+	inst, err := Start(Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start with broken settings.json: %v, want degraded boot", err)
 	}
-	if errors.Unwrap(err) == nil {
-		t.Errorf("err = %v, want a wrapped chain", err)
+	shutdownInstance(t, inst)
+	if inst.Provider == nil || inst.Provider.Name() != "none" {
+		t.Fatalf("Provider = %v, want the null provider (none)", inst.Provider)
+	}
+	if len(inst.ProviderMap) != 0 {
+		t.Fatalf("ProviderMap = %v, want empty", inst.ProviderMap)
+	}
+	if inst.Model != "" {
+		t.Fatalf("Model = %q, want empty", inst.Model)
+	}
+	log := pinLog(t, inst)
+	if !strings.Contains(log, "settings load failed") {
+		t.Errorf("gbot.log lacks the settings-load-failure WARN, got:\n%s", log)
+	}
+	// The tier-3 detail must reach the env holder: the wui banner reads it
+	// through the holder-reading closure.
+	env := inst.EnvHolder.Load()
+	if !strings.Contains(env.ConfigParseWarn, "settings.json") {
+		t.Errorf("Env.ConfigParseWarn = %q, want the parse-failure detail", env.ConfigParseWarn)
+	}
+	if env.Degraded == nil {
+		t.Error("Env.Degraded = nil, want the tier-2 marker on a provider-less boot")
+	}
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings after boot: %v", err)
+	}
+	if string(before) != `{"providers":` {
+		t.Fatalf("fixture mutated before boot: %q", before)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("settings.json rewritten by boot:\nbefore %q\nafter  %q", before, after)
 	}
 }
 
-func TestPinStart_NoProvidersError(t *testing.T) {
-	_, err := pinBoot(t, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["$GBOT_PIN_NO_SUCH_KEY"],"models":{"m":{}}}],"model":{"default":"t/m"}}`, Options{NoTUI: true})
-	if err == nil {
-		t.Fatal("Start with an unresolvable key succeeded, want error")
+// Tier 2: every provider key dead — same degraded shape as tier 3.
+func TestPinStart_AllKeysBrokenBootsDegraded(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["$GBOT_PIN_NO_SUCH_KEY"],"models":{"m":{}}}],"model":{"default":"t/m"}}`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start with all keys broken: %v, want degraded boot", err)
 	}
-	if !strings.Contains(err.Error(), "no providers could be created") {
-		t.Errorf("err = %v, want 'no providers could be created'", err)
+	if inst.Provider == nil || inst.Provider.Name() != "none" {
+		t.Fatalf("Provider = %v, want the null provider (none)", inst.Provider)
 	}
-}
-
-// A keyless provider is skipped by CreateAllProviders while a sibling keeps
-// the map non-empty, so boot must still fail at the primary-provider lookup
-// rather than carry a nil provider config into the engine factory.
-func TestPinStart_KeylessResolvedProviderError(t *testing.T) {
-	_, err := pinBoot(t, `{"providers":[{"name":"p1","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m1":{}}},{"name":"p2","type":"openai","url":"http://127.0.0.1:2","keys":["$GBOT_PIN_UNSET_KEY"],"models":{"m2":{}}}],"model":{"default":"p2/m2"}}`, Options{NoTUI: true})
-	if err == nil {
-		t.Fatal("Start with a keyless resolved provider succeeded, want error")
+	if len(inst.ProviderMap) != 0 {
+		t.Fatalf("ProviderMap = %v, want empty", inst.ProviderMap)
 	}
-	if !strings.Contains(err.Error(), `provider "p2" has no API key configured`) {
-		t.Errorf("err = %v, want the primary-provider key error", err)
+	if inst.Model != "" {
+		t.Fatalf("Model = %q, want empty", inst.Model)
 	}
 }
 
-func TestPinStart_UnresolvableDefaultModelError(t *testing.T) {
-	_, err := pinBoot(t, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"nope/m"}}`, Options{NoTUI: true})
-	if err == nil {
-		t.Fatal("Start with unresolvable default model succeeded, want error")
+// Tier 1b: the resolved provider was skipped for its broken key while a
+// sibling keeps the map non-empty — boot falls back to the sibling's first
+// model and logs which provider it abandoned.
+func TestPinStart_KeylessResolvedProviderFallsBackToSibling(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":[{"name":"p1","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m1":{}}},{"name":"p2","type":"openai","url":"http://127.0.0.1:2","keys":["$GBOT_PIN_UNSET_KEY"],"models":{"m2":{}}}],"model":{"default":"p2/m2"}}`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start with a keyless resolved provider: %v, want sibling fallback", err)
+	}
+	if inst.Provider == nil || inst.Provider.Name() != "p1" {
+		t.Fatalf("Provider = %v, want p1", inst.Provider)
+	}
+	if inst.Model != "m1" {
+		t.Fatalf("Model = %q, want m1", inst.Model)
+	}
+	if inst.PrimaryProviderCfg == nil || inst.PrimaryProviderCfg.Name != "p1" {
+		t.Fatalf("PrimaryProviderCfg = %+v, want p1", inst.PrimaryProviderCfg)
+	}
+	log := pinLog(t, inst)
+	if !strings.Contains(log, "p2") {
+		t.Errorf("gbot.log does not mention the abandoned provider p2:\n%s", log)
+	}
+}
+
+// Tier 1a/1b: an unresolvable default model falls back to the first usable
+// model instead of failing boot.
+func TestPinStart_UnresolvableDefaultModelFallsBackToFirstModel(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":[{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}}],"model":{"default":"nope/m"}}`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start with unresolvable default model: %v, want first-model fallback", err)
+	}
+	if inst.Provider == nil || inst.Provider.Name() != "t" {
+		t.Fatalf("Provider = %v, want t", inst.Provider)
+	}
+	if inst.Model != "m" {
+		t.Fatalf("Model = %q, want m", inst.Model)
+	}
+	log := pinLog(t, inst)
+	if !strings.Contains(log, "nope") {
+		t.Errorf("gbot.log does not mention the unresolvable default:\n%s", log)
+	}
+}
+
+// The degraded-mode user-visible contract: every query returns the canonical
+// ErrNoProvider so the chat explains the one repair channel (Settings).
+func TestPinStart_Degraded_QueryErrors(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start degraded: %v", err)
+	}
+	eng, _, err := inst.EngineFactory("q", "q", "", "")
+	if err != nil {
+		t.Fatalf("EngineFactory: %v", err)
+	}
+	result := eng.QuerySync(context.Background(), "hi", eng.SystemPrompt())
+	if result.Error == nil {
+		t.Fatal("degraded query succeeded, want ErrNoProvider")
+	}
+	if !errors.Is(result.Error, llm.ErrNoProvider) && !strings.Contains(result.Error.Error(), "no provider configured") {
+		t.Fatalf("query error = %v, want the canonical no-provider error", result.Error)
+	}
+}
+
+// Degraded boots must not spin up the background LLM subsystems: dream and
+// session-notes would only produce a doomed query (plus error-log noise) on
+// every tick.
+func TestPinStart_Degraded_NoDreamNoSessionNotes(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start degraded: %v", err)
+	}
+	if inst.Store == nil {
+		t.Fatal("Store = nil, want the short store (gates would be closed for the wrong reason)")
+	}
+	log := pinLog(t, inst)
+	if strings.Contains(log, "dream: persistent engine started") {
+		t.Errorf("dream engine started on a degraded boot:\n%s", log)
+	}
+	if strings.Contains(log, "session memory: wired") {
+		t.Errorf("session memory wired on a degraded boot:\n%s", log)
+	}
+}
+
+// The factory's empty-model fallback: a restored engine whose persisted
+// Model was "" (degraded boot) adopts the boot default once settings are
+// healthy again.
+func TestPinStart_FactoryEmptyModelAdoptsDefault(t *testing.T) {
+	inst, err := pinBoot(t, pinSettings, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	eng, _, err := inst.EngineFactory("restore", "Restore", "", "")
+	if err != nil {
+		t.Fatalf("EngineFactory: %v", err)
+	}
+	if got := eng.Model(); got != "m" {
+		t.Fatalf("restored engine Model = %q, want the boot default m", got)
+	}
+	if eng.Provider() != inst.Provider {
+		t.Fatalf("restored engine provider = %v, want the boot provider", eng.Provider())
+	}
+}
+
+// The 2026-11-13 Windows incident: default model "glm-5.2" absent from the
+// zhipu provider definition. Boot must succeed and fall back to the first
+// declared model. Fixture rule: no declared model may contain the subsequence
+// "glm52" once normalized — "glm-4.7-airx"→"glm47airx" has no 5, so the
+// fuzzy fallback cannot rescue the default and the degrade path is real.
+func TestPinStart_WindowsIncident(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":[{"name":"zhipu","type":"openai","url":"https://open.bigmodel.cn/api/paas/v4","keys":["k"],"models":{"glm-4.7-airx":{},"glm-4.7-flash":{}}}],"model":{"default":"zhipu/glm-5.2"}}`, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start with missing default model (Windows incident): %v, want fallback boot", err)
+	}
+	if inst.Provider == nil || inst.Provider.Name() != "zhipu" {
+		t.Fatalf("Provider = %v, want zhipu", inst.Provider)
+	}
+	if inst.Model != "glm-4.7-airx" {
+		t.Fatalf("Model = %q, want first declared model glm-4.7-airx", inst.Model)
+	}
+	log := pinLog(t, inst)
+	if !strings.Contains(log, "glm-5.2") || !strings.Contains(log, "glm-4.7-airx") {
+		t.Errorf("gbot.log WARN must name both the dead default and the fallback:\n%s", log)
 	}
 }
 
@@ -2431,15 +2586,22 @@ func TestPinStart_BlockedProjectDirFails(t *testing.T) {
 	}
 }
 
-// An audio provider as the default model resolves to no chat provider:
-// resolvePrimaryProvider must fail the boot.
-func TestPinStart_AudioDefaultModelFails(t *testing.T) {
-	_, err := pinBoot(t, `{"providers":[
+// An audio provider as the default model is excluded from the provider map
+// (STT-only): the degrade ladder treats it like any dead default provider
+// and boots on the first live chat sibling instead of failing.
+func TestPinStart_AudioDefaultModelFallsBackToSibling(t *testing.T) {
+	inst, err := pinBoot(t, `{"providers":[
 		{"name":"t","type":"openai","url":"http://127.0.0.1:1","keys":["k"],"models":{"m":{}}},
 		{"name":"audiocpp","type":"audio","url":"http://127.0.0.1:1","models":{"stt-x":{}}}],
 		"model":{"default":"audiocpp/stt-x"}}`, Options{NoTUI: true})
-	if err == nil {
-		t.Fatal("Start with an audio default model succeeded, want error")
+	if err != nil {
+		t.Fatalf("Start with an audio default model: %v, want sibling fallback", err)
+	}
+	if inst.Provider == nil || inst.Provider.Name() != "t" {
+		t.Fatalf("Provider = %v, want t", inst.Provider)
+	}
+	if inst.Model != "m" {
+		t.Fatalf("Model = %q, want m", inst.Model)
 	}
 }
 

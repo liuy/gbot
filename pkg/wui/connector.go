@@ -624,6 +624,16 @@ type WUIConnector struct {
 	// is offered only when stt AND tts both resolve.
 	ttsDefault string
 
+	// degradedFn, when set, is the live source of the degrade reason for the
+	// config frame's banner field. It reads the reload env holder so a
+	// successful reload clears the banner without a new push channel.
+	degradedFn func() string
+
+	// providersFn, when set, supersedes the construction-time provider maps:
+	// a degraded boot starts with empty maps and only a reload can repopulate
+	// the picker/model_switch/quota/stt views without a restart.
+	providersFn func() (map[string]llm.Provider, map[string]*config.Provider)
+
 	// createEngine builds a new engine, registers it in the manager, and
 	// subscribes this connector to its hub. Set by main.go via
 	// SetCreateEngineFn. nil when engine_new is not supported.
@@ -715,6 +725,32 @@ func (c *WUIConnector) SetTTSDefault(d string) {
 	c.ttsDefault = d
 }
 
+// SetDegradedFn injects the live degrade-reason source (empty = healthy).
+// Mirrors the SetSTTDefault pre-listen injection pattern; nil keeps the
+// connector in its previous behavior (never degraded).
+func (c *WUIConnector) SetDegradedFn(fn func() string) {
+	c.degradedFn = fn
+}
+
+// SetProvidersFn injects the live provider-map source, superseding the
+// construction-time maps when set. nil keeps construction-time behavior
+// (test fixtures that inject maps via New keep working).
+func (c *WUIConnector) SetProvidersFn(fn func() (map[string]llm.Provider, map[string]*config.Provider)) {
+	c.providersFn = fn
+}
+
+// liveProviders returns the current provider tables: the injected live
+// source when set (degraded boot → reload recovery repopulates without a
+// restart), else the construction-time maps.
+func (c *WUIConnector) liveProviders() (map[string]llm.Provider, map[string]*config.Provider) {
+	if c.providersFn != nil {
+		if providers, configs := c.providersFn(); providers != nil && configs != nil {
+			return providers, configs
+		}
+	}
+	return c.providers, c.providerConfigs
+}
+
 // sttAvailable reports whether the STT default resolves to a model on an
 // audio provider. Uses the startup-cached sttDefault + providerConfigs, so
 // no disk read happens per config frame.
@@ -722,8 +758,9 @@ func (c *WUIConnector) sttAvailable() bool {
 	if c.sttDefault == "" {
 		return false
 	}
-	providers := make([]config.Provider, 0, len(c.providerConfigs))
-	for _, p := range c.providerConfigs {
+	_, providerConfigs := c.liveProviders()
+	providers := make([]config.Provider, 0, len(providerConfigs))
+	for _, p := range providerConfigs {
 		providers = append(providers, *p)
 	}
 	cfg := &config.Config{Providers: providers, STT: config.STTConfig{Default: c.sttDefault}}
@@ -737,8 +774,9 @@ func (c *WUIConnector) ttsAvailable() bool {
 	if c.ttsDefault == "" {
 		return false
 	}
-	providers := make([]config.Provider, 0, len(c.providerConfigs))
-	for _, p := range c.providerConfigs {
+	_, providerConfigs := c.liveProviders()
+	providers := make([]config.Provider, 0, len(providerConfigs))
+	for _, p := range providerConfigs {
 		providers = append(providers, *p)
 	}
 	cfg := &config.Config{Providers: providers, TTS: config.TTSConfig{Default: c.ttsDefault}}
@@ -2920,9 +2958,14 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		currentProvider = p.Name()
 	}
 	currentModel := slot.engine.Model()
-	present := func(name string) bool { _, ok := c.providers[name]; return ok }
-	items := config.BuildModelItems(c.providerConfigs, present, currentProvider, currentModel)
+	liveProviders, liveConfigs := c.liveProviders()
+	present := func(name string) bool { _, ok := liveProviders[name]; return ok }
+	items := config.BuildModelItems(liveConfigs, present, currentProvider, currentModel)
 
+	degraded := ""
+	if c.degradedFn != nil {
+		degraded = c.degradedFn()
+	}
 	out := struct {
 		Type     string            `json:"type"`
 		Models   []configModelItem `json:"models"`
@@ -2930,6 +2973,7 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Thinking string            `json:"thinking"`
 		Stt      bool              `json:"stt,omitempty"`
 		Tts      bool              `json:"tts,omitempty"`
+		Degraded string            `json:"degraded,omitempty"`
 	}{
 		Type:     "config",
 		Models:   []configModelItem{},
@@ -2937,6 +2981,7 @@ func (c *WUIConnector) buildConfig(slot *engineSlot) []byte {
 		Thinking: string(slot.engine.Thinking()),
 		Stt:      c.sttAvailable(),
 		Tts:      c.ttsAvailable(),
+		Degraded: degraded,
 	}
 	for _, it := range items {
 		out.Models = append(out.Models, configModelItem{Provider: it.Provider, Model: it.Model})
@@ -2958,8 +3003,9 @@ func (c *WUIConnector) buildQuota() {
 		Quota    string `json:"quota"`
 	}
 	var entries []quotaEntry
-	for name := range c.providerConfigs {
-		p := c.providerConfigs[name]
+	_, providerConfigs := c.liveProviders()
+	for name := range providerConfigs {
+		p := providerConfigs[name]
 		f := quota.Detect(p)
 		if f == nil {
 			continue
@@ -3241,12 +3287,13 @@ func (c *WUIConnector) handleModelSwitch(providerName, modelName string) {
 	if eng == nil {
 		return
 	}
-	provider, ok := c.providers[providerName]
+	liveProviders, liveConfigs := c.liveProviders()
+	provider, ok := liveProviders[providerName]
 	if !ok {
 		c.sendWS(buildError(fmt.Errorf("unknown provider: %s", providerName)))
 		return
 	}
-	cfgProv := c.providerConfigs[providerName]
+	cfgProv := liveConfigs[providerName]
 	if cfgProv == nil {
 		c.sendWS(buildError(fmt.Errorf("no config for provider %s", providerName)))
 		return

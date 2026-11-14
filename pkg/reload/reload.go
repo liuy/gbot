@@ -59,6 +59,15 @@ type Env struct {
 	SkillCmds          []types.SkillCommand
 	PermissionChecker  permission.PermissionChecker
 	McpReg             *mcp.Registry // nil until first server exists
+
+	// Degraded marks provider-level degradation (tier 2/3: no live provider,
+	// Provider is the null stub). nil = healthy. Gates the background LLM
+	// subsystems and drives the reload recovery surgery.
+	Degraded *config.Degraded
+	// ConfigParseWarn carries file-level tier-3 detail (which settings.json
+	// failed to parse and where). Presentation only — providers may still be
+	// alive via the good file, so it never gates capabilities.
+	ConfigParseWarn string
 }
 
 // EnvHolder is an atomic pointer to the current Env — no torn reads across
@@ -195,14 +204,10 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 				FileEntry{Path: displaySettingsPath(), Status: StatusFailed, ErrLine: err.Error()})
 		}
 	}
-	providerMap, err := config.CreateAllProviders(cfg)
-	if err != nil {
-		return o.abort(rep, 0, err, FileEntry{Path: displaySettingsPath(), Status: StatusFailed, ErrLine: err.Error()})
-	}
-	provider, model, primaryCfg, err := cfg.ResolvePrimary(providerMap)
-	if err != nil {
-		return o.abort(rep, 0, err, FileEntry{Path: displaySettingsPath(), Status: StatusFailed, ErrLine: err.Error()})
-	}
+	// The same degrade ladder boot uses: provider-level failures degrade
+	// instead of aborting. A parse failure above still aborts — a live daemon
+	// on its old config strictly beats a swap onto the null provider.
+	boot := config.ResolveBoot(cfg)
 
 	// ------------------------------------------------------------------
 	// Phase 1 — plugin directories + project .mcp.json.
@@ -240,12 +245,13 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 	oldEnv := d.Env.Load()
 	newEnv := &Env{
 		Cfg:                cfg,
-		ProviderMap:        providerMap,
-		Provider:           provider,
-		Model:              model,
-		PrimaryProviderCfg: primaryCfg,
+		ProviderMap:        boot.Providers,
+		Provider:           boot.Provider,
+		Model:              boot.Model,
+		PrimaryProviderCfg: boot.Primary,
 		ModelThinking:      cfg.BuildModelThinking(),
 		McpReg:             oldEnv.McpReg,
+		Degraded:           boot.Degraded,
 	}
 
 	var pluginServers = map[string]mcp.ScopedMcpServerConfig{}
@@ -342,7 +348,7 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 	} else {
 		skillCmds := d.SkillReg.GetSkillToolSkills()
 		newEnv.SkillCmds = skillCmds
-		newEnv.SkillListing = skilltool.BuildSkillListing(skillCmds, primaryCfg.ResolveContext(model))
+		newEnv.SkillListing = skilltool.BuildSkillListing(skillCmds, newEnv.PrimaryProviderCfg.ResolveContext(newEnv.Model))
 	}
 	d.Env.Store(newEnv)
 
@@ -380,11 +386,53 @@ func (o *Orchestrator) Reload(ctx context.Context) *Report {
 			}
 			vs.Engine.SetAgentDefs(agentDefs)
 		}
+		// Recovery surgery, degraded→healthy only: engines still holding the
+		// null provider adopt the newly healthy provider/model plus its
+		// capabilities (the same sync a model_switch performs). The reverse
+		// direction never touches live engines — their old provider errors
+		// naturally and the user's choice is respected.
+		if oldEnv.Degraded != nil && newEnv.Degraded == nil {
+			recovered := false
+			for _, vs := range d.EngineMgr.List() {
+				if vs.Engine == nil {
+					continue
+				}
+				if _, isNull := vs.Engine.Provider().(*llm.NullProvider); !isNull {
+					continue
+				}
+				vs.Engine.SetProvider(newEnv.Provider)
+				vs.Engine.SetModel(newEnv.Model)
+				vs.Engine.SetMaxTokens(newEnv.PrimaryProviderCfg.ResolveMaxTokens(newEnv.Model))
+				vs.Engine.SetInputModalities(newEnv.PrimaryProviderCfg.ResolveInput(newEnv.Model))
+				vs.Engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+					ContextWindow:          newEnv.PrimaryProviderCfg.ResolveContext(newEnv.Model),
+					MaxConsecutiveFailures: 3,
+				})
+				vs.Model = newEnv.Provider.Name() + "/" + newEnv.Model
+				recovered = true
+			}
+			if recovered {
+				if err := d.EngineMgr.PersistMeta(d.ProjectDir); err != nil {
+					slog.Warn("reload: persist meta after recovery failed", "error", err)
+				}
+				slog.Info("reload: degraded engines recovered", "provider", newEnv.Provider.Name(), "model", newEnv.Model)
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------
 	// Report rows vs the pre-reload baseline, then update the baseline.
-	o.appendDiffRows(rep, userRaw, projRaw, pieces, newEnv)
+	o.appendDiffRows(rep, userRaw, projRaw, pieces, newEnv, boot.Notes)
+	// Tier 2 discloses itself as a failed providers row: the apply succeeded,
+	// but what it applied is a no-provider state the settings page must show.
+	if newEnv.Degraded != nil {
+		rep.Files = append(rep.Files, FileEntry{
+			Path:    "providers",
+			Status:  StatusFailed,
+			ErrLine: newEnv.Degraded.Reason,
+		})
+		rep.Counts.Failed++
+	}
 
 	rep.Applied = true
 	rep.Phase = 4
@@ -416,8 +464,10 @@ func (o *Orchestrator) abort(rep *Report, phase int, err error, rows ...FileEntr
 }
 
 // appendDiffRows computes the settings/plugin/prompt rows against the
-// baseline and updates the counts.
-func (o *Orchestrator) appendDiffRows(rep *Report, userRaw, projRaw []byte, pieces []*plugins.PluginPieces, newEnv *Env) {
+// baseline and updates the counts. notes carries the tier-1 fallback lines,
+// which join the settings row note so the report discloses what boot-level
+// fallbacks this reload applied.
+func (o *Orchestrator) appendDiffRows(rep *Report, userRaw, projRaw []byte, pieces []*plugins.PluginPieces, newEnv *Env, notes []string) {
 	b := o.baseline
 	addRow := func(row FileEntry) {
 		switch row.Status {
@@ -447,6 +497,12 @@ func (o *Orchestrator) appendDiffRows(rep *Report, userRaw, projRaw []byte, piec
 		rep.SettingsChanged = true
 	} else {
 		row.Status = StatusUnchanged
+	}
+	if len(notes) > 0 {
+		if row.Note != "" {
+			row.Note += "; "
+		}
+		row.Note += strings.Join(notes, "; ")
 	}
 	addRow(row)
 

@@ -104,6 +104,43 @@ func TestStartWeChatConnector_BuildsReadOnlyEngine(t *testing.T) {
 	}
 }
 
+// Tier-2 boot pairs a zero-value provider config with an empty model; the
+// view-state Model must persist "" (not "/") so the meta.json restore feeds
+// the factory an empty model arg — the factory's degraded-boot fallback only
+// triggers on the empty string.
+func TestStartWeChatConnector_DegradedModelIsEmptyString(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	mgr := engine.NewEngineManager()
+	d, mediaStores := wechatDeps(t, mgr, store, false)
+	d.provider = llm.NewNullProvider()
+	d.model = ""
+	d.primaryProviderCfg = &config.Provider{}
+	t.Cleanup(func() {
+		for _, ms := range *mediaStores {
+			if ms != nil {
+				ms.Close()
+			}
+		}
+	})
+
+	if err := startWeChatConnector(d); err != nil {
+		t.Fatalf("startWeChatConnector: %v", err)
+	}
+	vs := mgr.Get("wechat-acct1")
+	if vs == nil || vs.Engine == nil {
+		t.Fatalf("engine missing, manager holds %v", engineIDs(mgr))
+	}
+	if vs.Model != "" {
+		t.Errorf("Model = %q, want \"\" (degraded boot must not persist a bogus \"/\")", vs.Model)
+	}
+}
+
 func TestStartWeChatConnector_RestoredEngineBecomesReadOnly(t *testing.T) {
 	projectDir := t.TempDir()
 	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))

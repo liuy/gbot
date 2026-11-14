@@ -53,11 +53,12 @@ export type ServerMessage =
       thinking: string
       stt?: boolean
       tts?: boolean
+      degraded?: string
     }
   | {
       type: 'metadata'
       connect: { connected: boolean; agent?: string; model?: string; sessionID?: string; inputHistory?: string[]; engineID?: string; engineName?: string; wuiHash?: string }
-      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string; stt?: boolean; tts?: boolean }
+      config: { models: { provider: string; model: string }[]; current: { provider: string; model: string }; thinking: string; stt?: boolean; tts?: boolean; degraded?: string }
       engines: { engines: EngineListItem[]; activeID: string }
       tasks?: { tasks: TaskWireItem[] }
       jobs?: { jobs: (JobWireItem & { blocks?: Block[]; tail?: string })[] }

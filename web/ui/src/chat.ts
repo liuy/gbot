@@ -89,6 +89,9 @@ import {
   avatarU,
   disconnectBannerClass,
   disconnectText,
+  degradedBannerClass,
+  degradedBannerText,
+  degradedReasonText,
 } from './styles/recipes'
 import { createElement, createNode, createFragment } from './dom'
 
@@ -767,6 +770,31 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   disconnectBanner.appendChild(dcText)
   mainContent.appendChild(disconnectBanner)
 
+  // ── Degraded banner: amber sibling of the disconnect banner, shown while
+  // the server has no usable provider (tier 2/3). Visibility is driven by
+  // the degraded field on every config/metadata frame, so a successful
+  // reload clears it on the next replay — no dedicated push channel.
+  const degradedBanner = createElement('div', degradedBannerClass())
+  degradedBanner.setAttribute('data-degraded-banner', '1')
+  const dgTitle = createElement('span', degradedBannerText())
+  const dgReason = createElement('span', degradedReasonText())
+  degradedBanner.appendChild(dgTitle)
+  degradedBanner.appendChild(dgReason)
+  mainContent.appendChild(degradedBanner)
+  const setDegradedBanner = (reason: string | undefined) => {
+    if (reason) {
+      dgTitle.textContent = t('degradedBanner')
+      dgReason.textContent = reason
+      degradedBanner.style.maxHeight = '56px'
+      degradedBanner.style.opacity = '1'
+      degradedBanner.style.cursor = 'pointer'
+    } else {
+      degradedBanner.style.maxHeight = '0px'
+      degradedBanner.style.opacity = '0'
+      degradedBanner.style.cursor = 'default'
+    }
+  }
+
   // Upgrade capsule (binary hot restart): floats below the header during
   // the handover; owns ALL upgrading visuals so the disconnect banner
   // stays untouched. Mounts on the shell root, NOT mainContent: sidebar
@@ -1108,6 +1136,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
 
   disconnectBanner.addEventListener('click', () => {
     conn.reconnect?.()
+  })
+  // Symmetric with the disconnect banner's tap-to-retry: the only repair
+  // channel for a degraded server is the settings page.
+  degradedBanner.addEventListener('click', () => {
+    settingsPage.open()
   })
 
   // No global click delegation: copy buttons are wired per-wrapper via
@@ -2749,6 +2782,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         inputBar.setThinking(msg.config.thinking ?? 'auto')
         inputBar.setSttAvailable(!!msg.config.stt)
         voiceReady = !!msg.config.stt && !!msg.config.tts
+        setDegradedBanner(msg.config.degraded)
         if (msg.tasks) taskPanel.setTasks(msg.tasks.tasks)
         if (msg.jobs) {
           const hydrated = new Map<string, { blocks?: Block[]; tail?: string }>()
@@ -2865,6 +2899,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         inputBar.setThinking(msg.thinking ?? 'auto')
         inputBar.setSttAvailable(!!msg.stt)
         voiceReady = !!msg.stt && !!msg.tts
+        setDegradedBanner(msg.degraded)
         return
       case 'model_switched':
         contextTotal = msg.contextTotal
