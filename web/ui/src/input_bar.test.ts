@@ -308,6 +308,21 @@ describe('createInputBar', () => {
     stopBtn.click()
     expect(spy).toHaveBeenCalledOnce()
   })
+  it('STOP state swaps the button to a rounded square, Send state stays round', () => {
+    const ib = mount()
+    const btn = ib.root.querySelector('button[aria-label="Send"]') as HTMLButtonElement
+    ib.setStreaming(true)
+    expect(btn.className).toContain('rounded-[7px]')
+    expect(btn.className).not.toContain('rounded-full')
+    // Typing mid-stream flips to Send — shape returns to circle with the icon.
+    ib.textarea.value = 'follow-up'
+    ib.textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(btn.className).toContain('rounded-full')
+    expect(btn.className).not.toContain('rounded-[7px]')
+    // Query end restores Send too.
+    ib.setStreaming(false)
+    expect(btn.className).toContain('rounded-full')
+  })
 
   it('clicking a queued bubble fires onCancelQueued', () => {
     const ib = mount()

@@ -911,6 +911,12 @@ export function createInputBar(initial: {
     // open the history picker. The actual behavior (STOP / picker / send)
     // is decided in the click handler based on state.
     sendBtn.disabled = uploading || !connected
+    // The STOP affordance is a rounded square — the shape change itself
+    // broadcasts the state swap; every Send rendering (idle or mid-stream
+    // with typed text) is round.
+    const stopShape = streaming && !hasText && !hasAttachments
+    sendBtn.classList.toggle('rounded-full', !stopShape)
+    sendBtn.classList.toggle('rounded-[7px]', stopShape)
     if (!hasText && !hasAttachments && !streaming) {
       sendBtn.classList.add('opacity-50')
     } else {
@@ -1141,7 +1147,7 @@ export function createInputBar(initial: {
       streaming = s
       if (s) {
         // Respect current input state: empty → Stop, non-empty → Send
-        // (recomputeCanSend handles the icon/aria-label flip).
+        // (recomputeCanSend handles the icon/aria-label/shape flip).
         recomputeCanSend()
       } else {
         sendBtn.replaceChildren(renderSendIcon())
