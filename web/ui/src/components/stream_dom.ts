@@ -65,8 +65,8 @@ interface ToolHeaderHandles {
 
 function createToolHeader(): ToolHeaderHandles {
   // No data-tool-header here: this factory also builds tool-GROUP headers
-  // (createGroupContainer), and the long-press exemption must apply only to
-  // per-tool rows. appendToolBlock stamps its own header after this call.
+  // (createGroupContainer); the stamp distinguishes per-tool headers.
+  // appendToolBlock stamps its own header after this call.
   const header = createNode('span', {
     className: toolHeaderBtn(),
     attrs: { role: 'button' },
@@ -207,6 +207,7 @@ export function appendThinkingBlock(
   before?: Node | null,
 ): { p: HTMLParagraphElement; labelEl: HTMLSpanElement } {
   const wrap = createElement('div')
+  // data-thinking serves the grouping walkers (findPrevToolSibling etc.).
   wrap.dataset.thinking = '1'
 
   const header = createNode('span', {
@@ -408,7 +409,8 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
 
   const { header, dot, content } = createToolHeader()
   // Stamp AFTER the factory: group headers come out of the same factory and
-  // must stay exempt from the long-press AVOID relaxation.
+  // stay unstamped — tests and walkers use [data-tool-header] as the
+  // per-tool header anchor.
   header.dataset.toolHeader = '1'
 
   const nameEl = createElement('span', toolName())

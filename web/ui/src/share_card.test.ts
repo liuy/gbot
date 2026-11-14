@@ -6,6 +6,7 @@ import {
   captureShareCard,
   getShareBridge,
   shareMessage,
+  shareMarkdown,
   type ShareRequest,
 } from './share_card'
 
@@ -78,6 +79,12 @@ describe('buildShareCard', () => {
 
 describe('shareFileName', () => {
   it('encodes local startedAt as gbot-share-YYYY-MM-DD-HHmmss.png', () => {
+    expect(shareFileName(startedAt)).toBe('gbot-share-2026-10-15-105000.png')
+  })
+
+  it('md extension follows the same rule: gbot-share-YYYY-MM-DD-HHmmss.md', () => {
+    expect(shareFileName(startedAt, 'md')).toBe('gbot-share-2026-10-15-105000.md')
+    // The default parameter stays png — existing callers are unaffected.
     expect(shareFileName(startedAt)).toBe('gbot-share-2026-10-15-105000.png')
   })
 })
@@ -227,5 +234,44 @@ describe('shareMessage', () => {
     await expect(p).rejects.toThrow('boom')
     expect(stub.shareImage).toHaveBeenCalledTimes(0)
     expect(document.querySelector('.share-card-offscreen-host')).toBeNull()
+  })
+})
+
+describe('shareMarkdown', () => {
+  beforeEach(() => {
+    domToPngMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.innerHTML = ''
+    delete (window as unknown as Record<string, unknown>).GBotShare
+    vi.unstubAllGlobals()
+  })
+
+  it('hands the raw text and an .md file name to bridge.shareText', () => {
+    const stub = { shareImage: vi.fn(), shareText: vi.fn() }
+    ;(window as unknown as Record<string, unknown>).GBotShare = stub
+    const res = shareMarkdown({ text: '# hi\n\n**bold**', role: 'assistant', startedAt })
+    expect(res).toBe('opened')
+    expect(stub.shareText).toHaveBeenCalledTimes(1)
+    expect(stub.shareText).toHaveBeenCalledWith('# hi\n\n**bold**', 'gbot-share-2026-10-15-105000.md')
+    // The raw source goes out verbatim — markdown never runs through the
+    // rasterize pipeline.
+    expect(stub.shareImage).toHaveBeenCalledTimes(0)
+    expect(domToPngMock).toHaveBeenCalledTimes(0)
+  })
+
+  it('returns no-bridge without a window stub and touches nothing', () => {
+    expect(shareMarkdown({ text: 'hi', role: 'assistant', startedAt })).toBe('no-bridge')
+    expect(domToPngMock).toHaveBeenCalledTimes(0)
+  })
+
+  it('returns no-bridge on an old shell lacking shareText, never calls shareImage', () => {
+    const stub = shareBridgeStub()
+    ;(window as unknown as Record<string, unknown>).GBotShare = stub
+    expect(shareMarkdown({ text: 'hi', role: 'assistant', startedAt })).toBe('no-bridge')
+    expect(stub.shareImage).toHaveBeenCalledTimes(0)
+    expect(domToPngMock).toHaveBeenCalledTimes(0)
   })
 })

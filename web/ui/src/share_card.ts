@@ -51,13 +51,13 @@ export function buildShareCard(req: ShareRequest): HTMLDivElement {
   return card
 }
 
-/** gbot-share-YYYY-MM-DD-HHmmss.png (local time). */
-export function shareFileName(startedAt: number): string {
+/** gbot-share-YYYY-MM-DD-HHmmss.<ext> (local time; png default). */
+export function shareFileName(startedAt: number, ext: 'png' | 'md' = 'png'): string {
   const d = new Date(startedAt)
   const pad = (n: number): string => String(n).padStart(2, '0')
   return (
     `gbot-share-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.png`
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`
   )
 }
 
@@ -91,6 +91,9 @@ export const SHARE_BRIDGE_NAME = 'GBotShare'
 
 export interface ShareBridge {
   shareImage: (dataUrl: string, fileName: string) => void
+  // Old APK shells predate the markdown-file share; the menu hides the MD
+  // item when this is missing instead of wiring a dead button.
+  shareText?: (content: string, fileName: string) => void
 }
 
 export function getShareBridge(): ShareBridge | null {
@@ -108,5 +111,15 @@ export async function shareMessage(req: ShareRequest): Promise<'opened' | 'no-br
   if (!bridge) return 'no-bridge'
   const dataUrl = await captureShareCard(buildShareCard(req))
   bridge.shareImage(dataUrl, shareFileName(req.startedAt))
+  return 'opened'
+}
+
+/** The raw source text as an .md file through the bridge — no capture phase,
+ *  so no async: bridge missing or lacking shareText returns 'no-bridge'
+ *  (defensive — the menu should never have shown the item). */
+export function shareMarkdown(req: ShareRequest): 'opened' | 'no-bridge' {
+  const bridge = getShareBridge()
+  if (!bridge || typeof bridge.shareText !== 'function') return 'no-bridge'
+  bridge.shareText(req.text, shareFileName(req.startedAt, 'md'))
   return 'opened'
 }

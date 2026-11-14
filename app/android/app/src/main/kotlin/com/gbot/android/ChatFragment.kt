@@ -973,11 +973,12 @@ class ChatFragment : Fragment() {
     }
 
     /**
-     * Exposed to the WUI as window.GBotShare: message long-press → PNG share
-     * sheet. shareImage runs on the WebView JavaBridge thread — decode + file
-     * write happen there (plain IO), startActivity must hop to main (window
-     * touch) via runOnUiThread, same as NativeThemeBridge. Payload sanitizing
-     * lives in top-level functions of ShareBridge.kt so plain-JUnit covers it.
+     * Exposed to the WUI as window.GBotShare: message long-press → PNG /
+     * markdown-file share sheet. shareImage runs on the WebView JavaBridge
+     * thread — decode + file write happen there (plain IO), startActivity
+     * must hop to main (window touch) via runOnUiThread, same as
+     * NativeThemeBridge. Payload sanitizing lives in top-level functions of
+     * ShareBridge.kt so plain-JUnit covers it.
      */
     private inner class ShareBridge {
         @JavascriptInterface
@@ -1005,6 +1006,27 @@ class ChatFragment : Fragment() {
                     activity?.startActivity(Intent.createChooser(send, null))
                 } catch (e: Exception) {
                     GbotProcess.appendEvent("share: ${e.message}")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun shareText(content: String, fileName: String) {
+            GbotProcess.appendEvent("share-md", "called, file=$fileName, ${content.length} chars")
+            val ctx = context ?: run {
+                GbotProcess.appendEvent("share-md", "no context")
+                return
+            }
+            // Same thread model as shareImage: plain IO on the JavaBridge
+            // thread, UI work hopped to main.
+            val file = writeShareText(ctx.cacheDir, content, fileName)
+            activity?.runOnUiThread {
+                val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+                val send = buildShareTextSendIntent(uri)
+                try {
+                    activity?.startActivity(Intent.createChooser(send, null))
+                } catch (e: Exception) {
+                    GbotProcess.appendEvent("share-md: ${e.message}")
                 }
             }
         }

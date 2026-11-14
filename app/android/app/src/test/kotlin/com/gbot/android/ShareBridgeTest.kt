@@ -1,9 +1,15 @@
 package com.gbot.android
 
 import com.google.common.truth.Truth.assertThat
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class ShareBridgeTest {
+
+	@get:Rule
+	val tmp = TemporaryFolder()
 
 	private val pngBase64 =
 		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -78,5 +84,40 @@ class ShareBridgeTest {
 	fun sanitize_normalName_returnedUnchanged() {
 		val name = "gbot-share-2026-10-15-105000.png"
 		assertThat(sanitizeShareFileName(name)).isEqualTo(name)
+	}
+
+	@Test
+	fun writeShareText_sanitizesTraversalNameIntoShareDir() {
+		val cache = tmp.newFolder()
+		val file = writeShareText(cache, "content", "../../evil.md")
+		assertThat(file.name).doesNotContain("/")
+		assertThat(file.name).endsWith("_evil.md")
+		assertThat(file.parentFile).isEqualTo(File(cache, "share"))
+	}
+
+	@Test
+	fun writeShareText_writesContentVerbatimUtf8() {
+		val cache = tmp.newFolder()
+		val file = writeShareText(cache, "中文 *md* ✓", "gbot-share-2026-11-14-153000.md")
+		assertThat(file.readText()).isEqualTo("中文 *md* ✓")
+	}
+
+	@Test
+	fun writeShareText_createsMissingShareDir() {
+		// The share/ subtree is created on demand — a fresh install's cacheDir
+		// has never seen it.
+		val cache = File(tmp.newFolder(), "cache")
+		val file = writeShareText(cache, "content", "a.md")
+		assertThat(file.exists()).isTrue()
+		assertThat(file.parentFile?.isDirectory).isTrue()
+	}
+
+	@Test
+	fun writeShareText_normalName_landsUnchanged() {
+		val cache = tmp.newFolder()
+		val name = "gbot-share-2026-11-14-153000.md"
+		val file = writeShareText(cache, "x", name)
+		assertThat(file.name).isEqualTo(name)
+		assertThat(file.readText()).isEqualTo("x")
 	}
 }

@@ -1,52 +1,36 @@
-// Long-press message menu: Liquid Glass popup (share the pressed block as
-// image / copy the selection or the block text), interaction ported from
-// the approved share-menu-demo.html with two deliberate deviations: the
-// menu/toast mount on mainContent with absolute coordinates (a lingering
-// sidebar translateX would otherwise trap fixed elements), and the item awaits
-// its action so the success/failure toast is truthful. The item set is
-// decided per press: non-shareable sources (tool blocks, reminder rows) get
-// a copy-only capsule. Entry is gated on the
-// Android shell bridge — without window.GBotShare initShareMenu no-ops and
-// desktop never arms a listener. Long-press doubles as the native selection
-// start: contextmenu is suppressed only to drop the system menu (handles live
-// on), and the menu opens AT contextmenu — the moment the browser hands over
-// selection — so handles and menu coexist; a selection-anchored menu follows
-// the selection through scrolls and handle drags. Opening on lift made them
-// mutually exclusive.
+// Long-press message menu for body text only: text/user/error blocks get
+// the full ritual — selection handles, lift/hold dimming, the floating
+// Liquid Glass capsule (image / markdown / copy). Everything else (tool
+// output, thinking, reminder rows, chrome) gets ZERO custom UI — the
+// long-press hands the gesture to the WebView's native selection untouched
+// (no contextmenu preventDefault, so the system toolbar appears). Entry is
+// gated on the Android shell bridge — without window.GBotShare
+// initShareMenu no-ops and desktop never arms a listener. Long-press
+// doubles as the native selection start: contextmenu is suppressed only to
+// drop the system menu (handles live on), and the float capsule opens AT
+// contextmenu — the moment the browser hands over selection — so handles
+// and menu coexist; a selection-anchored menu follows the selection through
+// scrolls and handle drags. Opening on lift made them mutually exclusive.
 import { createNode } from './dom'
 import { t } from './i18n'
 import { renderIcon } from './icons'
 import { copyText } from './utils/copy_button'
-import { getShareBridge, shareMessage } from './share_card'
-import type { Block } from './model'
+import { getShareBridge, shareMessage, shareMarkdown } from './share_card'
 
 export const LONG_PRESS_MS = 450
 export const CANCEL_MOVE_PX = 8
 
 // Presses landing on interactive content never start the hold timer — code
-// copy buttons, thinking/group collapse headers, lightbox images, artifact
-// cards. Sole exception: tool-row headers stamped data-tool-header (below).
+// copy buttons, thinking/tool/group collapse headers, lightbox images,
+// artifact cards.
 const AVOID_SELECTOR =
   'button, a, input, textarea, select, img, [role="button"], .artifact-card'
-
-/** The last text/user block — the final reply, not the working-out-loud.
- *  thinking/tool/image/document are chrome, not shareable content.
- *  Empty string when none. */
-export function extractShareText(blocks: Block[]): string {
-  // The final reply is the last text block; everything before it (interim
-  // narration, tool narration) is working-out-loud the reader didn't ask for.
-  const lastText = [...blocks].reverse().find((b) => b.kind === 'text' || b.kind === 'user')
-  return lastText && 'text' in lastText ? lastText.text : ''
-}
 
 export interface ShareSource {
   anchor: HTMLElement
   role: 'user' | 'assistant'
   startedAt: number
   text: string
-  /** false = copy-only source (tool blocks, reminder rows): the menu drops
-   *  the share item and the .share-vsep separator. */
-  shareable: boolean
 }
 
 export interface ShareMenuOptions {
@@ -186,33 +170,46 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
       attrs: { type: 'button', 'aria-label': t('shareMenuCopy') },
     })
     copyItem.appendChild(renderIcon('copy'))
-    if (src.shareable) {
-      // Share = the pressed block / the final reply as image. Non-shareable
-      // sources (tool blocks, reminder rows) get the same capsule minus the
-      // share icon and the separator.
-      const shareItem = createNode('button', {
+    // Export-as-file group (image, markdown) then copy. Old APK shells lack
+    // bridge.shareText — probing at open time hides the MD item rather than
+    // shipping a dead button; the capsule then keeps its two-item shape.
+    const bridge = getShareBridge()
+    const imageItem = createNode('button', {
+      className: 'share-menu-item',
+      attrs: { type: 'button', 'aria-label': t('shareMenuImage') },
+    })
+    imageItem.appendChild(renderIcon('imageUp'))
+    imageItem.addEventListener('click', () => {
+      const src = currentSource
+      close()
+      if (!src) return
+      void shareMessage(src).then(
+        (res) => {
+          // 'no-bridge' resolving here would be a false success toast — it
+          // is a defensive path, report it as a failure.
+          toast(res === 'opened' ? t('shareImageReady') : t('shareImageFailed'))
+        },
+        () => {
+          toast(t('shareImageFailed'))
+        },
+      )
+    })
+    if (bridge && typeof bridge.shareText === 'function') {
+      const mdItem = createNode('button', {
         className: 'share-menu-item',
-        attrs: { type: 'button', 'aria-label': t('shareMenuImage') },
+        attrs: { type: 'button', 'aria-label': t('shareMenuMarkdown') },
       })
-      shareItem.appendChild(renderIcon('share'))
-      menu.append(shareItem, createNode('span', { className: 'share-vsep' }), copyItem)
-      shareItem.addEventListener('click', () => {
+      mdItem.appendChild(renderIcon('markdownUp'))
+      mdItem.addEventListener('click', () => {
         const src = currentSource
         close()
         if (!src) return
-        void shareMessage(src).then(
-          (res) => {
-            // 'no-bridge' resolving here would be a false success toast — it
-            // is a defensive path, report it as a failure.
-            toast(res === 'opened' ? t('shareImageReady') : t('shareImageFailed'))
-          },
-          () => {
-            toast(t('shareImageFailed'))
-          },
-        )
+        const res = shareMarkdown(src)
+        toast(res === 'opened' ? t('shareImageReady') : t('shareImageFailed'))
       })
+      menu.append(imageItem, mdItem, createNode('span', { className: 'share-vsep' }), copyItem)
     } else {
-      menu.appendChild(copyItem)
+      menu.append(imageItem, createNode('span', { className: 'share-vsep' }), copyItem)
     }
     host.appendChild(menu)
     copyItem.addEventListener('click', () => {
@@ -322,16 +319,7 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     // finger's completed long-press is lost — the price of never locking
     // out. Do not "fix" this back into a blanket refusal.
     if (holdPointerId !== null && timer !== null) return
-    // Tool headers are role=button spans wrapping the command text the user
-    // actually presses; avoiding them left every tool row menu-less (handles
-    // appeared, menu didn't). Exempt ONLY the stamped per-tool headers —
-    // group headers ("Ran N tools") come out of the same factory unstamped
-    // and stay avoided. Quick taps still toggle (the click path is
-    // untouched) and long-press resolves to the tool block — the browser
-    // ends the pointer stream at contextmenu so no toggle click synthesizes
-    // (clickEat covers WebViews that do).
-    const avoided = target.closest(AVOID_SELECTOR)
-    if (avoided && !avoided.hasAttribute('data-tool-header')) return
+    if (target.closest(AVOID_SELECTOR)) return
     const row = rowFromTarget(target)
     if (!row) return
     const src = getSource(row, target)
@@ -400,28 +388,38 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     holdPointerId = null
   }
   const onContextMenu = (e: MouseEvent): void => {
+    if (!container.contains(e.target as Node)) return
     // This event IS the long-press moment: the browser has just started the
     // native selection (handles coming up) and is about to show its own
-    // menu. Open ours HERE so handles and menu coexist; preventDefault
-    // kills the system menu only. Opening on pointerup instead would race
-    // the selection takeover — the browser ends the pointer stream at
-    // contextmenu (pointerout/pointercancel follow), so waiting for lift
-    // made handles and menu mutually exclusive.
-    if (container.contains(e.target as Node)) {
-      e.preventDefault()
-      if (holdRow && holdSrc) {
-        const row = holdRow
-        const src = holdSrc
-        clearTimer()
-        holdRow = null
-        holdSrc = null
-        holdPointerId = null
-        if (row.isConnected) open(row, src, startY)
-      }
+    // menu. For an armed float hold we open our capsule HERE so handles and
+    // menu coexist; preventDefault kills the system menu only. Opening on
+    // pointerup instead would race the selection takeover — the browser ends
+    // the pointer stream at contextmenu (pointerout/pointercancel follow),
+    // so waiting for lift made handles and menu mutually exclusive.
+    // No armed float hold = the press landed on a native row (tool output,
+    // thinking, chrome): preventDefault would kill the system selection
+    // toolbar — the only copy affordance those rows have — so hand the
+    // gesture to the WebView untouched.
+    if (!holdRow || !holdSrc) {
+      // Second long-press while the capsule is open: onPointerDown already
+      // early-returned on `menu`, so this unarmed contextmenu is a native
+      // press. The capsule yields to the system selection toolbar — close
+      // it, still without preventDefault.
+      if (menu) close()
+      return
     }
+    e.preventDefault()
+    const row = holdRow
+    const src = holdSrc
+    clearTimer()
+    holdRow = null
+    holdSrc = null
+    holdPointerId = null
+    if (row.isConnected) open(row, src, startY)
   }
   const onDocClick = (e: MouseEvent): void => {
-    if (menu && !menu.contains(e.target as Node)) close()
+    const t = e.target as Node
+    if (menu && !menu.contains(t)) close()
   }
   // The menu is absolutely positioned on the host while the rows scroll.
   // Scroll events don't bubble; the capture phase is how they reach the host.

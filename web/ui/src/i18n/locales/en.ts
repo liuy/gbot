@@ -244,6 +244,7 @@ export const dict = {
   stopJob: 'Stop',
   backToBottom: 'Back to bottom',
   shareMenuImage: 'Share as image',
+  shareMenuMarkdown: 'Share as markdown',
   shareMenuCopy: 'Copy text',
   shareCopied: 'Copied',
   shareCopyFailed: 'Copy failed',

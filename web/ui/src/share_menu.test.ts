@@ -2,84 +2,24 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  extractShareText,
   initShareMenu,
   LONG_PRESS_MS,
   CANCEL_MOVE_PX,
   type ShareMenuHandle,
   type ShareSource,
 } from './share_menu'
-import { shareMessage } from './share_card'
+import { shareMessage, shareMarkdown } from './share_card'
 import { copyText } from './utils/copy_button'
 import { t } from './i18n'
-import type { Block } from './model'
 
 // Partial mock: keep the real getShareBridge (the entry probe reads
 // window.GBotShare through it) and only intercept shareMessage.
 vi.mock('./share_card', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./share_card')>()
-  return { ...actual, shareMessage: vi.fn() }
+  return { ...actual, shareMessage: vi.fn(), shareMarkdown: vi.fn() }
 })
 
 vi.mock('./utils/copy_button', () => ({ copyText: vi.fn() }))
-
-function block(kind: Block['kind'], text = 'x'): Block {
-  switch (kind) {
-    case 'text':
-      return { kind: 'text', id: '', text }
-    case 'user':
-      return { kind: 'user', id: '', text }
-    case 'thinking':
-      return { kind: 'thinking', id: '', text, durationNs: 0, active: false, startedAt: 0 }
-    case 'image':
-      return { kind: 'image', id: '', src: 'data:image/png;base64,QUJD' }
-    case 'document':
-      return { kind: 'document', id: '', name: 'f.pdf' }
-    default:
-      return {
-        kind: 'tool',
-        id: '',
-        name: 'Bash',
-        summary: '',
-        isSearch: false,
-        isRead: false,
-        isList: false,
-        isLsp: false,
-        isWeb: false,
-        isTask: false,
-        state: 'done',
-        timingNs: 0,
-        displayOutput: '',
-        startedAt: 0,
-        children: [],
-      }
-  }
-}
-
-describe('extractShareText', () => {
-  it('returns only the last text/user block — the final reply, not the working-out-loud', () => {
-    const blocks: Block[] = [
-      block('thinking'),
-      block('text', 'interim narration'),
-      block('tool'),
-      block('text', 'a'),
-      block('image'),
-      block('user', 'c'),
-    ]
-    expect(extractShareText(blocks)).toBe('c')
-  })
-
-  it('returns empty string when no shareable block exists', () => {
-    expect(extractShareText([block('thinking'), block('tool')])).toBe('')
-  })
-
-  it('a reply followed by chrome blocks still shares the reply', () => {
-    // The shareable pick must be the last TEXT/USER block, not the last
-    // block of any kind.
-    const blocks: Block[] = [block('text', 'final answer'), block('tool'), block('image')]
-    expect(extractShareText(blocks)).toBe('final answer')
-  })
-})
 
 // --- gesture / menu suites ---
 
@@ -104,6 +44,7 @@ let row: HTMLElement
 let source: ShareSource
 let handle: ShareMenuHandle | null
 const bridgeShare = vi.fn()
+const bridgeShareMd = vi.fn()
 
 function pointer(type: string, clientY = 0): MouseEvent {
   return new MouseEvent(type, { bubbles: true, cancelable: true, clientY })
@@ -131,7 +72,6 @@ function setup(getSource?: (r: HTMLElement, target: HTMLElement) => ShareSource 
     role: 'assistant',
     startedAt: new Date(2026, 9, 15, 10, 50).getTime(),
     text: 'share me',
-    shareable: true,
   }
   handle = initShareMenu({
     host,
@@ -143,8 +83,13 @@ function setup(getSource?: (r: HTMLElement, target: HTMLElement) => ShareSource 
 beforeEach(() => {
   vi.useFakeTimers()
   bridgeShare.mockClear()
-  ;(window as unknown as Record<string, unknown>).GBotShare = { shareImage: bridgeShare }
+  bridgeShareMd.mockClear()
+  ;(window as unknown as Record<string, unknown>).GBotShare = {
+    shareImage: bridgeShare,
+    shareText: bridgeShareMd,
+  }
   vi.mocked(shareMessage).mockReset()
+  vi.mocked(shareMarkdown).mockReset()
   vi.mocked(copyText).mockReset()
 })
 
@@ -192,7 +137,7 @@ describe('long-press gesture', () => {
     row.dispatchEvent(pointer('pointerup'))
     const menu = host.querySelector('.share-menu')
     expect(menu).not.toBeNull()
-    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(2)
+    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(3)
     expect(host.querySelectorAll('.share-vsep')).toHaveLength(1)
     expect(container.classList.contains('share-holding')).toBe(true)
     expect(row.classList.contains('share-lifted')).toBe(true)
@@ -350,6 +295,18 @@ describe('long-press gesture', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
     expect(host.querySelectorAll('.share-menu')).toHaveLength(1)
+  })
+
+  it('hands getSource the original press target, not the row', () => {
+    let got: HTMLElement | null = null
+    setup((_r, target) => {
+      got = target
+      return source
+    })
+    const inner = document.createElement('span')
+    row.appendChild(inner)
+    inner.dispatchEvent(pointer('pointerdown'))
+    expect(got).toBe(inner)
   })
 })
 
@@ -524,79 +481,6 @@ describe('menu positioning', () => {
   })
 })
 
-describe('copy-only sources', () => {
-  async function flush(): Promise<void> {
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-  }
-
-  function openCopyOnly(text = 'tool display output'): void {
-    setup(() => ({ ...source, shareable: false, text }))
-    press()
-    vi.advanceTimersByTime(LONG_PRESS_MS)
-    row.dispatchEvent(pointer('pointerup'))
-  }
-
-  it('renders a single-item capsule: no share icon, no separator', () => {
-    openCopyOnly()
-    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(1)
-    expect(host.querySelector('.share-vsep')).toBeNull()
-    // Copy-only still carries the full hold presentation.
-    expect(container.classList.contains('share-holding')).toBe(true)
-    expect(row.classList.contains('share-lifted')).toBe(true)
-  })
-
-  it('keeps the two-item capsule for shareable sources', () => {
-    setup(() => ({ ...source, shareable: true }))
-    press()
-    vi.advanceTimersByTime(LONG_PRESS_MS)
-    row.dispatchEvent(pointer('pointerup'))
-    expect(host.querySelectorAll('button.share-menu-item')).toHaveLength(2)
-    expect(host.querySelectorAll('.share-vsep')).toHaveLength(1)
-  })
-
-  it('copy with no selection falls back to the source text', async () => {
-    openCopyOnly('Bash output line')
-    vi.mocked(copyText).mockResolvedValue()
-    const items = host.querySelectorAll('button.share-menu-item')
-    items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await flush()
-    expect(copyText).toHaveBeenCalledWith('Bash output line')
-  })
-
-  it('copy still prefers the live selection over the block fallback', async () => {
-    setup(() => ({ ...source, shareable: false, text: 'tool display output' }))
-    row.textContent = 'select partial please'
-    const sel = window.getSelection()
-    const range = document.createRange()
-    range.setStart(row.firstChild!, 7)
-    range.setEnd(row.firstChild!, 14)
-    sel?.removeAllRanges()
-    sel?.addRange(range)
-    press()
-    vi.advanceTimersByTime(LONG_PRESS_MS)
-    row.dispatchEvent(pointer('pointerup'))
-    vi.mocked(copyText).mockResolvedValue()
-    const items = host.querySelectorAll('button.share-menu-item')
-    items[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await flush()
-    expect(copyText).toHaveBeenCalledWith('partial')
-  })
-
-  it('hands getSource the original press target, not the row', () => {
-    let got: HTMLElement | null = null
-    setup((_r, target) => {
-      got = target
-      return source
-    })
-    const inner = document.createElement('span')
-    row.appendChild(inner)
-    inner.dispatchEvent(pointer('pointerdown'))
-    expect(got).toBe(inner)
-  })
-})
-
 describe('selection-anchored scroll following', () => {
   // Opens the menu anchored to an in-row selection whose rect top is
   // mutable, so a test can move the selection (the scrolled-away state)
@@ -706,7 +590,7 @@ describe('control avoidance', () => {
     expect(host.querySelector('.share-menu')).toBeNull()
   })
 
-  it('a press on a tool header span opens the menu despite role=button', () => {
+  it('a press on a stamped tool header arms nothing', () => {
     setup()
     const header = document.createElement('span')
     header.setAttribute('role', 'button')
@@ -715,9 +599,9 @@ describe('control avoidance', () => {
     header.dispatchEvent(pointer('pointerdown'))
     vi.advanceTimersByTime(LONG_PRESS_MS)
     header.dispatchEvent(pointer('pointerup'))
-    // Tool headers wrap the command text the user actually presses —
-    // avoiding them left every tool row menu-less (device finding).
-    expect(host.querySelector('.share-menu')).not.toBeNull()
+    // Tool rows copy through native selection now — the collapse toggle is
+    // interactive content, a long-press on it must not arm the capsule.
+    expect(host.querySelector('.share-menu')).toBeNull()
   })
 
   it('ignores presses landing on artifact cards', () => {
@@ -733,8 +617,8 @@ describe('control avoidance', () => {
 
   it('still avoids a role=button without the tool-header stamp', () => {
     setup()
-    // Thinking-block headers and other toggles share the role=button shape —
-    // only the stamped tool-row headers are exempt.
+    // Group headers and other toggles share the role=button shape — only
+    // the stamped tool/block headers are exempt.
     const toggle = document.createElement('span')
     toggle.setAttribute('role', 'button')
     row.appendChild(toggle)
@@ -775,7 +659,7 @@ describe('copy item', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     expect(copyText).toHaveBeenCalledWith('partial')
   })
@@ -794,7 +678,7 @@ describe('copy item', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     // ' partial ' → 'partial'
     expect(copyText).toHaveBeenCalledWith('partial')
@@ -814,7 +698,7 @@ describe('copy item', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     expect(copyText).toHaveBeenCalledWith('share me')
   })
@@ -833,7 +717,7 @@ describe('copy item', () => {
     vi.advanceTimersByTime(LONG_PRESS_MS)
     row.dispatchEvent(pointer('pointerup'))
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     // Row B's menu copies row B's text; row A's stale selection is ignored.
     expect(copyText).toHaveBeenCalledWith('share me')
@@ -864,7 +748,7 @@ describe('copy item', () => {
     row.dispatchEvent(pointer('pointerup'))
     vi.mocked(copyText).mockResolvedValue()
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     expect(copyText).toHaveBeenCalledWith('share me')
     const toast = host.querySelector('.share-toast')
@@ -883,7 +767,7 @@ describe('copy item', () => {
     row.dispatchEvent(pointer('pointerup'))
     vi.mocked(copyText).mockRejectedValue(new Error('denied'))
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareCopyFailed'))
     expect(host.textContent).not.toContain(t('shareCopied'))
@@ -936,6 +820,70 @@ describe('share item', () => {
     clickShare()
     await flush()
     expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareImageFailed'))
+  })
+})
+
+describe('markdown item', () => {
+  async function flush(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function openMenu(): void {
+    setup()
+    press()
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+  }
+
+  it('orders image, markdown, separator, copy', () => {
+    openMenu()
+    const menu = host.querySelector('.share-menu') as HTMLElement
+    expect(menu.children).toHaveLength(4)
+    expect(menu.children[0].tagName).toBe('BUTTON')
+    expect(menu.children[0].getAttribute('aria-label')).toBe(t('shareMenuImage'))
+    expect(menu.children[1].tagName).toBe('BUTTON')
+    expect(menu.children[1].getAttribute('aria-label')).toBe(t('shareMenuMarkdown'))
+    expect(menu.children[2].tagName).toBe('SPAN')
+    expect(menu.children[2].className).toBe('share-vsep')
+    expect(menu.children[3].tagName).toBe('BUTTON')
+    expect(menu.children[3].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+  })
+
+  it('click hands src.text to shareMarkdown and toasts readiness', async () => {
+    openMenu()
+    vi.mocked(shareMarkdown).mockReturnValue('opened')
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(shareMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'share me', role: 'assistant' }),
+    )
+    expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareImageReady'))
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('defensive no-bridge resolve toasts failure', async () => {
+    openMenu()
+    vi.mocked(shareMarkdown).mockReturnValue('no-bridge')
+    const items = host.querySelectorAll('button.share-menu-item')
+    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareImageFailed'))
+  })
+
+  it('old shell without shareText: menu falls back to image+copy', () => {
+    // Re-mount a shareImage-only stub (an old APK's bridge) before opening.
+    delete (window as unknown as Record<string, unknown>).GBotShare
+    ;(window as unknown as Record<string, unknown>).GBotShare = { shareImage: vi.fn() }
+    openMenu()
+    const items = host.querySelectorAll('button.share-menu-item')
+    expect(items).toHaveLength(2)
+    expect(items[0].getAttribute('aria-label')).toBe(t('shareMenuImage'))
+    expect(items[1].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+    expect(host.querySelector(`[aria-label="${t('shareMenuMarkdown')}"]`)).toBeNull()
+    expect(host.querySelectorAll('.share-vsep')).toHaveLength(1)
   })
 })
 
@@ -1009,11 +957,31 @@ describe('dismissal', () => {
     expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
   })
 
-  it('contextmenu inside a row is prevented', () => {
+  it('a contextmenu with no armed hold passes through to native selection', () => {
     setup()
     const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     row.dispatchEvent(e)
-    expect(e.defaultPrevented).toBe(true)
+    // No armed float hold = the press landed on a native row (tool output,
+    // thinking, chrome): preventDefault would kill the system selection
+    // toolbar, so the gesture must reach the WebView untouched.
+    expect(e.defaultPrevented).toBe(false)
+    expect(host.querySelector('.share-menu')).toBeNull()
+  })
+
+  it('a native contextmenu while the capsule is open closes it and still passes through', () => {
+    setup()
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    // Second long-press while the capsule is open: onPointerDown already
+    // early-returned on `menu`, so a bare contextmenu is the equivalent
+    // unarmed state. The capsule yields to the system selection toolbar.
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 })
+    row.dispatchEvent(e)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-menu')).toBeNull()
+    expect(e.defaultPrevented).toBe(false)
   })
 })
 
@@ -1228,20 +1196,13 @@ describe('menu item attributes', () => {
     press(300)
     row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
     const items = host.querySelectorAll('button.share-menu-item')
+    expect(items).toHaveLength(3)
     expect(items[0].getAttribute('type')).toBe('button')
     expect(items[0].getAttribute('aria-label')).toBe(t('shareMenuImage'))
     expect(items[1].getAttribute('type')).toBe('button')
-    expect(items[1].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
-  })
-
-  it('the copy-only capsule carries the copy aria-label', () => {
-    setup(() => ({ ...source, shareable: false }))
-    press()
-    vi.advanceTimersByTime(LONG_PRESS_MS)
-    row.dispatchEvent(pointer('pointerup'))
-    const item = host.querySelector('button.share-menu-item') as HTMLElement
-    expect(item.getAttribute('type')).toBe('button')
-    expect(item.getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+    expect(items[1].getAttribute('aria-label')).toBe(t('shareMenuMarkdown'))
+    expect(items[2].getAttribute('type')).toBe('button')
+    expect(items[2].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
   })
 })
 
@@ -1259,7 +1220,7 @@ describe('toast lifecycle', () => {
     row.dispatchEvent(pointer('pointerup'))
     vi.mocked(copyText).mockResolvedValue()
     const items = host.querySelectorAll('button.share-menu-item')
-    items[1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    items[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flush()
     const toast = host.querySelector('.share-toast') as HTMLElement
     expect(toast).not.toBeNull()
@@ -1412,6 +1373,28 @@ describe('contextmenu scope', () => {
     const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     host.dispatchEvent(e)
     expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('a contextmenu whose target detached mid-dispatch spares an open capsule', () => {
+    setup()
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    // A rewind can run in an earlier (capture) listener of the same dispatch
+    // and detach the pressed element before the bubble phase reaches the
+    // container — the containment guard must hand such a gesture to the
+    // WebView untouched instead of tearing the capsule down.
+    const inner = document.createElement('span')
+    row.appendChild(inner)
+    const detach = (ev: Event): void => {
+      ;(ev.target as HTMLElement).remove()
+    }
+    container.addEventListener('contextmenu', detach, true)
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    inner.dispatchEvent(e)
+    container.removeEventListener('contextmenu', detach, true)
+    expect(e.defaultPrevented).toBe(false)
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(false)
   })
 })
 

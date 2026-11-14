@@ -1,5 +1,8 @@
 package com.gbot.android
 
+import android.content.Intent
+import android.net.Uri
+import java.io.File
 import java.util.Base64
 
 /** window.GBotShare — WUI long-press message share bridge (ChatFragment inner
@@ -35,3 +38,24 @@ internal fun sanitizeShareFileName(name: String): String {
     if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") return SHARE_FILE_FALLBACK
     return cleaned.take(120)
 }
+
+const val SHARE_TEXT_MIME = "text/markdown"
+
+/** Write the raw markdown source into cacheDir/share (same home and name
+ *  sanitizing as the PNG path) and hand the file back for FileProvider.
+ *  No empty-content guard: the WUI gates on non-empty trimmed text. */
+internal fun writeShareText(cacheDir: File, content: String, fileName: String): File {
+    val dir = File(cacheDir, "share").apply { mkdirs() }
+    val file = File(dir, sanitizeShareFileName(fileName))
+    file.writeText(content)
+    return file
+}
+
+/** File-only ACTION_SEND: some targets (WeChat) may not surface for
+ *  text/markdown — a known limitation already communicated to the user. */
+internal fun buildShareTextSendIntent(uri: Uri): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = SHARE_TEXT_MIME
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }

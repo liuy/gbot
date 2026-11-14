@@ -131,6 +131,36 @@ describe('renderIcon — outline variant', () => {
     expect(renderIcon('chevron-right').getAttribute('stroke-width')).toBe('1.5')
   })
 
+  it('imageUp strokeWidth defaults to 2', () => {
+    const el = renderIcon('imageUp')
+    expect(el.getAttribute('fill')).toBe('none')
+    expect(el.getAttribute('stroke')).toBe('currentColor')
+    expect(el.getAttribute('stroke-width')).toBe('2')
+    expect(el.getAttribute('stroke-linecap')).toBe('round')
+    expect(el.getAttribute('stroke-linejoin')).toBe('round')
+  })
+
+  it('imageUp packs three paths then circle in source order', () => {
+    const el = renderIcon('imageUp')
+    expect(el.children.length).toBe(4)
+    expect(el.children[0].tagName).toBe('path')
+    expect(el.children[1].tagName).toBe('path')
+    expect(el.children[2].tagName).toBe('path')
+    expect(el.children[3].tagName).toBe('circle')
+    expect(el.children[0].getAttribute('d')).toBe(
+      'M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10l-3.1-3.1a2 2 0 0 0-2.814.014L6 21',
+    )
+    expect(el.children[1].getAttribute('d')).toBe('m14 19.5 3-3 3 3')
+    expect(el.children[2].getAttribute('d')).toBe('M17 22v-5.5')
+    expect(el.children[3].getAttribute('cx')).toBe('9')
+    expect(el.children[3].getAttribute('cy')).toBe('9')
+    expect(el.children[3].getAttribute('r')).toBe('2')
+  })
+
+  it('markdownUp strokeWidth defaults to 1.25', () => {
+    expect(renderIcon('markdownUp').getAttribute('stroke-width')).toBe('1.25')
+  })
+
   it('outline children are parsed into the SVG namespace', () => {
     const el = renderIcon('plus')
     expect(el.children.length).toBe(1)
@@ -165,6 +195,27 @@ describe('renderIcon — outline variant', () => {
     expect(el.children.length).toBe(2)
     expect(el.children[0].tagName).toBe('path')
     expect(el.children[1].tagName).toBe('polyline')
+  })
+})
+
+describe('renderIcon — markdownUp narrowed viewport', () => {
+  it('markdownUp renders the narrowed viewBox 4.5 4.5 15 15', () => {
+    expect(renderIcon('markdownUp').getAttribute('viewBox')).toBe('4.5 4.5 15 15')
+    // Default viewBox must not regress for full-frame icons.
+    expect(renderIcon('plus').getAttribute('viewBox')).toBe('0 0 24 24')
+  })
+
+  it('markdownUp pins the flipped up-arrow path', () => {
+    const el = renderIcon('markdownUp')
+    expect(el.children.length).toBe(3)
+    expect(el.children[0].tagName).toBe('path')
+    expect(el.children[1].tagName).toBe('path')
+    expect(el.children[2].tagName).toBe('path')
+    expect(el.children[0].getAttribute('d')).toBe(
+      'M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10',
+    )
+    expect(el.children[1].getAttribute('d')).toBe('M7 15v-6l2 2l2 -2v6')
+    expect(el.children[2].getAttribute('d')).toBe('M14 11l2 -2l2 2m-2 -2v6')
   })
 })
 

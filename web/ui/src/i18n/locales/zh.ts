@@ -219,6 +219,7 @@ export const dict: Dict = {
   stopJob: '停止',
   backToBottom: '回到底部',
   shareMenuImage: '图片分享',
+  shareMenuMarkdown: 'Markdown 分享',
   shareMenuCopy: '文本复制',
   shareCopied: '已复制',
   shareCopyFailed: '复制失败',

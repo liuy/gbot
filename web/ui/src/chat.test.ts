@@ -246,13 +246,18 @@ const histMsg = (over: Partial<HistoryChatMsg>): HistoryChatMsg => ({
 function armShareBridge() {
   ;(window as unknown as Record<string, unknown>).GBotShare = {
     shareImage: vi.fn().mockResolvedValue('opened'),
+    shareText: vi.fn(),
   }
 }
-// Full long-press gesture: pointerdown, hold expiry, contextmenu open.
+// Full long-press gesture: pointerdown, hold expiry, contextmenu. Returns
+// the contextmenu event so callers can assert it passed through to native
+// selection (defaultPrevented === false on native rows).
 function sharePress(target: HTMLElement) {
   target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 100 }))
   vi.advanceTimersByTime(450)
-  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+  target.dispatchEvent(e)
+  return e
 }
 function shareMenu(): HTMLElement | null {
   return document.querySelector('.share-menu')
@@ -5879,18 +5884,17 @@ describe('chat mutation kills: share source resolution', () => {
     })
   }
 
-  it('tool press copies that tool output by document order (second tool of two)', () => {
+  it('tool press stays native: no menu, contextmenu passes through', () => {
     replayDoneAssistant([
       { kind: 'tool', tool: { id: 't1', name: 'Bash', displayOutput: 'OUT-ONE', durationNs: 1 } },
       { kind: 'tool', tool: { id: 't2', name: 'Read', displayOutput: 'OUT-TWO', durationNs: 2 } },
     ])
-    sharePress(toolRootByName('Read').querySelector('.font-mono') as HTMLElement)
-    expect(shareMenu()).toBeTruthy()
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('OUT-TWO')
+    const e = sharePress(toolRootByName('Read').querySelector('.font-mono') as HTMLElement)
+    expect(e.defaultPrevented).toBe(false)
+    expect(shareMenu()).toBeNull()
   })
 
-  it('sub-agent child press resolves to the parent tool row, not the child text', () => {
+  it('sub-agent child text press stays native (children guard)', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatch({
@@ -5920,17 +5924,15 @@ describe('chat mutation kills: share source resolution', () => {
       ],
       nextCursor: '', hasMore: false, busy: true,
     })
-    // Press the child TEXT: resolves up to the parent tool row.
+    // Commit the replay so the message is done: with the children guard
+    // removed, the child text would resolve as a top-level float block.
+    dispatchEvents([{ type: 'query_end' }])
     const childText = document.querySelector('[data-tool-children] [data-block-kind="text"]') as HTMLElement
-    sharePress(childText)
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('AGENT-RESULT')
-    ;(document.querySelector('.share-menu') as HTMLElement).remove()
-    // Press the parent tool root: the index pairing must skip the nested
-    // child tool root (document order among top-level tools only).
-    sharePress(toolRootByName('Agent'))
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('AGENT-RESULT')
+    expect(childText).toBeTruthy()
+    const e = sharePress(childText)
+    expect(e.defaultPrevented).toBe(false)
+    expect(shareMenu()).toBeNull()
+    expect(document.querySelector('.share-copy-inline')).toBeNull()
   })
 
   it('markdown text press copies the markdown source, not the rendered text', () => {
@@ -5942,27 +5944,6 @@ describe('chat mutation kills: share source resolution', () => {
     sharePress(firstDiv)
     clickCopy()
     expect(copyText).toHaveBeenCalledWith('**bold** source')
-  })
-
-  it('live reminder row press copies the envelope display body', () => {
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatchEvents([{ type: 'query_start' }])
-    dispatch({
-      type: 'event',
-      event: {
-        type: 'attachment',
-        message: {
-          attachment: { prompt: '<job-notification>\n<summary>job done</summary>\n</job-notification>' },
-        },
-      },
-    })
-    dispatchEvents([{ type: 'query_end' }])
-    const row = document.querySelector('[data-reminder-row]') as HTMLElement
-    expect(row).toBeTruthy()
-    sharePress(row.querySelector('.font-mono') as HTMLElement)
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('job done')
   })
 
   it('user echo press copies the echoed text inside a done assistant message', () => {
@@ -5989,9 +5970,9 @@ describe('chat mutation kills: share source resolution', () => {
     expect(box).toBeTruthy()
     sharePress(box)
     expect(shareMenu()).toBeTruthy()
-    // Error text is shareable content (bug-report screenshots), not a
-    // copy-only capsule: the menu carries the share-image item too.
-    expect(document.querySelectorAll('.share-menu-item').length).toBe(2)
+    // Error text is shareable content (bug reports): the menu carries the
+    // image item, the markdown-file item, and copy — all three.
+    expect(document.querySelectorAll('.share-menu-item').length).toBe(3)
     clickCopy()
     expect(copyText).toHaveBeenCalledWith('API error 400: invalid model')
   })
@@ -6025,7 +6006,7 @@ describe('chat mutation kills: share source resolution', () => {
     expect(copyText).toHaveBeenCalledWith('partial answer\n')
   })
 
-  it('streaming: tool copy works mid-flight, text and reminder presses open nothing', () => {
+  it('streaming: tool press stays native, text press opens nothing', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })
     dispatchEvents([
@@ -6034,24 +6015,13 @@ describe('chat mutation kills: share source resolution', () => {
       { type: 'tool_output_delta', tool_result: { tool_use_id: 't1', display_output: 'live output' } },
       { type: 'text_start' },
     ])
-    sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
-    expect(shareMenu()).toBeTruthy()
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('live output')
-    ;(document.querySelector('.share-menu') as HTMLElement).remove()
+    const e = sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
+    expect(e.defaultPrevented).toBe(false)
+    expect(shareMenu()).toBeNull()
+    expect(document.querySelector('.share-copy-inline')).toBeNull()
     const textDiv = document.querySelector('[data-block-kind="text"]') as HTMLElement
     sharePress(textDiv)
     expect(shareMenu()).toBeNull()
-  })
-
-  it('whitespace-only tool output falls back to the final reply', () => {
-    replayDoneAssistant([
-      { kind: 'tool', tool: { id: 't1', name: 'Bash', displayOutput: '   ', durationNs: 1 } },
-      { kind: 'text', text: 'final reply text' },
-    ])
-    sharePress(toolRootByName('Bash').querySelector('.font-mono') as HTMLElement)
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('final reply text')
   })
 
   it('whitespace-only markdown message opens no menu at all', () => {
@@ -6447,44 +6417,6 @@ describe('chat mutation kills: attachment events', () => {
     expect(row.textContent).toContain('idle job done')
     // An assistant shell was built for the row (no user bubble).
     expect(document.querySelector('.max-w-fit')).toBeNull()
-  })
-
-  it('share-press on an idle reminder row opens the menu, so the message joined the model', () => {
-    vi.useFakeTimers()
-    armShareBridge()
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatch({
-      type: 'event',
-      event: {
-        type: 'attachment',
-        message: { attachment: { prompt: '<job-notification>\n<summary>idle share body</summary>\n</job-notification>' } },
-      },
-    })
-    const row = document.querySelector('[data-reminder-row]') as HTMLElement
-    expect(row).toBeTruthy()
-    sharePress(row.querySelector('.font-mono') as HTMLElement)
-    expect(document.querySelector('.share-menu')).toBeTruthy()
-  })
-
-  it('chrome press on an idle reminder row copies the body, not the raw envelope', () => {
-    vi.useFakeTimers()
-    armShareBridge()
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatch({
-      type: 'event',
-      event: {
-        type: 'attachment',
-        message: { attachment: { prompt: '<job-notification>\n<summary>chrome body</summary>\n</job-notification>' } },
-      },
-    })
-    // Press the message chrome (avatar column), not the reminder row itself.
-    const shell = (document.querySelector('[data-reminder-row]') as HTMLElement)
-      .closest('.space-y-7 > div') as HTMLElement
-    sharePress((shell.querySelector('.grid') as HTMLElement).firstElementChild as HTMLElement)
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('chrome body')
   })
 
   it('a non-queued idle echo renders in the default user style, not queued gray', () => {
@@ -7838,7 +7770,8 @@ describe('chat mutation kills: residual wiring', () => {
     expect(document.body.textContent).toContain('old prompt')
     const row = Array.from(document.querySelectorAll('.space-y-7 > div'))
       .find((el) => (el.textContent ?? '').includes('old prompt')) as HTMLElement
-    sharePress(row.querySelector('.bg-gradient-to-br') as HTMLElement)
+    // Press the message text (the avatar is chrome and opens nothing now).
+    sharePress(row.querySelector('[data-block-kind="user"]') as HTMLElement)
     clickCopy()
     expect(copyText).toHaveBeenCalledWith('old prompt')
   })
@@ -8355,7 +8288,8 @@ describe('chat mutation kills: sidebar sheets and session wiring', () => {
     })
     const row = Array.from(document.querySelectorAll('.space-y-7 > div'))
       .find((el) => (el.textContent ?? '').includes('standalone echo')) as HTMLElement
-    sharePress(row.querySelector('.bg-gradient-to-br') as HTMLElement)
+    // Press the echo text (the avatar is chrome and opens nothing now).
+    sharePress(row.querySelector('[data-block-kind="user"]') as HTMLElement)
     clickCopy()
     expect(copyText).toHaveBeenCalledWith('standalone echo')
   })
@@ -8415,72 +8349,6 @@ describe('chat mutation kills: final residuals', () => {
     })
     dispatch({ type: 'history', messages: [], stream, nextCursor: '', hasMore: false, busy, ...extra })
   }
-
-  it('a tool following a children-carrying tool still copies its own output', () => {
-    vi.useFakeTimers()
-    armShareBridge()
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    page0([
-      {
-        kind: 'tool', id: 'agent-1', name: 'Agent', summary: '', isSearch: false, isRead: false,
-        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
-        displayOutput: 'AGENT-OUT', startedAt: 0, children: [{
-          kind: 'tool', id: 'inner-1', name: 'Read', summary: '', isSearch: false, isRead: false,
-          isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
-          displayOutput: 'INNER-OUT', startedAt: 0, children: [],
-        }],
-      },
-      {
-        kind: 'tool', id: 't2', name: 'Bash', summary: '', isSearch: false, isRead: false,
-        isList: false, isLsp: false, isWeb: false, isTask: false, state: 'done', timingNs: 1,
-        displayOutput: 'SECOND-OUT', startedAt: 0, children: [],
-      },
-    ], true)
-    sharePress(toolRootByName('Bash'))
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('SECOND-OUT')
-  })
-
-  it('reminder row press pairs against user blocks only, body wins over narration', () => {
-    vi.useFakeTimers()
-    armShareBridge()
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatchEvents([{ type: 'query_start' }])
-    dispatch({ type: 'event', event: { type: 'text_start' } })
-    dispatchEvents([{ type: 'text_delta', text: 'narration around it' }])
-    dispatch({
-      type: 'event',
-      event: {
-        type: 'attachment',
-        message: { attachment: { prompt: '<job-notification>\n<summary>mixed body</summary>\n</job-notification>' } },
-      },
-    })
-    dispatchEvents([{ type: 'query_end' }])
-    const row = document.querySelector('[data-reminder-row]') as HTMLElement
-    sharePress(row.querySelector('.font-mono') as HTMLElement)
-    clickCopy()
-    expect(copyText).toHaveBeenCalledWith('mixed body')
-  })
-
-  it('reminder press while streaming opens nothing', () => {
-    vi.useFakeTimers()
-    armShareBridge()
-    mount()
-    dispatch({ type: 'connect_status', connected: true })
-    dispatchEvents([{ type: 'query_start' }])
-    dispatch({
-      type: 'event',
-      event: {
-        type: 'attachment',
-        message: { attachment: { prompt: '<job-notification>\n<summary>live row</summary>\n</job-notification>' } },
-      },
-    })
-    const row = document.querySelector('[data-reminder-row]') as HTMLElement
-    sharePress(row.querySelector('.font-mono') as HTMLElement)
-    expect(shareMenu()).toBeNull()
-  })
 
   it('opening the voice face stops an active dictation session', async () => {
     class FakeAC4 {

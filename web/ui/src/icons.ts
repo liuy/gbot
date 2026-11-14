@@ -28,6 +28,8 @@ export type IconName =
   | 'copy'
   | 'check'
   | 'share'
+  | 'imageUp'
+  | 'markdownUp'
   | 'search'
   | 'settings'
   | 'door-exit'
@@ -48,6 +50,9 @@ export interface IconDef {
   path: string
   variant: IconVariant
   defaultStrokeWidth?: number
+  // viewBox is intrinsic to the glyph, not a caller concern — a few icons
+  // ship a narrowed frame so a 24-slot render compensates via stroke width.
+  viewBox?: string
 }
 
 const ICONS: Record<IconName, IconDef> = {
@@ -194,6 +199,24 @@ const ICONS: Record<IconName, IconDef> = {
     variant: 'outline',
     defaultStrokeWidth: 2,
   },
+  imageUp: {
+    // lucide 官方 image-up（图框+太阳+右下升起箭头），替换原通用 share
+    // 上传箭头：格式由图框表意，箭头方向统一为"分享出去"。
+    path: '<path d="M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10l-3.1-3.1a2 2 0 0 0-2.814.014L6 21"/><path d="m14 19.5 3-3 3 3"/><path d="M17 22v-5.5"/><circle cx="9" cy="9" r="2"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2,
+  },
+  markdownUp: {
+    // Tabler markdown 的 ↓ 翻成 ↑（第三条 path），语义：分享出去。M 字形
+    // 在 24 框里偏大，故 viewBox 收窄到 15×15 核心 + stroke 1.25 补偿
+    // （1.25 × 24/15 = 2.0px），视觉粗细对齐库里 stroke 2 全尺寸图标。
+    // viewBox crops the box's side rails — frameless per the 2026-11-14
+    // design review; don't widen it to "fix" the crop.
+    path: '<path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10"/><path d="M7 15v-6l2 2l2 -2v6"/><path d="M14 11l2 -2l2 2m-2 -2v6"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 1.25,
+    viewBox: '4.5 4.5 15 15',
+  },
   check: {
     path: '<polyline points="20 6 9 17 4 12"/>',
     variant: 'outline',
@@ -236,7 +259,7 @@ export function renderIcon(name: IconName, opts: IconOptions = {}): SVGElement {
   svg.setAttribute('xmlns', SVG_NS)
   svg.setAttribute('width', String(size))
   svg.setAttribute('height', String(size))
-  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('viewBox', def.viewBox ?? '0 0 24 24')
   // Decorative: the parent chip carries a title, so the svg is hidden from
   // assistive tech to avoid duplicate announcements.
   svg.setAttribute('aria-hidden', 'true')
