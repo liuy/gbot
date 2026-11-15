@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createVoicePage, VOICE_AURA_SIZE, type VoiceState } from './voice_page'
 import { createEventBlockStore } from './components/event_blocks'
 import { renderStreamBlock } from './components/stream_blocks'
@@ -7,6 +7,13 @@ import { renderStreamBlock } from './components/stream_blocks'
 // writes QueryEvents into the store; the page's feed sink renders chat-standard
 // rows), so every rendering test drives the store — the same object chat.ts
 // hands to both sides.
+
+// Every page ever created by this file, so afterEach can destroy them all:
+// destroy() unsubscribes the store, disposes the feed sink (killing the
+// live ticker) and cancels the aura rAF — without it a pending real-timer
+// tick can fire after jsdom teardown ("window is not defined" unhandled
+// error, 2026-11-15 web-test flake).
+const livePages: ReturnType<typeof createVoicePage>[] = []
 
 function setup() {
   const store = createEventBlockStore()
@@ -17,6 +24,7 @@ function setup() {
     onHold: vi.fn(),
     onClose: vi.fn(),
   })
+  livePages.push(page)
   document.body.appendChild(page.root)
   return { page, store }
 }
@@ -30,6 +38,11 @@ describe('createVoicePage', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     page = setup().page
+  })
+
+  afterEach(() => {
+    for (const p of livePages) p.destroy()
+    livePages.length = 0
   })
 
   it('renders the structural skeleton (X/stage/aura canvas/avatar/controls)', () => {
