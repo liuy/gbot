@@ -633,25 +633,28 @@ model-viewer { --progress-bar-color: var(--color-blue); }
 .vnc-kbd-input { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: .01; border: none; padding: 0; background: transparent; color: transparent; resize: none; outline: none; }
 
 /* --- long-press share (share_menu.ts / share_card.ts) --- */
+/* Two capsule surfaces share this chrome block: the armed long-press
+   .share-menu (three icons) and the selection-following .share-mini
+   (copy only). */
 .share-root > * { transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease, opacity .2s ease; }
 /* Selection is a feature inside the shell: long-press starts native handles
    alongside our menu (contextmenu suppression kills only the system menu),
-   and the copy item reads the partial selection. The menu's own
+   and the copy item reads the partial selection. The capsule's own
    user-select:none is set inline at creation in share_menu.ts (jsdom can't
    see stylesheet rules in computed styles); this rule is pinned by the
    source-text assertions in share_menu.test.ts. */
 .share-root { user-select: text; -webkit-user-select: text; }
 .share-root.share-holding > *:not(.share-lifted) { opacity: 0.32; }
 .share-lifted { transform: scale(1.025) translateY(-2px); box-shadow: 0 14px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(120,180,255,0.14); z-index: 5; }
-.share-menu { position: absolute; z-index: 20; display: flex; align-items: stretch;
+.share-menu, .share-mini { position: absolute; z-index: 20; display: flex; align-items: stretch;
   /* Theme-adaptive glass: wui surfaces swap via --color-* tokens, so a
      hardcoded dark capsule reads as a smudge on the light theme. */
   background: var(--color-glass-solid); -webkit-backdrop-filter: blur(28px) saturate(1.8); backdrop-filter: blur(28px) saturate(1.8);
   border: 1px solid var(--color-hairline); border-radius: 13px; padding: 3px;
   box-shadow: 0 14px 40px rgba(0,0,0,0.35);
   transform-origin: bottom center; animation: share-pop .26s cubic-bezier(.34,1.56,.64,1); }
-.share-menu.share-below { transform-origin: top center; }
-.share-menu.share-closing { animation: share-fadeout .12s ease forwards; }
+.share-menu.share-below, .share-mini.share-below { transform-origin: top center; }
+.share-menu.share-closing, .share-mini.share-closing { animation: share-fadeout .12s ease forwards; }
 @keyframes share-pop { from { opacity: 0; transform: scale(0.82) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 @keyframes share-fadeout { to { opacity: 0; transform: scale(0.92); } }
 .share-menu-item { display: flex; align-items: center; justify-content: center; width: 40px; height: 36px;

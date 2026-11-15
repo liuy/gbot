@@ -374,6 +374,85 @@ describe('share integration: per-block press resolution', () => {
   })
 })
 
+describe('share integration: mini capsule over tool output', () => {
+  // Same shape as the per-block suite's mountToolTextChat (local to that
+  // describe): a done message with a Bash block and a trailing text block.
+  function mountToolText(): ReturnType<typeof mount> {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [
+        historyMsg({
+          text: '',
+          blocks: [toolHistoryBlock(), { kind: 'text', text: 'final **reply**' }],
+        }),
+      ],
+      nextCursor: '',
+      hasMore: false,
+    })
+    return chat
+  }
+
+  // Tool body renders on expand (render-on-visible fold), so open it before
+  // any selection can live inside the output text.
+  function expandedToolBody(chat: ReturnType<typeof mount>): HTMLElement {
+    const toolRoot = chat.root.querySelector('[data-tool-root]') as HTMLElement
+    ;(toolRoot.querySelector('[data-tool-header]') as HTMLElement).click()
+    return toolRoot.querySelector('.md-body') as HTMLElement
+  }
+
+  // Live selection over the tool output's first text node, with the rect
+  // stub jsdom never provides.
+  function selectToolText(body: HTMLElement): void {
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+    const node = walker.nextNode() as Text
+    const range = document.createRange()
+    range.setStart(node, 0)
+    range.setEnd(node, node.data.length)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () =>
+        ({
+          top: 200, left: 40, width: 100, height: 20, right: 140, bottom: 220,
+          x: 40, y: 200, toJSON: () => ({}),
+        }) as DOMRect,
+    })
+  }
+
+  it('a tool-output selection floats the mini and copies through the real chat wiring', async () => {
+    const chat = mountToolText()
+    const body = expandedToolBody(chat)
+    selectToolText(body)
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = chat.root.querySelector('.share-mini') as HTMLElement
+    expect(mini).not.toBeNull()
+    expect(mini.querySelectorAll('button.share-menu-item')).toHaveLength(1)
+    mini.querySelector('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(copyTextMock).toHaveBeenCalledWith('total 0')
+    expect(chat.root.querySelector('.share-toast')?.textContent).toBe(t('shareCopied'))
+    chat.cleanup()
+  })
+
+  it('unarmed long-press on a tool block with a live selection is prevented', () => {
+    const chat = mountToolText()
+    const body = expandedToolBody(chat)
+    selectToolText(body)
+    body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 0 }))
+    vi.advanceTimersByTime(450)
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 0 })
+    body.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    expect(chat.root.querySelector('.share-menu')).toBeNull()
+    expect(chat.root.querySelector('.share-mini')).not.toBeNull()
+    chat.cleanup()
+  })
+})
+
 describe('share integration: markdown source fidelity', () => {
   it('copying a markdown text block hands over the RAW model text', async () => {
     const chat = mount()

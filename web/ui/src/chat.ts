@@ -773,9 +773,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   mainContent.appendChild(scroll)
 
   // Long-press share: dead on desktop — initShareMenu probes window.GBotShare
-  // (Android shell only) and no-ops to a null handle without it. Body text
-  // (text/user/error) floats the capsule; everything else (tool output,
-  // thinking, reminder rows, chrome) stays native — no custom UI.
+  // (Android shell only) and no-ops to a null handle without it. The armed
+  // three-icon capsule is still text/user/error only; every other row's
+  // live selection now floats the mini copy capsule instead of staying
+  // fully native.
   const shareMenu = initShareMenu({
     host: mainContent,
     container: messagesContainer,

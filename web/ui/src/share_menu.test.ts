@@ -59,6 +59,40 @@ function press(clientY = 0): void {
   row.dispatchEvent(pointer('pointerdown', clientY))
 }
 
+// Mini-capsule precondition in one call: host/row rects stubbed (jsdom
+// rects are all zero — a zero host rect would pin every left at 12 via the
+// clamp and make positioning assertions falsely red), a live in-container
+// selection over el's full text, and a usable range rect. The rect closure
+// reads the passed object live, so a test moves the selection by mutating
+// rect.top after the fact.
+function selectInContainer(
+  rect: { top: number; left?: number; width?: number; height?: number },
+  el: HTMLElement = row,
+  hostSize?: { width: number; height: number },
+): Range {
+  vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+    domRect({ top: 0, left: 0, width: hostSize?.width ?? 390, height: hostSize?.height ?? 800,
+      right: hostSize?.width ?? 390, bottom: hostSize?.height ?? 800 }),
+  )
+  vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(
+    domRect({ top: 200, left: 100, width: 200, height: 50, right: 300, bottom: 250 }),
+  )
+  el.textContent = 'mini capsule text here'
+  const range = document.createRange()
+  range.setStart(el.firstChild!, 0)
+  range.setEnd(el.firstChild!, el.firstChild!.textContent!.length)
+  const sel = window.getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+  Object.defineProperty(range, 'getBoundingClientRect', {
+    value: () =>
+      domRect({ top: rect.top, left: rect.left ?? 40, width: rect.width ?? 100,
+        height: rect.height ?? 20, right: (rect.left ?? 40) + (rect.width ?? 100),
+        bottom: rect.top + (rect.height ?? 20) }),
+  })
+  return range
+}
+
 function setup(getSource?: (r: HTMLElement, target: HTMLElement) => ShareSource | null): void {
   document.body.innerHTML = ''
   host = document.createElement('div')
@@ -741,6 +775,13 @@ describe('copy item', () => {
     expect(css).not.toMatch(/\.share-root\s+\*\s*\{[^}]*user-select:\s*none/)
   })
 
+  it('the stylesheet groups the mini into the capsule chrome (source pin)', () => {
+    const css = readFileSync(resolve(__dirname, 'index.css'), 'utf-8')
+    expect(css).toMatch(/\.share-menu, \.share-mini \{/)
+    expect(css).toMatch(/\.share-menu\.share-below, \.share-mini\.share-below/)
+    expect(css).toMatch(/\.share-menu\.share-closing, \.share-mini\.share-closing/)
+  })
+
   it('copies the source text, toasts success, closes the menu', async () => {
     setup()
     press()
@@ -957,13 +998,12 @@ describe('dismissal', () => {
     expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
   })
 
-  it('a contextmenu with no armed hold passes through to native selection', () => {
+  it('a contextmenu with no armed hold and no selection passes through', () => {
     setup()
     const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     row.dispatchEvent(e)
-    // No armed float hold = the press landed on a native row (tool output,
-    // thinking, chrome): preventDefault would kill the system selection
-    // toolbar, so the gesture must reach the WebView untouched.
+    // No armed hold and no selection = our capsules have no anchor at all —
+    // the gesture goes back to the WebView (system toolbar on native rows).
     expect(e.defaultPrevented).toBe(false)
     expect(host.querySelector('.share-menu')).toBeNull()
   })
@@ -975,8 +1015,9 @@ describe('dismissal', () => {
     row.dispatchEvent(pointer('pointerup'))
     expect(host.querySelector('.share-menu')).not.toBeNull()
     // Second long-press while the capsule is open: onPointerDown already
-    // early-returned on `menu`, so a bare contextmenu is the equivalent
-    // unarmed state. The capsule yields to the system selection toolbar.
+    // early-returned on `menu`, so a bare contextmenu with no live selection
+    // is the unarmed pass-through shape. No selection to own → the capsule
+    // closes and the WebView keeps the gesture.
     const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 })
     row.dispatchEvent(e)
     vi.advanceTimersByTime(120)
@@ -1414,6 +1455,585 @@ describe('selectionchange with a foreign selection', () => {
     document.dispatchEvent(new Event('selectionchange'))
     vi.advanceTimersByTime(16)
     expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(false)
+  })
+})
+
+describe('mini capsule: appearance and following', () => {
+  it('selectionchange with an in-container selection floats the one-copy mini', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini).not.toBeNull()
+    const items = mini.querySelectorAll('button.share-menu-item')
+    expect(items).toHaveLength(1)
+    expect(items[0].getAttribute('type')).toBe('button')
+    expect(items[0].getAttribute('aria-label')).toBe(t('shareMenuCopy'))
+    expect(mini.querySelectorAll('.share-vsep')).toHaveLength(0)
+    // Inline on the element: jsdom computed styles never see the stylesheet.
+    expect(getComputedStyle(mini).userSelect).toBe('none')
+    expect(host.querySelector('.share-menu')).toBeNull()
+  })
+
+  it('anchors above the selection center', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    // MINI_H 44: 120-44-8=68; center 40+100/2=90 → 90-48/2=66
+    expect(mini.style.top).toBe('68px')
+    expect(mini.style.left).toBe('66px')
+    expect(mini.classList.contains('share-below')).toBe(false)
+  })
+
+  it('follows the selection rect through selectionchange rAF', () => {
+    setup()
+    const rect = { top: 120 }
+    selectInContainer(rect)
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    rect.top = 260
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini.style.top).toBe('208px')
+    expect(mini.classList.contains('share-closing')).toBe(false)
+  })
+
+  it('flips below a near-top selection', () => {
+    setup()
+    selectInContainer({ top: 30 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini.style.top).toBe('38px')
+    expect(mini.classList.contains('share-below')).toBe(true)
+  })
+
+  it('clamps left into [12, hostW-48-12]', () => {
+    setup()
+    selectInContainer({ top: 120, left: 0, width: 10 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini.style.left).toBe('12px')
+  })
+
+  it('clamps a below-flip against a short host', () => {
+    setup()
+    selectInContainer({ top: 12 }, row, { width: 390, height: 60 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    // flip lands at 20; 20+44 overflows 60-8 → clamped to max(8, 60-44-8)
+    expect(mini.style.top).toBe('8px')
+  })
+
+  it('selection collapse hides the mini', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    window.getSelection()?.removeAllRanges()
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')?.classList.contains('share-closing')).toBe(true)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('a selection outside the container never floats the mini', () => {
+    setup()
+    const foreign = document.createElement('div')
+    foreign.textContent = 'outside the chat'
+    host.insertBefore(foreign, container)
+    const range = document.createRange()
+    range.setStart(foreign.firstChild!, 0)
+    range.setEnd(foreign.firstChild!, foreign.firstChild!.textContent!.length)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 200, left: 40, width: 100, height: 20, right: 140, bottom: 220 }),
+    })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('a whitespace-only selection never floats the mini', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    // Swap in a live whitespace selection (own nodes, usable rect).
+    row.textContent = '   '
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 0)
+    range.setEnd(row.firstChild!, 3)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 120, left: 40, width: 100, height: 20, right: 140, bottom: 140 }),
+    })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('a zero-area selection rect never floats the mini', () => {
+    setup()
+    selectInContainer({ top: 120, width: 0, height: 0 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('host scroll follows the live mini instead of closing it', () => {
+    setup()
+    const rect = { top: 120 }
+    selectInContainer(rect)
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    rect.top = 260
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini.style.top).toBe('208px')
+    expect(mini.classList.contains('share-closing')).toBe(false)
+  })
+
+  it('one rAF per selectionchange burst', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    // jsdom queues its own selectionchange on an internal timer; flush it
+    // first so the count below sees only our dispatches.
+    vi.advanceTimersByTime(16)
+    expect(vi.getTimerCount()).toBe(0)
+    document.dispatchEvent(new Event('selectionchange'))
+    document.dispatchEvent(new Event('selectionchange'))
+    // Exactly one pending frame — a second would double-run the router.
+    expect(vi.getTimerCount()).toBe(1)
+  })
+})
+
+describe('mini capsule: copy semantics', () => {
+  async function flush(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function miniCopyButton(): HTMLElement {
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    return mini.querySelector('button.share-menu-item') as HTMLElement
+  }
+
+  it('tapping copy hands the trimmed selection to copyText and toasts', async () => {
+    setup()
+    row.textContent = 'hello partial world'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 5)
+    range.setEnd(row.firstChild!, 14)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 120, left: 40, width: 100, height: 20, right: 140, bottom: 140 }),
+    })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    vi.mocked(copyText).mockResolvedValue()
+    miniCopyButton().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    // ' partial ' → 'partial'
+    expect(copyText).toHaveBeenCalledWith('partial')
+    expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareCopied'))
+    expect(host.querySelector('.share-mini')?.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('copy failure toasts shareCopyFailed', async () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    vi.mocked(copyText).mockRejectedValue(new Error('denied'))
+    miniCopyButton().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(host.querySelector('.share-toast')?.textContent).toBe(t('shareCopyFailed'))
+    expect(host.textContent).not.toContain(t('shareCopied'))
+  })
+
+  it('an emptied selection before the tap copies nothing', async () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini).not.toBeNull()
+    // Swap the selection for a whitespace one WITHOUT dispatching — the
+    // read-at-tap defensive path must catch what the rAF missed.
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 4)
+    range.setEnd(row.firstChild!, 5)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    miniCopyButton().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(copyText).not.toHaveBeenCalled()
+    expect(mini.classList.contains('share-closing')).toBe(true)
+    expect(host.querySelector('.share-toast')).toBeNull()
+
+    // A fully dead selection (no ranges at all) takes the same silent exit
+    // through the null fallback of the read-at-tap.
+    selectInContainer({ top: 140 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const second = host.querySelector('.share-mini') as HTMLElement
+    expect(second).not.toBeNull()
+    window.getSelection()?.removeAllRanges()
+    second.querySelector('button.share-menu-item')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    expect(copyText).not.toHaveBeenCalled()
+    expect(second.classList.contains('share-closing')).toBe(true)
+    expect(host.querySelector('.share-toast')).toBeNull()
+  })
+
+  it('a cross-block selection copies the whole selection text', async () => {
+    setup()
+    selectInContainer({ top: 120 })
+    const other = document.createElement('div')
+    container.appendChild(other)
+    other.textContent = 'second row'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 0)
+    range.setEnd(other.firstChild!, 10)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 120, left: 40, width: 100, height: 20, right: 140, bottom: 140 }),
+    })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    vi.mocked(copyText).mockResolvedValue()
+    miniCopyButton().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flush()
+    const got = vi.mocked(copyText).mock.calls[0]?.[0] as string
+    // Sanity gate before the exact pin: both fragments must be aboard.
+    expect(got).toContain('mini capsule text here')
+    expect(got).toContain('second row')
+    // jsdom concatenates cross-block text without a separator (probed).
+    expect(copyText).toHaveBeenCalledWith('mini capsule text heresecond row')
+  })
+})
+
+describe('two-state mutual exclusion', () => {
+  // Main capsule anchored to a live in-row selection with a mutable rect
+  // top (same shape as the scroll-following suite's helper).
+  function openSelectionAnchored(rect: { top: number }): HTMLElement {
+    setup()
+    row.textContent = 'hello partial world'
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 6)
+    range.setEnd(row.firstChild!, 13)
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () =>
+        domRect({ top: rect.top, left: 40, width: 100, height: 20, right: 140, bottom: rect.top + 20 }),
+    })
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 0, left: 0, width: 390, height: 800, right: 390, bottom: 800 }),
+    )
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(
+      domRect({ top: 200, left: 100, width: 200, height: 50, right: 300, bottom: 250 }),
+    )
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    return host.querySelector('.share-menu') as HTMLElement
+  }
+
+  it('the main capsule open: selectionchange follows the main capsule, never floats the mini', () => {
+    const rect = { top: 120 }
+    const menu = openSelectionAnchored(rect)
+    rect.top = 260
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    // Main capsule mh=48: 260-48-8=204 — and no mini beside it.
+    expect(menu.style.top).toBe('204px')
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('pressing a share block hides the mini immediately at arm time', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const mini = host.querySelector('.share-mini') as HTMLElement
+    expect(mini).not.toBeNull()
+    press()
+    // Arm-time hiding is synchronous — no frame advance.
+    expect(mini.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('selectionchange during the armed hold shows no mini, then the long-press opens the main capsule', () => {
+    setup()
+    press()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('mini showing, long-press another block opens the main capsule', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('a mini rAF queued before the main capsule opened never resurrects it in-frame', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    // Queue the frame, then flip the state before it runs — the frame's
+    // re-check of menu/held is the only thing standing between a stale
+    // schedule and a second capsule.
+    document.dispatchEvent(new Event('selectionchange'))
+    press(300)
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientY: 300 }))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('selectionchange during the armed hold schedules no extra frame', () => {
+    setup()
+    press()
+    selectInContainer({ top: 120 })
+    // Flush jsdom's internally queued selectionchange so only the manual
+    // dispatch is under test.
+    vi.advanceTimersByTime(16)
+    expect(vi.getTimerCount()).toBe(1)
+    document.dispatchEvent(new Event('selectionchange'))
+    // The hold timer only — the suppression branch must swallow the burst
+    // synchronously, not route it through another rAF.
+    expect(vi.getTimerCount()).toBe(1)
+  })
+})
+
+describe('contextmenu: a live selection owns the content area', () => {
+  it('unarmed contextmenu with an in-container selection is prevented and floats the mini', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    // Synchronous path — no rAF advance needed.
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+  })
+
+  it('unarmed contextmenu with an out-of-container selection passes through', () => {
+    setup()
+    const foreign = document.createElement('div')
+    foreign.textContent = 'outside the chat'
+    host.insertBefore(foreign, container)
+    const range = document.createRange()
+    range.setStart(foreign.firstChild!, 0)
+    range.setEnd(foreign.firstChild!, foreign.firstChild!.textContent!.length)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 200, left: 40, width: 100, height: 20, right: 140, bottom: 220 }),
+    })
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('unarmed contextmenu with a whitespace selection passes through', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    row.textContent = '   '
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 0)
+    range.setEnd(row.firstChild!, 3)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => domRect({ top: 120, left: 40, width: 100, height: 20, right: 140, bottom: 140 }),
+    })
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('main capsule open, unarmed contextmenu with a selection: prevented, capsule down, mini takes over', () => {
+    setup()
+    press(300)
+    vi.advanceTimersByTime(LONG_PRESS_MS)
+    row.dispatchEvent(pointer('pointerup'))
+    expect(host.querySelector('.share-menu')).not.toBeNull()
+    selectInContainer({ top: 120 })
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    expect(host.querySelector('.share-menu')?.classList.contains('share-closing')).toBe(true)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+  })
+  it('mini already visible + contextmenu: revived in place, never recreated', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const first = host.querySelector('.share-mini') as HTMLElement
+    expect(first).not.toBeNull()
+    const topBefore = first.style.top
+    expect(topBefore).not.toBe('')
+    // Move the selection to a different rect WITHOUT letting the queued
+    // selectionchange rAF reposition the live mini first (jsdom defers the
+    // event) — the contextmenu revive is then the only thing that can
+    // place the capsule at the new rect.
+    selectInContainer({ top: 240 })
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    const minis = host.querySelectorAll('.share-mini')
+    expect(minis.length).toBe(1)
+    expect(minis[0]).toBe(first)
+    expect(first.classList.contains('share-closing')).toBe(false)
+    expect(first.style.top).not.toBe(topBefore)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+  })
+  it('a completed dismissal self-removes and clears the revivable reference', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    // Kill the selection: the mini dismisses, and once the 120ms fade
+    // completes the element must be gone — the timer callback is the only
+    // remover.
+    window.getSelection()?.removeAllRanges()
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')?.classList.contains('share-closing')).toBe(true)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-mini')).toBeNull()
+    // After a COMPLETED dismissal the reference is dead: a new selection
+    // must build a fresh element, never revive the detached one.
+    selectInContainer({ top: 140 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    const revived = host.querySelector('.share-mini') as HTMLElement
+    expect(revived).not.toBeNull()
+    expect(revived.classList.contains('share-closing')).toBe(false)
+  })
+
+  it('the no-selection fallback closes only a real capsule, not a stale mini', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    // Selection swapped to whitespace without a selectionchange: the
+    // fallback branch is reached with the mini still on screen — the main
+    // capsule is what it exists to close.
+    const range = document.createRange()
+    range.setStart(row.firstChild!, 4)
+    range.setEnd(row.firstChild!, 5)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+    expect(host.querySelector('.share-mini')?.classList.contains('share-closing')).toBe(false)
+  })
+})
+
+describe('mini dismissal and teardown', () => {
+  function showMini(): HTMLElement {
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    return host.querySelector('.share-mini') as HTMLElement
+  }
+
+  it('a document click outside the mini hides it', () => {
+    setup()
+    const mini = showMini()
+    expect(mini).not.toBeNull()
+    host.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(mini.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('a click-dismissed mini stays dismissed through a later scroll', () => {
+    setup()
+    const mini = showMini()
+    host.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(mini.classList.contains('share-closing')).toBe(true)
+    vi.advanceTimersByTime(120)
+    expect(host.querySelector('.share-mini')).toBeNull()
+    // The selection is still live (a chrome tap does not collapse it) —
+    // scrolling must not resurrect what the user just dismissed.
+    container.dispatchEvent(new Event('scroll'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('a click inside the mini does not hide it', () => {
+    setup()
+    const mini = showMini()
+    mini.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(mini.classList.contains('share-closing')).toBe(false)
+    expect(mini.isConnected).toBe(true)
+  })
+
+  it('close() on the handle also takes the mini down', () => {
+    setup()
+    const mini = showMini()
+    handle!.close()
+    expect(mini.classList.contains('share-closing')).toBe(true)
+  })
+
+  it('destroy wins the race against a pending mini rAF', () => {
+    setup()
+    selectInContainer({ top: 120 })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).not.toBeNull()
+    // Queue a fresh frame, then tear down before it runs. destroy has
+    // already removed the selectionchange listener, so a later dispatch is
+    // a no-op — the pending frame is the only path that could resurrect.
+    document.dispatchEvent(new Event('selectionchange'))
+    handle!.destroy()
+    expect(host.querySelector('.share-mini')).toBeNull()
+    vi.advanceTimersByTime(16)
+    expect(host.querySelector('.share-mini')).toBeNull()
+  })
+
+  it('destroy with the mini open leaves no timer', () => {
+    setup()
+    showMini()
+    handle!.destroy()
+    // Sync removal (not the animated hideMini path) leaves no 120ms timer.
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

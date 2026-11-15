@@ -1,16 +1,22 @@
-// Long-press message menu for body text only: text/user/error blocks get
-// the full ritual — selection handles, lift/hold dimming, the floating
-// Liquid Glass capsule (image / markdown / copy). Everything else (tool
-// output, thinking, reminder rows, chrome) gets ZERO custom UI — the
-// long-press hands the gesture to the WebView's native selection untouched
-// (no contextmenu preventDefault, so the system toolbar appears). Entry is
-// gated on the Android shell bridge — without window.GBotShare
-// initShareMenu no-ops and desktop never arms a listener. Long-press
-// doubles as the native selection start: contextmenu is suppressed only to
-// drop the system menu (handles live on), and the float capsule opens AT
-// contextmenu — the moment the browser hands over selection — so handles
-// and menu coexist; a selection-anchored menu follows the selection through
-// scrolls and handle drags. Opening on lift made them mutually exclusive.
+// Two-state share surface, one gating entry: initShareMenu no-ops without
+// the Android shell bridge (window.GBotShare) and desktop stays
+// indistinguishable from the feature not existing.
+//
+// State A — the armed long-press capsule: text/user/error blocks keep the
+// full ritual (selection handles, lift/hold dimming, the three-icon Liquid
+// Glass capsule opening AT contextmenu, the browser's own long-press
+// moment). State B — the mini copy capsule: any other selection path
+// (handle drag, double-tap word select, system selection) that leaves a
+// non-empty selection inside the container floats a one-icon capsule that
+// follows the selection rect live through selectionchange/scroll rAFs.
+// The two states are mutually exclusive; any successfully armed long-press
+// gesture replaces the mini, and open()'s leading close() takes a stray
+// mini down as a second line of defense.
+//
+// Contextmenu adjudication: inside the container a LIVE selection owns the
+// content area — preventDefault kills the system toolbar and our UI (main
+// capsule or mini) serves the copy intent; with no selection the gesture
+// passes to the WebView untouched. Outside the container it is never ours.
 import { createNode } from './dom'
 import { t } from './i18n'
 import { renderIcon } from './icons'
@@ -66,6 +72,17 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
   let holdRow: HTMLElement | null = null
   let holdSrc: ShareSource | null = null
   let holdPointerId: number | null = null
+  // Mini capsule state. `dead` exists for one race: after destroy() all
+  // four capsule variables are null, indistinguishable from "idle + live
+  // selection", so an in-flight mini rAF would happily re-append. The flag
+  // is the only signal that teardown happened.
+  let mini: HTMLElement | null = null
+  let miniRafPending = false
+  let dead = false
+  // jsdom layout is 0: the mini's fallback footprint = 40px icon + 36px
+  // item height + 2*3px capsule padding + 2*1px border.
+  const MINI_W = 48
+  const MINI_H = 44
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -76,6 +93,10 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
 
   function close(): void {
     disarmClickSwallow()
+    // Before the `menu` early-return: open() starts with close() to enforce
+    // two-state mutual exclusion, and that call arrives with `menu` null —
+    // a hideMini below the guard would never run exactly when it must.
+    hideMini()
     if (!menu) return
     const m = menu
     menu = null
@@ -137,16 +158,158 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     clickEatTimer = setTimeout(disarmClickSwallow, 350)
   }
 
-  // The live selection, but only when it starts inside `row`: a stale
-  // selection from a previously long-pressed row must not steer this row's
-  // anchoring or copy content. A selection that starts here and bleeds into
-  // the next row (end handle dragged downward) is kept whole — that bleed
-  // is the user's own gesture.
-  const selectionInRow = (row: HTMLElement): { text: string; range: Range } | null => {
+  // The live selection, but only when it starts inside `root`: a stale
+  // selection from elsewhere must not steer anchoring or copy content. The
+  // container-level call (mini state) passes the whole container; a
+  // selection that starts inside and bleeds across rows is kept whole —
+  // that bleed is the user's own gesture.
+  const selectionWithin = (root: HTMLElement): { text: string; range: Range } | null => {
     const sel = window.getSelection()
     const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null
-    if (!sel || !range || !row.contains(range.startContainer)) return null
+    if (!sel || !range || !root.contains(range.startContainer)) return null
     return { text: sel.toString(), range }
+  }
+
+  // jsdom Range has no getBoundingClientRect — the typeof guard is not
+  // defensive theater, it keeps the test paths alive. A collapsed or
+  // zero-area rect is as useless as none: the capsule would have no anchor.
+  function usableRect(range: Range | null): DOMRect | null {
+    if (!range || typeof range.getBoundingClientRect !== 'function') return null
+    const rect = range.getBoundingClientRect()
+    return rect.width || rect.height ? rect : null
+  }
+
+  // Shared flip/clamp math for both capsules. `anchorClientY` and
+  // `centerClientX` are client space (the selection rect's domain); the
+  // single conversion below (touch = anchorY - hostRect.top) covers both
+  // the rect and the touch-point paths. hostRect.left is 0 today (the
+  // sidebar's fullscreen scrim swallows presses while it covers the rows)
+  // but the subtraction is free insurance against layout drift — the same
+  // trap the absolute positioning exists for.
+  function placeCapsule(
+    el: HTMLElement,
+    anchorClientY: number,
+    centerClientX: number,
+    mw: number,
+    mh: number,
+  ): void {
+    const hostRect = host.getBoundingClientRect()
+    const touch = anchorClientY - hostRect.top
+    let top = touch - mh - 8
+    let below = false
+    if (top < 8) {
+      top = touch + 8
+      below = true
+      if (top + mh > hostRect.height - 8) {
+        top = Math.max(8, hostRect.height - mh - 8)
+      }
+    }
+    let left = centerClientX - hostRect.left - mw / 2
+    left = Math.max(12, Math.min(left, hostRect.width - mw - 12))
+    el.style.top = `${top}px`
+    el.style.left = `${left}px`
+    el.classList.toggle('share-below', below)
+  }
+
+  let dismissingMini: HTMLElement | null = null
+  let miniHideTimer: number | null = null
+
+  function hideMini(): void {
+    if (!mini) return
+    const m = mini
+    mini = null
+    // Same fade-out as the main capsule; a hide+show burst must NOT
+    // recreate — the dismissing element is kept revivable (timer +
+    // reference) so showOrMoveMini can cancel the removal in flight.
+    m.classList.add('share-closing')
+    if (miniHideTimer !== null) clearTimeout(miniHideTimer)
+    dismissingMini = m
+    miniHideTimer = setTimeout(() => {
+      m.remove()
+      if (dismissingMini === m) dismissingMini = null
+      miniHideTimer = null
+    }, 120)
+  }
+
+  function positionMini(rect: DOMRect): void {
+    if (!mini) return
+    placeCapsule(mini, rect.top, rect.left + rect.width / 2, mini.offsetWidth || MINI_W, mini.offsetHeight || MINI_H)
+  }
+
+  // Synchronous, idempotent router: show, reposition, or hide the mini
+  // based on the CURRENT selection. Every gate failing means the mini must
+  // not exist (state transition, dead selection, unusable anchor).
+  function showOrMoveMini(): void {
+    const sel = selectionWithin(container)
+    if (!menu && !held && !holdRow && sel && sel.text.trim()) {
+      const rect = usableRect(sel.range)
+      if (rect) {
+        if (mini) {
+          positionMini(rect)
+          return
+        }
+        // Revive the dismissing element instead of creating a second one:
+        // a hide+show burst (contextmenu runs close() then this) would
+        // otherwise stack a fading capsule under a fresh one at the same
+        // coordinates — visible as a one-frame flash on real devices.
+        if (dismissingMini) {
+          if (miniHideTimer !== null) {
+            clearTimeout(miniHideTimer)
+            miniHideTimer = null
+          }
+          dismissingMini.classList.remove('share-closing')
+          mini = dismissingMini
+          dismissingMini = null
+          positionMini(rect)
+          return
+        }
+        mini = createNode('div', { className: 'share-mini' })
+        // Inline, like the main capsule: an unselectable surface means the
+        // copy tap does not collapse the live selection it is about to
+        // read — and jsdom computed styles never see the stylesheet.
+        mini.style.userSelect = 'none'
+        const copyItem = createNode('button', {
+          className: 'share-menu-item',
+          attrs: { type: 'button', 'aria-label': t('shareMenuCopy') },
+        })
+        copyItem.appendChild(renderIcon('copy'))
+        copyItem.addEventListener('click', () => {
+          // Read BEFORE hideMini(): the selection is the payload. A
+          // selection swapped to whitespace between show and tap (no
+          // selectionchange fired) collapses to a silent dismissal — no
+          // clipboard write, no toast.
+          const text = selectionWithin(container)?.text.trim() ?? ''
+          hideMini()
+          if (!text) return
+          void copyText(text).then(
+            () => {
+              toast(t('shareCopied'))
+            },
+            () => {
+              toast(t('shareCopyFailed'))
+            },
+          )
+        })
+        mini.appendChild(copyItem)
+        host.appendChild(mini)
+        positionMini(rect)
+        return
+      }
+    }
+    hideMini()
+  }
+
+  // selectionchange can burst per frame; one rAF per burst, and the frame
+  // re-runs showOrMoveMini so an intra-frame state change (a long-press
+  // opening the main capsule) cannot resurrect the mini after the fact.
+  function scheduleMiniUpdate(): void {
+    if (miniRafPending) return
+    miniRafPending = true
+    requestAnimationFrame(() => {
+      miniRafPending = false
+      if (dead) return
+      showOrMoveMini()
+    })
   }
 
   function open(row: HTMLElement, src: ShareSource, touchY: number): void {
@@ -217,7 +380,7 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
       // Read the selection BEFORE close(): handles-dragged partial wins;
       // no selection (or one belonging to another row) falls back to the
       // source text.
-      const selected = selectionInRow(row)?.text ?? ''
+      const selected = selectionWithin(row)?.text ?? ''
       close()
       if (!src) return
       // Trim: handle drags routinely leave a stray leading space or
@@ -242,39 +405,11 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
   // selectionchange can re-run the exact same math as the selection moves.
   function positionMenu(row: HTMLElement, touchY: number): void {
     if (!menu) return
-    const hostRect = host.getBoundingClientRect()
-    let anchorY = touchY
-    // jsdom Range has no getBoundingClientRect — the typeof guard is not
-    // defensive theater, it keeps the open() path alive under test.
-    const range = selectionInRow(row)?.range ?? null
-    const rect = range && typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : null
-    // Client space, same domain as touchY — the single conversion below
-    // (touch = anchorY - hostRect.top) covers both paths.
-    if (rect && (rect.width || rect.height)) anchorY = rect.top
-    // offsetWidth/Height fall back to the demo values when layout has not
-    // run (jsdom) — real measurements win in the browser.
-    const mw = menu.offsetWidth || 94
-    const mh = menu.offsetHeight || 48
-    const touch = anchorY - hostRect.top
-    let top = touch - mh - 8
-    let below = false
-    if (top < 8) {
-      top = touch + 8
-      below = true
-      if (top + mh > hostRect.height - 8) {
-        top = Math.max(8, hostRect.height - mh - 8)
-      }
-    }
+    const rect = usableRect(selectionWithin(row)?.range ?? null)
     const r = row.getBoundingClientRect()
-    // Same client→host conversion as the vertical path. hostRect.left is 0
-    // today (the sidebar's fullscreen scrim swallows presses while it covers
-    // the rows) but the subtraction is free insurance against layout drift —
-    // the same trap the absolute positioning exists for.
-    let left = r.left - hostRect.left + r.width / 2 - mw / 2
-    left = Math.max(12, Math.min(left, hostRect.width - mw - 12))
-    menu.style.top = `${top}px`
-    menu.style.left = `${left}px`
-    menu.classList.toggle('share-below', below)
+    // mw/mh fall back to the demo values when layout has not run (jsdom) —
+    // real measurements win in the browser.
+    placeCapsule(menu, rect ? rect.top : touchY, r.left + r.width / 2, menu.offsetWidth || 94, menu.offsetHeight || 48)
   }
 
   // A menu anchored to a live selection FOLLOWS it through scrolls and
@@ -291,7 +426,7 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     requestAnimationFrame(() => {
       rafPending = false
       if (!menu || !held) return
-      if (!held.isConnected || !selectionInRow(held)) {
+      if (!held.isConnected || !selectionWithin(held)) {
         close()
         return
       }
@@ -328,6 +463,9 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     }
     startY = e.clientY
     startX = e.clientX
+    // Any successfully armed gesture ends in a capsule (or nothing) — the
+    // old mini loses its right to exist the moment the hold arms.
+    hideMini()
     // The hold timer only MARKS a valid long-press. Text rows open at
     // contextmenu (the browser's own long-press moment, handles included);
     // the lift path in onPointerUp is the fallback for non-text targets
@@ -396,50 +534,73 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
     // pointerup instead would race the selection takeover — the browser ends
     // the pointer stream at contextmenu (pointerout/pointercancel follow),
     // so waiting for lift made handles and menu mutually exclusive.
-    // No armed float hold = the press landed on a native row (tool output,
-    // thinking, chrome): preventDefault would kill the system selection
-    // toolbar — the only copy affordance those rows have — so hand the
-    // gesture to the WebView untouched.
-    if (!holdRow || !holdSrc) {
-      // Second long-press while the capsule is open: onPointerDown already
-      // early-returned on `menu`, so this unarmed contextmenu is a native
-      // press. The capsule yields to the system selection toolbar — close
-      // it, still without preventDefault.
-      if (menu) close()
+    if (holdRow && holdSrc) {
+      e.preventDefault()
+      const row = holdRow
+      const src = holdSrc
+      clearTimer()
+      holdRow = null
+      holdSrc = null
+      holdPointerId = null
+      if (row.isConnected) open(row, src, startY)
       return
     }
-    e.preventDefault()
-    const row = holdRow
-    const src = holdSrc
-    clearTimer()
-    holdRow = null
-    holdSrc = null
-    holdPointerId = null
-    if (row.isConnected) open(row, src, startY)
+    // A live in-container selection owns the content area: the system
+    // toolbar would collide with the mini that already follows this exact
+    // selection, so the gesture becomes ours — capsule down, mini up.
+    if (selectionWithin(container)?.text.trim()) {
+      e.preventDefault()
+      close()
+      showOrMoveMini()
+      return
+    }
+    // No hold, no selection (chrome, empty tool block): nothing to anchor
+    // a capsule to — hand the gesture to the WebView untouched.
+    if (menu) close()
   }
   const onDocClick = (e: MouseEvent): void => {
     const t = e.target as Node
     if (menu && !menu.contains(t)) close()
+    // Desktop taps on chrome don't collapse the selection (no
+    // selectionchange fires), so an explicit click is the only dismissal
+    // signal the mini gets from outside itself.
+    if (mini && !mini.contains(t)) hideMini()
   }
   // The menu is absolutely positioned on the host while the rows scroll.
   // Scroll events don't bubble; the capture phase is how they reach the host.
   // A menu anchored to a live selection follows it; every other open menu
   // (no selection, held row detached) still closes — a capsule floating over
-  // content that moved with no anchor reads as broken.
+  // content that moved with no anchor reads as broken. The riderless mini
+  // follows the same way through its own rAF.
   const onScroll = (): void => {
-    if (!menu) return
-    if (held && held.isConnected && selectionInRow(held)) scheduleReposition()
-    else close()
+    if (menu) {
+      if (held && held.isConnected && selectionWithin(held)) scheduleReposition()
+      else close()
+      return
+    }
+    if (mini) scheduleMiniUpdate()
   }
   // Handle drags change the selection rect live; ride the same rAF path so
   // the menu tracks the handles. Detached row (rewind mid-menu) → close.
   const onSelectionChange = (): void => {
-    if (!menu || !held) return
-    if (!held.isConnected) {
-      close()
+    if (menu || held) {
+      // Set together in open(); the not-both shape keeps the old no-op.
+      if (!menu || !held) return
+      if (!held.isConnected) {
+        close()
+        return
+      }
+      if (selectionWithin(held)) scheduleReposition()
       return
     }
-    if (selectionInRow(held)) scheduleReposition()
+    if (holdRow) {
+      // An armed long-press is mid-flight: the native takeover makes the
+      // selection jitter, and a mini flashing for one frame before the
+      // main capsule opens would read as a glitch. Swallow, never show.
+      hideMini()
+      return
+    }
+    scheduleMiniUpdate()
   }
 
   container.addEventListener('pointerdown', onPointerDown)
@@ -454,6 +615,10 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
   return {
     close,
     destroy: () => {
+      // Must precede everything else: the pending mini rAF checks this
+      // flag, and a mini removed via hideMini() would linger for the
+      // 120ms fade (and its timer with it) instead of dying here.
+      dead = true
       clearTimer()
       holdRow = null
       holdSrc = null
@@ -463,6 +628,8 @@ export function initShareMenu(opts: ShareMenuOptions): ShareMenuHandle | null {
         menu.remove()
         menu = null
       }
+      mini?.remove()
+      mini = null
       currentSource = null
       if (held) {
         held.classList.remove('share-lifted')
