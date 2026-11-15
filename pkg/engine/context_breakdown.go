@@ -350,7 +350,7 @@ func (e *Engine) estimateComponents(
 	est.MCPLoaded = e.estimateMCPLoadedTools(mcpReg)
 
 	// 5. Custom agents.
-	est.Agents = e.estimateAgents(agentDefs)
+	est.Agents = e.estimateAgents(toolsSnapshot, agentDefs)
 
 	// 6. Messages (breakdown + total).
 	total := 0
@@ -532,8 +532,12 @@ func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
 // request, and the tool's own boilerplate and schema are System tools'
 // static Agent item, so this category is exactly the lines and nothing
 // else. buildDetails' agent rows estimate the same lines, so the row sum
-// equals this category exactly.
-func (e *Engine) estimateAgents(agentDefs []*types.AgentDefinition) int {
+// equals this category exactly. No enabled Agent tool in the snapshot
+// means the lines never ship — zero, mirroring the request.
+func (e *Engine) estimateAgents(toolsSnapshot map[string]tool.Tool, agentDefs []*types.AgentDefinition) int {
+	if t, ok := toolsSnapshot["Agent"]; !ok || !t.IsEnabled() {
+		return 0
+	}
 	total := 0
 	for _, d := range agentDefs {
 		if d == nil {
@@ -1103,7 +1107,7 @@ func (e *Engine) buildDetails(
 		}
 		ds.agents = append(ds.agents, AgentDetail{
 			AgentType: d.AgentType,
-			Source:    "built-in",
+			Source:    string(d.Source),
 			Tokens:    e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d)),
 		})
 	}

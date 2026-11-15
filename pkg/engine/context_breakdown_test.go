@@ -2451,8 +2451,8 @@ func TestEstimateAgents_Empty(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 	want := 0
-	if got := e.estimateAgents(nil); got != want {
-		t.Errorf("estimateAgents(nil) = %d, want %d", got, want)
+	if got := e.estimateAgents(nil, nil); got != want {
+		t.Errorf("estimateAgents(nil, nil) = %d, want %d", got, want)
 	}
 }
 
@@ -2469,7 +2469,8 @@ func TestEstimateAgents_SumsFormatAgentLines(t *testing.T) {
 	}
 	want := e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[1])) +
 		e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[2]))
-	if got := e.estimateAgents(defs); got != want {
+	tools := map[string]tool.Tool{"Agent": agenttool.New()}
+	if got := e.estimateAgents(tools, defs); got != want {
 		t.Errorf("estimateAgents = %d, want %d (Σ FormatAgentLine; nil def skipped)", got, want)
 	}
 }
@@ -2490,12 +2491,29 @@ func TestAgentSplit_CoversFullRequestEntry(t *testing.T) {
 	if len(defs) == 0 {
 		t.Fatal("ListAgentDefinitions returned no definitions; the nail needs the registry's lines")
 	}
-	split := e.estimateSystemTools(map[string]tool.Tool{"Agent": tl}, nil, nil) + e.estimateAgents(defs)
+	split := e.estimateSystemTools(map[string]tool.Tool{"Agent": tl}, nil, nil) + e.estimateAgents(map[string]tool.Tool{"Agent": tl}, defs)
 	full := e.estimateSingleTool(tl)
 	bound := 2 * (len(defs) + 1)
 	if d := split - full; d < -bound || d > bound {
 		t.Errorf("static item + lines = %d, full request entry = %d (delta %d outside ±%d — split lost or double-billed the Agent entry)",
 			split, full, d, bound)
+	}
+}
+
+// The category mirrors the request: without an enabled Agent tool the
+// description text — boilerplate or per-agent lines — never ships, so
+// the lines must not count even with definitions registered.
+func TestEstimateAgents_ZeroWithoutAgentToolInRequest(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	defs := []*types.AgentDefinition{{AgentType: "Alpha", WhenToUse: "when alpha"}}
+	want := 0
+	if got := e.estimateAgents(map[string]tool.Tool{}, defs); got != want {
+		t.Errorf("estimateAgents with no Agent tool = %d, want %d", got, want)
+	}
+	disabled := map[string]tool.Tool{"Agent": namedDisabledTool{name: "Agent"}}
+	if got := e.estimateAgents(disabled, defs); got != want {
+		t.Errorf("estimateAgents with disabled Agent tool = %d, want %d", got, want)
 	}
 }
 
@@ -2877,7 +2895,7 @@ func TestBuildDetails_Agents(t *testing.T) {
 	e := &Engine{}
 	defs := []*types.AgentDefinition{
 		nil,
-		{AgentType: "Alpha", WhenToUse: "when alpha"},
+		{AgentType: "Alpha", WhenToUse: "when alpha", Source: types.AgentSourceBuiltIn},
 	}
 	ds := e.buildDetails(nil, nil, nil, "", defs, nil, nil)
 	want := []AgentDetail{{
