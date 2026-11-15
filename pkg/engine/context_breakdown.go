@@ -12,6 +12,7 @@ import (
 	"maps"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -47,6 +48,22 @@ type ContextBreakdown struct {
 	Agents               []AgentDetail
 	Skills               []SkillDetail
 	MessageBreakdown     *MessageBreakdown
+
+	// SystemPromptSections / MemorySections feed the wui context panel's
+	// accordion: exact display text + per-section token estimates.
+	SystemPromptSections []PromptSection
+	MemorySections       []PromptSection
+}
+
+// PromptSection is one collapsible segment of the system prompt or the typed
+// memory prompt. Source badges the segment's origin: system_md/soul_md/
+// memory_md render as literal file-name badges; readonly/builtin go through
+// the client's i18n; empty renders no badge.
+type PromptSection struct {
+	ID     string
+	Text   string
+	Tokens int
+	Source string
 }
 
 // ContextCategory is one slice of the context pie.
@@ -84,11 +101,14 @@ type MCPToolDetail struct {
 	IsLoaded   bool
 }
 
-// SystemToolDetail describes a built-in tool's contribution.
+// SystemToolDetail describes a built-in tool's contribution. Text carries
+// the full request entry (name + Prompt + schema) for the wui accordion;
+// deferred entries leave it empty — their prompt never enters the context.
 // Source: analyzeContext.ts:107-110
 type SystemToolDetail struct {
 	Name   string
 	Tokens int
+	Text   string
 }
 
 // MemoryFileDetail describes one loaded memory file.
@@ -228,6 +248,8 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 		memPrompt = context.FormatMemoryPrompt(workingDir, memoryDir)
 	}
 	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt)
+	breakdown.SystemPromptSections = e.buildSystemPromptSections(systemPromptRaw, model, modalities, memPrompt)
+	breakdown.MemorySections = e.buildMemorySections(memPrompt)
 	// The system prompt injects the typed-memory prompt (builder.go), not
 	// every memory file's contents — estimating the full file list here
 	// overstated this bucket ~4x and squeezed the message bucket. No legacy
@@ -366,10 +388,7 @@ func (e *Engine) estimateSystemPromptSections(
 	// "System prompt", once as "Memory files"). The remainder keeps the
 	// template + SOUL + platform info + skills + runtime additions, which is
 	// what the merged "System prompt" category bills.
-	stripped := systemPromptRaw
-	if memPrompt != "" {
-		stripped = strings.Replace(stripped, "\n\n"+memPrompt, "", 1)
-	}
+	stripped := stripMemSection(systemPromptRaw, memPrompt)
 
 	// The request path (engine.go callLLM) hot-expands {{SYSTEM}}/{{SOUL}}/
 	// {{MODEL}} before the prompt reaches the API; estimating the stub form
@@ -963,8 +982,13 @@ func (e *Engine) buildDetails(
 		ds.systemTools = append(ds.systemTools, SystemToolDetail{
 			Name:   name,
 			Tokens: e.estimateSingleTool(t),
+			Text:   t.Name() + "\n\n" + t.Prompt() + "\n\n" + string(t.InputSchema()),
 		})
 	}
+	// The tools map iterates randomly; the wire payload needs a stable order.
+	slices.SortStableFunc(ds.systemTools, func(a, b SystemToolDetail) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	// MCP tools (loaded vs deferred).
 	if mcpReg != nil {

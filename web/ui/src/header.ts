@@ -1,7 +1,7 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
 import { createPopupPanel, createPopupHost, createOutsideClick, formatTokenCount } from './utils'
-import type { ContextBreakdownData, ContextCategoryData } from './types'
+import type { ContextBreakdownData, ContextCategoryData, PromptSectionData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
 import { renderIcon } from './icons'
@@ -306,6 +306,37 @@ function categoryLabel(cat: ContextCategoryData): string {
   return idLabel(cat.id, cat.name)
 }
 
+// Segment-row labels inside an expanded category: the section id is the
+// stable semantic key (system tool names are their own ids and fall through
+// to the raw name).
+const SEGMENT_I18N: Record<string, StaticKey> = {
+  base: 'ctxCatBasePrompt',
+  soul: 'ctxSegSoul',
+  runtime: 'ctxSegRuntime',
+  skills: 'ctxSegSkills',
+  voice: 'ctxSegVoice',
+  other: 'ctxSegOther',
+  instructions: 'ctxSegMemoryInstructions',
+  index: 'ctxSegMemoryIndex',
+}
+
+// Source badges: file-backed sections show the literal file name; semantic
+// sources go through i18n.
+const SOURCE_FILE_BADGE: Record<string, string> = {
+  system_md: 'SYSTEM.md',
+  soul_md: 'SOUL.md',
+  memory_md: 'MEMORY.md',
+}
+function sourceBadge(source: string | undefined): string | null {
+  if (!source) return null
+  return SOURCE_FILE_BADGE[source] ?? null
+}
+
+// Sidebar artifact-tree chevron recipe, shared by category and segment rows.
+const CHEV_ICON = 'shrink-0 text-t3 transition-transform duration-200'
+// 14px placeholder keeping plain rows' dots aligned with chevron rows.
+const ALIGN_PAD = 'w-3.5 shrink-0'
+
 function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownData, onCompact?: () => void, streaming?: boolean) {
   panel.innerHTML = ''
 
@@ -363,9 +394,49 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
   barWrap.appendChild(bar)
   head.appendChild(barWrap)
 
+  // Accordion open-state is render-local: every data refresh rebuilds the
+  // panel, so persisted open-state would not survive it (same contract as
+  // the sidebar artifact tree). Bodies are pre-rendered (textContent written
+  // once) and toggled purely via the hidden class.
+  let openCat: { segs: HTMLElement; chev: Element } | null = null
+  let openSeg: { body: HTMLElement; chev: Element } | null = null
+  const collapseCat = () => {
+    if (!openCat) return
+    openCat.segs.classList.add('hidden')
+    openCat.chev.classList.remove('rotate-90')
+    openCat = null
+  }
+  const collapseSeg = () => {
+    if (!openSeg) return
+    openSeg.body.classList.add('hidden')
+    openSeg.chev.classList.remove('rotate-90')
+    openSeg = null
+  }
+
+  // Sections behind a category row; undefined degrades the row to plain.
+  const sectionsFor = (cat: ContextCategoryData): PromptSectionData[] | undefined => {
+    if (cat.id === 'system_prompt' && data.systemPromptSections?.length) return data.systemPromptSections
+    if (cat.id === 'memory_files' && data.memorySections?.length) return data.memorySections
+    if (cat.id === 'system_tools' && data.systemTools.length > 0) {
+      return data.systemTools.map((tool) => ({ id: tool.name, text: tool.text, tokens: tool.tokens }))
+    }
+    return undefined
+  }
+
   const listWrap = createElement('div', 'pb-1')
   for (const cat of data.categories) {
+    const sections = sectionsFor(cat)
+    const wrap = createElement('div')
     const row = createElement('div', 'flex items-center gap-2 px-4 py-1')
+    if (sections) {
+      row.classList.add('cursor-pointer', 'select-none')
+      const chev = renderIcon('chevron-right', { size: 14, className: CHEV_ICON })
+      row.appendChild(chev)
+    } else {
+      row.appendChild(createElement('span', ALIGN_PAD))
+    }
+    row.dataset.testid = 'ctx-category'
+    if (cat.id !== undefined) row.dataset.cat = cat.id
     const dot = createElement('span', 'h-2 w-2 rounded-full shrink-0')
     dot.style.backgroundColor = ansiToCss(cat.color)
     row.appendChild(dot)
@@ -378,7 +449,84 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     const pct = createElement('span', 'text-[11px] text-t3 w-10 text-right')
     pct.textContent = cat.percentage.toFixed(1) + '%'
     row.appendChild(pct)
-    listWrap.appendChild(row)
+    wrap.appendChild(row)
+
+    if (sections) {
+      const chev = row.children[0]
+      const segs = createElement('div', 'hidden')
+      segs.dataset.testid = 'ctx-cat-segments'
+      segs.dataset.cat = cat.id ?? ''
+      for (const seg of sections) {
+        const segWrap = createElement('div')
+        const hasBody = !!seg.text
+        const segRow = createElement(
+          'div',
+          'flex items-center gap-2 px-6 py-1 rounded-lg' + (hasBody ? ' cursor-pointer hover:bg-ink3/30 select-none' : ''),
+        )
+        segRow.dataset.testid = 'ctx-segment-row'
+        segRow.dataset.seg = seg.id
+        let segChev: Element | null = null
+        if (hasBody) {
+          segChev = renderIcon('chevron-right', { size: 14, className: CHEV_ICON })
+          segRow.appendChild(segChev)
+        } else {
+          segRow.appendChild(createElement('span', ALIGN_PAD))
+        }
+        const segName = createElement('span', 'text-[13px] text-t2 flex-1 truncate')
+        const segKey = SEGMENT_I18N[seg.id]
+        segName.textContent = segKey !== undefined ? t(segKey) : seg.id
+        segRow.appendChild(segName)
+        const segTok = createElement('span', 'mono text-[12px] text-t3')
+        segTok.textContent = formatTokenCount(seg.tokens)
+        segRow.appendChild(segTok)
+        const badge = sourceBadge(seg.source)
+        if (badge !== null) {
+          const b = createElement('span', 'text-[10px] text-t3 border border-hairline rounded px-1 shrink-0')
+          b.textContent = badge
+          segRow.appendChild(b)
+        }
+        segWrap.appendChild(segRow)
+        if (hasBody) {
+          const body = createElement(
+            'div',
+            'hidden mx-6 my-1 max-h-[40dvh] overflow-y-auto rounded-md bg-ink3/30 px-3 py-2 mono text-[11px] text-t3 whitespace-pre-wrap break-words',
+          )
+          body.dataset.testid = 'ctx-segment-body'
+          body.dataset.seg = seg.id
+          // Raw prompt text — textContent only, never innerHTML.
+          body.textContent = seg.text!
+          segWrap.appendChild(body)
+          const chevRef = segChev!
+          // Segment rows sit in the segs container, a sibling of catRow —
+          // clicks bubble to wrap, never through catRow's listener.
+          segRow.addEventListener('click', () => {
+            if (openSeg && openSeg.body === body) {
+              collapseSeg()
+              return
+            }
+            collapseSeg()
+            body.classList.remove('hidden')
+            chevRef.classList.add('rotate-90')
+            openSeg = { body, chev: chevRef }
+          })
+        }
+        segs.appendChild(segWrap)
+      }
+      wrap.appendChild(segs)
+      row.addEventListener('click', () => {
+        if (openCat && openCat.segs === segs) {
+          collapseCat()
+          collapseSeg()
+          return
+        }
+        collapseCat()
+        collapseSeg()
+        segs.classList.remove('hidden')
+        chev.classList.add('rotate-90')
+        openCat = { segs, chev }
+      })
+    }
+    listWrap.appendChild(wrap)
   }
   panel.appendChild(listWrap)
 
@@ -400,13 +548,8 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
     }
   }
 
-  if (data.systemTools.length > 0) {
-    const sec = createSection(t('ctxSystemTools'))
-    panel.appendChild(sec)
-    for (const t of data.systemTools) {
-      panel.appendChild(createDetailRow(t.name, t.tokens))
-    }
-  }
+  // The systemTools detail section is retired: the system_tools category
+  // accordion (one segment per tool, full request text) replaces it.
 
   if (data.mcpToolsLoaded.length > 0) {
     const sec = createSection(t('ctxMcpLoaded'))

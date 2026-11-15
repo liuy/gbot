@@ -570,11 +570,11 @@ func TestContextBreakdown_DeferredUndiscoveredExcluded(t *testing.T) {
 	}
 }
 
-// TestContextBreakdown_NoSystemPromptSections pins the removal: the
-// per-section sub-breakdown duplicated the category rows (platform info,
-// tool prompts, skill listing are categories already), so the payload must
-// stay free of that field.
-func TestContextBreakdown_NoSystemPromptSections(t *testing.T) {
+// TestContextBreakdown_SectionsOnPayload: the accordion payload carries the
+// section arrays once a real breakdown exists (2026-11-15 reintroduction —
+// the old per-section field was removed for duplicating categories; the new
+// one is the accordion's content source, not a category duplicate).
+func TestContextBreakdown_SectionsOnPayload(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
 	e.SetSystemPrompt("You are a test assistant.")
 	e.SetSkillListing("test-skill: a test")
@@ -582,14 +582,20 @@ func TestContextBreakdown_NoSystemPromptSections(t *testing.T) {
 	e.ContextTokens = 50_000
 
 	bd := e.ContextBreakdown()
+	if len(bd.SystemPromptSections) == 0 {
+		t.Fatal("SystemPromptSections empty, want at least the other section")
+	}
+	if bd.SystemPromptSections[0].ID != "other" {
+		t.Errorf("first section id = %q, want other for an anchorless prompt", bd.SystemPromptSections[0].ID)
+	}
 	payload, err := json.Marshal(bd)
 	if err != nil {
 		t.Fatalf("marshal breakdown: %v", err)
 	}
 	// Match the quoted JSON key, not the bare name: t.TempDir() embeds the
 	// test's own name into the projectspace path, which MemoryFiles carries.
-	if bytes.Contains(payload, []byte(`"SystemPromptSections"`)) {
-		t.Error("payload still carries SystemPromptSections")
+	if !bytes.Contains(payload, []byte(`"SystemPromptSections"`)) {
+		t.Error("payload lacks SystemPromptSections")
 	}
 }
 

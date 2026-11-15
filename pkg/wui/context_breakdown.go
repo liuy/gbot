@@ -25,6 +25,8 @@ type contextBreakdownOutbound struct {
 	Agents               []agentDetailWire      `json:"agents"`
 	Skills               []skillDetailWire      `json:"skills"`
 	MessageBreakdown     *messageBreakdownWire  `json:"messageBreakdown"`
+	SystemPromptSections []promptSectionWire    `json:"systemPromptSections,omitempty"`
+	MemorySections       []promptSectionWire    `json:"memorySections,omitempty"`
 }
 
 type contextCategoryWire struct {
@@ -47,6 +49,14 @@ type mcpToolDetailWire struct {
 type systemToolDetailWire struct {
 	Name   string `json:"name"`
 	Tokens int    `json:"tokens"`
+	Text   string `json:"text,omitempty"`
+}
+
+type promptSectionWire struct {
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Tokens int    `json:"tokens"`
+	Source string `json:"source,omitempty"`
 }
 
 type memoryFileDetailWire struct {
@@ -103,7 +113,15 @@ func convertMCPTools(in []engine.MCPToolDetail) []mcpToolDetailWire {
 func convertSystemTools(in []engine.SystemToolDetail) []systemToolDetailWire {
 	out := make([]systemToolDetailWire, len(in))
 	for i, t := range in {
-		out[i] = systemToolDetailWire{Name: t.Name, Tokens: t.Tokens}
+		out[i] = systemToolDetailWire{Name: t.Name, Tokens: t.Tokens, Text: t.Text}
+	}
+	return out
+}
+
+func convertPromptSections(in []engine.PromptSection) []promptSectionWire {
+	out := make([]promptSectionWire, len(in))
+	for i, s := range in {
+		out[i] = promptSectionWire{ID: s.ID, Text: s.Text, Tokens: s.Tokens, Source: s.Source}
 	}
 	return out
 }
@@ -200,6 +218,8 @@ func buildContextBreakdown(bd *engine.ContextBreakdown) []byte {
 		Agents:               convertAgents(bd.Agents),
 		Skills:               convertSkills(bd.Skills),
 		MessageBreakdown:     convertMessageBreakdown(bd.MessageBreakdown),
+		SystemPromptSections: convertPromptSections(bd.SystemPromptSections),
+		MemorySections:       convertPromptSections(bd.MemorySections),
 	}
 
 	payload, err := json.Marshal(out)

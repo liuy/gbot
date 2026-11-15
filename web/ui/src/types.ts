@@ -80,7 +80,9 @@ export type ContextCategoryData = {
   id?: string
 }
 export type MCPToolDetailData = { name: string; serverName: string; tokens: number; isLoaded: boolean }
-export type SystemToolDetailData = { name: string; tokens: number }
+export type SystemToolDetailData = { name: string; tokens: number; text?: string }
+// Optional throughout: an older server sends none of the accordion fields.
+export type PromptSectionData = { id: string; text?: string; tokens: number; source?: string }
 export type AgentDetailData = { agentType: string; source: string; tokens: number }
 export type SkillDetailData = { name: string; source: string; tokens: number }
 export type MessageBreakdownData = {
@@ -96,6 +98,8 @@ export type ContextBreakdownData = {
   deferredBuiltinTools: SystemToolDetailData[]; systemTools: SystemToolDetailData[]
   agents: AgentDetailData[]; skills: SkillDetailData[]
   messageBreakdown: MessageBreakdownData | null
+  systemPromptSections?: PromptSectionData[]
+  memorySections?: PromptSectionData[]
 }
 
 export type TaskWireItem = {

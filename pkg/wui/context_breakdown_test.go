@@ -184,7 +184,13 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 			{Name: "Web", Tokens: 200},
 		},
 		SystemTools: []engine.SystemToolDetail{
-			{Name: "Bash", Tokens: 1000},
+			{Name: "Bash", Tokens: 1000, Text: "Bash\n\nrun\n\n{}"},
+		},
+		SystemPromptSections: []engine.PromptSection{
+			{ID: "base", Text: "T", Tokens: 9, Source: "system_md"},
+		},
+		MemorySections: []engine.PromptSection{
+			{ID: "index", Text: "M", Tokens: 8, Source: "memory_md"},
 		},
 		MemoryFiles: []engine.MemoryFileDetail{
 			{Path: "CLAUDE.md", Tokens: 1500},
@@ -222,21 +228,32 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// Verify the removed sub-section stays out of the wire: the categories
-	// already carry platform info / system tools / skill listing.
-	if _, present := msg["systemPromptSections"]; present {
-		t.Fatal("systemPromptSections still on the wire")
+	// The accordion arrays ride the same payload: sections present with every
+	// field, tool text included.
+	sps, ok := msg["systemPromptSections"].([]any)
+	if !ok || len(sps) != 1 {
+		t.Fatalf("systemPromptSections: ok=%v len=%d", ok, len(sps))
 	}
-
-	mfs, ok := msg["memoryFiles"].([]any)
-	if !ok || len(mfs) != 1 {
-		t.Fatalf("memoryFiles: ok=%v len=%d", ok, len(mfs))
+	sps0 := sps[0].(map[string]any)
+	if sps0["id"] != "base" {
+		t.Errorf("sps0 id = %v, want base", sps0["id"])
 	}
-	mfs0 := mfs[0].(map[string]any)
-	if mfs0["path"] != "CLAUDE.md" {
-		t.Errorf("mfs0 path = %v", mfs0["path"])
+	if sps0["text"] != "T" {
+		t.Errorf("sps0 text = %v, want T", sps0["text"])
 	}
-
+	if sps0["tokens"] != float64(9) {
+		t.Errorf("sps0 tokens = %v, want 9", sps0["tokens"])
+	}
+	if sps0["source"] != "system_md" {
+		t.Errorf("sps0 source = %v, want system_md", sps0["source"])
+	}
+	msecs, ok := msg["memorySections"].([]any)
+	if !ok || len(msecs) != 1 {
+		t.Fatalf("memorySections: ok=%v len=%d", ok, len(msecs))
+	}
+	if msecs[0].(map[string]any)["source"] != "memory_md" {
+		t.Errorf("memorySections[0] source = %v, want memory_md", msecs[0].(map[string]any)["source"])
+	}
 	sts, ok := msg["systemTools"].([]any)
 	if !ok || len(sts) != 1 {
 		t.Fatalf("systemTools: ok=%v len=%d", ok, len(sts))
@@ -244,6 +261,9 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 	sts0 := sts[0].(map[string]any)
 	if sts0["name"] != "Bash" {
 		t.Errorf("sts0 name = %v", sts0["name"])
+	}
+	if sts0["text"] != "Bash\n\nrun\n\n{}" {
+		t.Errorf("sts0 text = %v, want the full request entry", sts0["text"])
 	}
 
 	agents, ok := msg["agents"].([]any)
@@ -262,6 +282,13 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 	sk0 := skills[0].(map[string]any)
 	if sk0["name"] != "commit" {
 		t.Errorf("sk0 name = %v", sk0["name"])
+	}
+	memFiles, ok := msg["memoryFiles"].([]any)
+	if !ok || len(memFiles) != 1 {
+		t.Fatalf("memoryFiles: ok=%v len=%d", ok, len(memFiles))
+	}
+	if memFiles[0].(map[string]any)["path"] != "CLAUDE.md" {
+		t.Errorf("memoryFiles[0] path = %v", memFiles[0])
 	}
 	if _, present := msg["apiUsage"]; present {
 		t.Fatal("apiUsage still on the wire")
@@ -365,9 +392,21 @@ func TestConvertersCopyEveryField(t *testing.T) {
 		t.Errorf("mcp = %+v, want the input detail verbatim", mcp[0])
 	}
 
-	sys := convertSystemTools([]engine.SystemToolDetail{{Name: "Bash", Tokens: 1000}})
-	if len(sys) != 1 || sys[0].Name != "Bash" || sys[0].Tokens != 1000 {
-		t.Errorf("systemTools = %+v, want {Bash 1000}", sys)
+	sys := convertSystemTools([]engine.SystemToolDetail{{Name: "Bash", Tokens: 1000, Text: "Bash\n\nrun\n\n{}"}})
+	if len(sys) != 1 || sys[0].Name != "Bash" || sys[0].Tokens != 1000 || sys[0].Text != "Bash\n\nrun\n\n{}" {
+		t.Errorf("systemTools = %+v, want every field including Text", sys)
+	}
+
+	ps := convertPromptSections([]engine.PromptSection{{ID: "base", Text: "T", Tokens: 9, Source: "system_md"}})
+	if len(ps) != 1 {
+		t.Fatalf("promptSections len = %d, want 1", len(ps))
+	}
+	if ps[0].ID != "base" || ps[0].Text != "T" || ps[0].Tokens != 9 || ps[0].Source != "system_md" {
+		t.Errorf("promptSection = %+v, want all four fields", ps[0])
+	}
+	psBare := convertPromptSections([]engine.PromptSection{{ID: "skills", Text: "S", Tokens: 4}})
+	if len(psBare) != 1 || psBare[0].Source != "" {
+		t.Errorf("promptSection without source = %+v, want empty Source (omitempty on the wire)", psBare[0])
 	}
 
 	mem := convertMemoryFiles([]engine.MemoryFileDetail{{Path: "CLAUDE.md", Tokens: 1500}})

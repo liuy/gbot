@@ -251,7 +251,11 @@ describe('Header context popover', () => {
   it('detail sections appear only when non-empty', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      systemTools: [{ name: 'grep', tokens: 200 }],
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemTools: [{ name: 'grep', tokens: 200, text: 'grep\n\nP\n\n{}' }],
       agents: [],
       skills: [],
       mcpToolsLoaded: [],
@@ -259,7 +263,11 @@ describe('Header context popover', () => {
     clickTrigger()
     const panel = getPanel()
     expect(panel!.textContent).toContain('System tools')
-    expect(panel!.textContent).toContain('grep')
+    // EAGER pre-render: the grep segment row exists inside the hidden
+    // segments container, not in a visible detail section.
+    const segs = panel!.querySelector('[data-testid="ctx-cat-segments"][data-cat="system_tools"]')
+    expect(segs).not.toBeNull()
+    expect(segs!.classList.contains('hidden')).toBe(true)
     expect(panel!.textContent).not.toContain('Agents')
     expect(panel!.textContent).not.toContain('Skills')
     expect(panel!.textContent).not.toContain('MCP tools loaded')
@@ -503,10 +511,36 @@ describe('Header context popover i18n', () => {
     expect(text).toContain('MCP 工具')
   })
 
+  it('base segment pre-renders inside the hidden accordion container when sections ride the payload', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 300, percentage: 0.2, color: '45', isFree: false, isReserved: false },
+        { name: 'System prompt', id: 'system_prompt', tokens: 3000, percentage: 1.5, color: '12', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemPromptSections: [{ id: 'base', text: 'BASE', tokens: 300, source: 'builtin' }],
+    }))
+    clickTrigger()
+    const panel = getPanel()!
+    const segs = panel.querySelector('[data-testid="ctx-cat-segments"][data-cat="system_prompt"]')
+    expect(segs).not.toBeNull()
+    // Pre-rendered but collapsed — visibility is the container's hidden
+    // class, not textContent.
+    expect(segs!.classList.contains('hidden')).toBe(true)
+    const segRow = segs!.querySelector('[data-testid="ctx-segment-row"][data-seg="base"]')
+    expect(segRow).not.toBeNull()
+    expect(segRow!.textContent).toContain('基础提示词')
+  })
+
   it('renders section titles in zh', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
-      systemTools: [{ name: 'grep', tokens: 200 }],
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemTools: [{ name: 'grep', tokens: 200, text: 'grep\n\nP\n\n{}' }],
       mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
       mcpToolsDeferred: [{ name: 'fetch', serverName: 'ddg', tokens: 0, isLoaded: false }],
       agents: [{ agentType: 'general', source: 'builtin', tokens: 400 }],
@@ -514,6 +548,8 @@ describe('Header context popover i18n', () => {
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
+    // '系统工具' now comes from the category row label (ctxCatSystemTools),
+    // the retired detail section's own key no longer renders a second copy.
     expect(text).toContain('系统工具')
     expect(text).toContain('已加载 MCP 工具')
     expect(text).toContain('延迟加载 MCP 工具')
@@ -1250,22 +1286,43 @@ describe('Header context breakdown structure', () => {
     expect(barWrap.children[0].className).toBe('flex h-2 rounded-full overflow-hidden bg-ink3/50')
   })
 
-  it('pins the category list rows: wrap, row, dot, name, tokens, percentage', () => {
+  it('pins the category list rows: wrap, row, chevron slot, dot, name, tokens, percentage', () => {
     const panel = openWith(sampleBreakdown())
     const listWrap = panel.children[1] as HTMLElement
     expect(listWrap.className).toBe('pb-1')
     expect(listWrap.children.length).toBe(3)
-    const row = listWrap.children[0] as HTMLElement
+    // Each category sits in its own wrap; the row is the wrap's first child.
+    const wrap = listWrap.children[0] as HTMLElement
+    const row = wrap.children[0] as HTMLElement
     expect(row.className).toBe('flex items-center gap-2 px-4 py-1')
-    expect(row.children.length).toBe(4)
-    expect(row.children[0].className).toBe('h-2 w-2 rounded-full shrink-0')
-    expect((row.children[0] as HTMLElement).style.backgroundColor).toBe('var(--color-blue)')
-    expect(row.children[1].className).toBe('text-[13px] text-t2 flex-1 truncate')
-    expect(row.children[1].textContent).toBe('System prompt')
-    expect(row.children[2].className).toBe('mono text-[12px] text-t3')
-    expect(row.children[2].textContent).toBe('4.9k')
-    expect(row.children[3].className).toBe('text-[11px] text-t3 w-10 text-right')
-    expect(row.children[3].textContent).toBe('2.5%')
+    // Degraded row (no id, no sections payload): a 14px placeholder keeps
+    // the dots aligned with expandable rows.
+    expect(row.children.length).toBe(5)
+    expect(row.children[0].className).toBe('w-3.5 shrink-0')
+    expect((row.children[1] as HTMLElement).style.backgroundColor).toBe('var(--color-blue)')
+    expect(row.children[2].className).toBe('text-[13px] text-t2 flex-1 truncate')
+    expect(row.children[2].textContent).toBe('System prompt')
+    expect(row.children[3].className).toBe('mono text-[12px] text-t3')
+    expect(row.children[3].textContent).toBe('4.9k')
+    expect(row.children[4].className).toBe('text-[11px] text-t3 w-10 text-right')
+    expect(row.children[4].textContent).toBe('2.5%')
+  })
+
+  it('expandable category rows lead with a chevron and gain pointer affordances', () => {
+    const panel = openWith(sampleBreakdown({
+      categories: [
+        { name: 'System prompt', id: 'system_prompt', tokens: 5000, percentage: 2.5, color: '12', isFree: false, isReserved: false },
+        { name: 'Free space', id: 'free_space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemPromptSections: [{ id: 'base', text: 'BASE', tokens: 400, source: 'builtin' }],
+    }))
+    const listWrap = panel.children[1] as HTMLElement
+    const row = (listWrap.children[0] as HTMLElement).children[0] as HTMLElement
+    expect(row.className).toContain('cursor-pointer')
+    expect(row.className).toContain('select-none')
+    expect(row.children[0].classList.contains('transition-transform')).toBe(true)
+    const free = (listWrap.children[1] as HTMLElement).children[0] as HTMLElement
+    expect(free.children[0].className).toBe('w-3.5 shrink-0')
   })
 
   it('zero-token categories get no bar segment but keep their list row', () => {
@@ -1280,27 +1337,41 @@ describe('Header context breakdown structure', () => {
     const listWrap = panel.children[1] as HTMLElement
     expect(listWrap.children.length).toBe(2)
     // Unknown ANSI codes fall back to the muted text color, not nothing.
-    const odd = listWrap.children[1] as HTMLElement
-    expect((odd.children[0] as HTMLElement).style.backgroundColor).toBe('var(--color-t3)')
+    const odd = (listWrap.children[1] as HTMLElement).children[0] as HTMLElement
+    expect((odd.children[1] as HTMLElement).style.backgroundColor).toBe('var(--color-t3)')
   })
 
-  it('sections and detail rows: heading classes and name/value spans', () => {
+  it('accordion structure: segments container, segment rows, hidden bodies', () => {
     const panel = openWith(sampleBreakdown({
-      systemTools: [{ name: 'grep', tokens: 200 }],
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemTools: [{ name: 'grep', tokens: 200, text: 'grep\n\nP\n\n{}' }],
     }))
-    expect(panel.children.length).toBe(4) // head, category list, section, detail row
-    const sec = panel.children[2] as HTMLElement
-    expect(sec.className).toBe('pt-2 pb-1 px-4')
-    expect(sec.children.length).toBe(1)
-    expect(sec.children[0].className).toBe('mono text-[11px] text-t3 uppercase tracking-wider')
-    expect(sec.children[0].textContent).toBe('System tools')
-    const row = panel.children[3] as HTMLElement
-    expect(row.className).toBe('flex items-center justify-between px-4 py-1')
-    expect(row.children.length).toBe(2)
-    expect(row.children[0].className).toBe('text-[13px] text-t2 truncate')
-    expect(row.children[0].textContent).toBe('grep')
-    expect(row.children[1].className).toBe('mono text-[12px] text-t3 ml-2 shrink-0')
-    expect(row.children[1].textContent).toBe('200')
+    // The retired detail section leaves the panel at head + category list.
+    expect(panel.children.length).toBe(2)
+    const listWrap = panel.children[1] as HTMLElement
+    const wrap = listWrap.children[0] as HTMLElement
+    expect(wrap.children.length).toBe(2) // catRow + segments container
+    const segs = wrap.children[1] as HTMLElement
+    expect(segs.dataset.testid).toBe('ctx-cat-segments')
+    expect(segs.dataset.cat).toBe('system_tools')
+    expect(segs.classList.contains('hidden')).toBe(true)
+    const segWrap = segs.children[0] as HTMLElement
+    expect(segWrap.children.length).toBe(2) // segRow + body
+    const segRow = segWrap.children[0] as HTMLElement
+    expect(segRow.dataset.testid).toBe('ctx-segment-row')
+    expect(segRow.dataset.seg).toBe('grep')
+    expect(segRow.textContent).toContain('grep')
+    expect(segRow.textContent).toContain('200')
+    const body = segWrap.children[1] as HTMLElement
+    expect(body.dataset.testid).toBe('ctx-segment-body')
+    expect(body.dataset.seg).toBe('grep')
+    expect(body.classList.contains('hidden')).toBe(true)
+    expect(body.textContent).toBe('grep\n\nP\n\n{}')
+    expect(body.className).toContain('whitespace-pre-wrap')
+    expect(body.className).toContain('max-h-[40dvh]')
   })
 
   it('empty detail sections render no heading at all', () => {
@@ -1310,11 +1381,19 @@ describe('Header context breakdown structure', () => {
     expect(text).not.toContain('MCP tools deferred')
   })
 
-  it('system tools rows list name and tokens', () => {
-    const panel = openWith(sampleBreakdown({ systemTools: [{ name: 'grep', tokens: 200 }] }))
-    const row = findDetailRow(panel, 'grep')
-    expect(row).not.toBeNull()
-    expect(row!.children[1].textContent).toBe('200')
+  it('system tools rows appear after expanding the category', () => {
+    const panel = openWith(sampleBreakdown({
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+      ],
+      systemTools: [{ name: 'grep', tokens: 200, text: 'grep\n\nP\n\n{}' }],
+    }))
+    const catRow = panel.querySelector('[data-testid="ctx-category"][data-cat="system_tools"]') as HTMLElement
+    catRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const segs = panel.querySelector('[data-testid="ctx-cat-segments"][data-cat="system_tools"]') as HTMLElement
+    expect(segs.classList.contains('hidden')).toBe(false)
+    const segRow = segs.querySelector('[data-testid="ctx-segment-row"][data-seg="grep"]') as HTMLElement
+    expect(segRow.textContent).toContain('200')
   })
 
   it('loaded MCP tool rows read "name (server)"', () => {
@@ -1390,6 +1469,251 @@ describe('Header context breakdown structure', () => {
     const text = panel.textContent ?? ''
     expect(text).not.toContain('Top tools')
     expect(text).toContain('Message breakdown')
+  })
+})
+
+describe('Header context accordion', () => {
+  let header: ReturnType<typeof createHeader>
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+    })
+    document.body.appendChild(header.root)
+  })
+
+  function getPanel(): HTMLDivElement | null {
+    const panels = document.body.querySelectorAll('.modal-enter')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLDivElement
+    }
+    return null
+  }
+
+  function clickTrigger() {
+    const el = header.root.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  function catRow(panel: HTMLElement, cat: string): HTMLElement {
+    const row = panel.querySelector(`[data-testid="ctx-category"][data-cat="${cat}"]`)
+    if (!row) throw new Error(`category row ${cat} not found`)
+    return row as HTMLElement
+  }
+
+  function catSegs(panel: HTMLElement, cat: string): HTMLElement {
+    const segs = panel.querySelector(`[data-testid="ctx-cat-segments"][data-cat="${cat}"]`)
+    if (!segs) throw new Error(`segments container ${cat} not found`)
+    return segs as HTMLElement
+  }
+
+  function segRow(panel: HTMLElement, seg: string): HTMLElement {
+    const row = panel.querySelector(`[data-testid="ctx-segment-row"][data-seg="${seg}"]`)
+    if (!row) throw new Error(`segment row ${seg} not found`)
+    return row as HTMLElement
+  }
+
+  function segBody(panel: HTMLElement, seg: string): HTMLElement {
+    const body = panel.querySelector(`[data-testid="ctx-segment-body"][data-seg="${seg}"]`)
+    if (!body) throw new Error(`segment body ${seg} not found`)
+    return body as HTMLElement
+  }
+
+  const click = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+  function accordionBreakdown(overrides: Partial<ContextBreakdownData> = {}): ContextBreakdownData {
+    return sampleBreakdown({
+      categories: [
+        { name: 'System prompt', id: 'system_prompt', tokens: 5000, percentage: 2.5, color: '12', isFree: false, isReserved: false },
+        { name: 'Memory files', id: 'memory_files', tokens: 2000, percentage: 1.0, color: '220', isFree: false, isReserved: false },
+        { name: 'Free space', id: 'free_space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemPromptSections: [
+        { id: 'base', text: 'BASE TEXT', tokens: 400, source: 'builtin' },
+        { id: 'other', text: 'OTHER TEXT', tokens: 100 },
+      ],
+      memorySections: [
+        { id: 'instructions', text: 'INSTR', tokens: 300, source: 'readonly' },
+        { id: 'index', text: 'IDX', tokens: 50, source: 'memory_md' },
+      ],
+      ...overrides,
+    })
+  }
+
+  it('cold open: every segments container pre-rendered but hidden', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    expect(catSegs(panel, 'system_prompt').classList.contains('hidden')).toBe(true)
+    expect(catSegs(panel, 'memory_files').classList.contains('hidden')).toBe(true)
+    expect(panel.querySelectorAll('[data-testid="ctx-segment-body"]').length).toBe(4)
+  })
+
+  it('expands and collapses categories with same-layer mutual exclusion', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    const spRow = catRow(panel, 'system_prompt')
+    const memRow = catRow(panel, 'memory_files')
+    const spSegs = catSegs(panel, 'system_prompt')
+    const memSegs = catSegs(panel, 'memory_files')
+
+    click(spRow)
+    expect(spSegs.classList.contains('hidden')).toBe(false)
+    expect(spRow.children[0].classList.contains('rotate-90')).toBe(true)
+
+    // Opening memory_files closes system_prompt (same layer, at most one).
+    click(memRow)
+    expect(spSegs.classList.contains('hidden')).toBe(true)
+    expect(spRow.children[0].classList.contains('rotate-90')).toBe(false)
+    expect(memSegs.classList.contains('hidden')).toBe(false)
+    expect(memRow.children[0].classList.contains('rotate-90')).toBe(true)
+
+    // Clicking the open category collapses it; nothing stays open.
+    click(memRow)
+    expect(memSegs.classList.contains('hidden')).toBe(true)
+    expect(memRow.children[0].classList.contains('rotate-90')).toBe(false)
+  })
+
+  it('segment bodies show byte-exact text with segment-level mutual exclusion', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    click(catRow(panel, 'system_prompt'))
+
+    const baseRow = segRow(panel, 'base')
+    const otherRow = segRow(panel, 'other')
+    const baseBody = segBody(panel, 'base')
+    const otherBody = segBody(panel, 'other')
+    expect(baseBody.classList.contains('hidden')).toBe(true)
+
+    click(baseRow)
+    expect(baseBody.classList.contains('hidden')).toBe(false)
+    expect(baseBody.textContent).toBe('BASE TEXT')
+
+    click(otherRow)
+    expect(baseBody.classList.contains('hidden')).toBe(true)
+    expect(otherBody.classList.contains('hidden')).toBe(false)
+    expect(otherBody.textContent).toBe('OTHER TEXT')
+
+    click(otherRow)
+    expect(otherBody.classList.contains('hidden')).toBe(true)
+  })
+
+  it('memory segment badges: literal MEMORY.md file badge, none on instructions', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    click(catRow(panel, 'memory_files'))
+    expect(segRow(panel, 'index').textContent).toContain('MEMORY.md')
+    expect(segRow(panel, 'instructions').textContent).not.toContain('MEMORY.md')
+  })
+
+  it('switching category collapses the open segment', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    click(catRow(panel, 'system_prompt'))
+    click(segRow(panel, 'base'))
+    expect(segBody(panel, 'base').classList.contains('hidden')).toBe(false)
+
+    click(catRow(panel, 'memory_files'))
+    expect(segBody(panel, 'base').classList.contains('hidden')).toBe(true)
+    expect(catSegs(panel, 'system_prompt').classList.contains('hidden')).toBe(true)
+  })
+
+  it('degrades: plain categories get no chevron and no segments container', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(accordionBreakdown())
+    clickTrigger()
+    const panel = getPanel()!
+    const free = catRow(panel, 'free_space')
+    expect(free.children[0].className).toBe('w-3.5 shrink-0')
+    click(free)
+    expect(panel.querySelectorAll('[data-testid="ctx-cat-segments"]:not(.hidden)').length).toBe(0)
+  })
+
+  it('degrades: old-server payload without section arrays renders plain rows without crashing', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'System prompt', id: 'system_prompt', tokens: 5000, percentage: 2.5, color: '12', isFree: false, isReserved: false },
+        { name: 'Memory files', id: 'memory_files', tokens: 2000, percentage: 1.0, color: '220', isFree: false, isReserved: false },
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+      ],
+      // systemTools present but every entry lacks text (old server): the
+      // category expands to plain rows, no segment bodies.
+      systemTools: [{ name: 'grep', tokens: 200 }],
+    }))
+    clickTrigger()
+    const panel = getPanel()!
+    for (const cat of ['system_prompt', 'memory_files']) {
+      expect(catRow(panel, cat).children[0].className).toBe('w-3.5 shrink-0')
+    }
+    const toolsRow = catRow(panel, 'system_tools')
+    expect(toolsRow.children[0].classList.contains('transition-transform')).toBe(true)
+    click(toolsRow)
+    const segs = catSegs(panel, 'system_tools')
+    expect(segs.classList.contains('hidden')).toBe(false)
+    const grepRow = segRow(panel, 'grep')
+    expect(grepRow.children[0].className).toBe('w-3.5 shrink-0')
+    expect(segs.querySelectorAll('[data-testid="ctx-segment-body"]').length).toBe(0)
+  })
+
+  it('system tools accordion: retirement of the detail section, neighbors intact', () => {
+    header.setContext(500, 200000)
+    header.setContextBreakdown(sampleBreakdown({
+      categories: [
+        { name: 'System tools', id: 'system_tools', tokens: 200, percentage: 0.1, color: '45', isFree: false, isReserved: false },
+        { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
+      ],
+      systemTools: [{ name: 'grep', tokens: 200, text: 'grep\n\nP\n\n{}' }],
+      mcpToolsLoaded: [{ name: 'search', serverName: 'ddg', tokens: 300, isLoaded: true }],
+      agents: [{ agentType: 'general', source: 'builtin', tokens: 400 }],
+    }))
+    clickTrigger()
+    const panel = getPanel()!
+
+    // Retirement proof: no section heading node titled 'System tools' — the
+    // same text on the category row must not mask the check, so query the
+    // heading class, not textContent absence.
+    const headings: string[] = []
+    for (const el of panel.querySelectorAll('div')) {
+      if (el.className === 'mono text-[11px] text-t3 uppercase tracking-wider') {
+        headings.push(el.textContent ?? '')
+      }
+    }
+    expect(headings).not.toContain('System tools')
+    expect(headings).toContain('MCP tools loaded')
+    expect(headings).toContain('Agents')
+
+    click(catRow(panel, 'system_tools'))
+    expect(catSegs(panel, 'system_tools').classList.contains('hidden')).toBe(false)
+    click(segRow(panel, 'grep'))
+    expect(segBody(panel, 'grep').textContent).toBe('grep\n\nP\n\n{}')
+  })
+
+  it('rebuild after data refresh resets open state', () => {
+    header.setContext(500, 200000)
+    const bd = accordionBreakdown()
+    header.setContextBreakdown(bd)
+    clickTrigger()
+    const panel = getPanel()!
+    click(catRow(panel, 'system_prompt'))
+    click(segRow(panel, 'base'))
+    expect(segBody(panel, 'base').classList.contains('hidden')).toBe(false)
+
+    header.setContextBreakdown(bd)
+    expect(catSegs(panel, 'system_prompt').classList.contains('hidden')).toBe(true)
+    expect(segBody(panel, 'base').classList.contains('hidden')).toBe(true)
   })
 })
 
