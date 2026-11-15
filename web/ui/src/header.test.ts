@@ -451,7 +451,7 @@ describe('Header context popover i18n', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
       categories: [
-        { name: 'Platform info', id: 'platform_info', tokens: 3000, percentage: 1.5, color: '39', isFree: false, isReserved: false },
+        { name: 'System tools', id: 'system_tools', tokens: 3000, percentage: 1.5, color: '45', isFree: false, isReserved: false },
         { name: 'Memory files', id: 'memory_files', tokens: 9500, percentage: 4.8, color: '220', isFree: false, isReserved: false },
         { name: 'Free space', id: 'free_space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
         { name: 'Autocompact buffer', id: 'autocompact_buffer', tokens: 14000, percentage: 7.0, color: '160', isFree: false, isReserved: true },
@@ -459,13 +459,13 @@ describe('Header context popover i18n', () => {
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    expect(text).toContain('平台信息')
+    expect(text).toContain('系统工具')
     // 2026-11-15: the user kept the "记忆文件" label — the bucket holds
     // behavioral instructions + index, but the familiar name won.
     expect(text).toContain('记忆文件')
     expect(text).toContain('剩余空间')
     expect(text).toContain('自动压缩缓冲区')
-    expect(text).not.toContain('Platform info')
+    expect(text).not.toContain('System tools')
     expect(text).not.toContain('Free space')
     expect(text).not.toContain('Autocompact buffer')
   })
@@ -488,19 +488,19 @@ describe('Header context popover i18n', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
       categories: [
-        { name: 'Platform info', id: 'platform_info', tokens: 300, percentage: 0.2, color: '39', isFree: false, isReserved: false },
-        { name: 'Skill listing', id: 'skill_listing', tokens: 1500, percentage: 0.8, color: '208', isFree: false, isReserved: false },
+        { name: 'System tools', id: 'system_tools', tokens: 300, percentage: 0.2, color: '45', isFree: false, isReserved: false },
+        { name: 'MCP tools', id: 'mcp_tools', tokens: 1500, percentage: 0.8, color: '46', isFree: false, isReserved: false },
         { name: 'Free space', tokens: 150000, percentage: 75.0, color: '240', isFree: true, isReserved: false },
       ],
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    // Platform info / skill listing are category rows already; the dedicated
-    // section was their verbatim repeat and is gone.
+    // No dedicated base-prompt section exists: its content rides in the
+    // "System prompt" category row.
     expect(text).not.toContain('基础提示词')
     expect(text).not.toContain('Base prompt')
-    expect(text).toContain('平台信息')
-    expect(text).toContain('技能清单')
+    expect(text).toContain('系统工具')
+    expect(text).toContain('MCP 工具')
   })
 
   it('renders section titles in zh', () => {

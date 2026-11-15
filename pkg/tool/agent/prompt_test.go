@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -127,10 +128,13 @@ func TestAgentPrompt_WithAllowedTypes(t *testing.T) {
 	}
 }
 
-func TestAgentBoilerplatePrompt_ZeroAgentForm(t *testing.T) {
-	bp := AgentBoilerplatePrompt()
+func TestAgentToolPrompt_ZeroAgentForm(t *testing.T) {
+	// The template's degenerate form: empty agent list spliced in. No
+	// production consumer — the registry always fills the list — but the
+	// splice behavior is part of the template contract.
+	bp := fmt.Sprintf(agentToolPrompt, "")
 	if bp == "" {
-		t.Fatal("AgentBoilerplatePrompt should not be empty")
+		t.Fatal("zero-agent prompt should not be empty")
 	}
 	if !strings.Contains(bp, "Launch a new agent") {
 		t.Error("boilerplate should carry the tool instructions")

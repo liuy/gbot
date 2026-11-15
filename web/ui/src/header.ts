@@ -284,12 +284,9 @@ function createDetailRow(name: string, tokens: number): HTMLDivElement {
 const CATEGORY_I18N: Record<string, StaticKey> = {
   system_prompt: 'ctxCatSystemPrompt',
   base_prompt: 'ctxCatBasePrompt',
-  platform_info: 'ctxCatPlatformInfo',
-  skill_listing: 'ctxCatSkillListing',
   memory_files: 'ctxCatMemoryFiles',
   system_tools: 'ctxCatSystemTools',
   mcp_tools: 'ctxCatMcpTools',
-  custom_agents: 'ctxCatCustomAgents',
   messages: 'ctxCatMessages',
   free_space: 'ctxCatFreeSpace',
   autocompact_buffer: 'ctxCatAutocompactBuffer',

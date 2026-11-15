@@ -26,8 +26,7 @@ func buildTestBreakdown() *engine.ContextBreakdown {
 	}
 
 	bd.Categories = []engine.ContextCategory{
-		{Name: "System prompt", Tokens: 8_000, Percentage: 8.3, Color: engine.ColorSystemPrompt},
-		{Name: "Platform info", Tokens: 200, Percentage: 0.2, Color: engine.ColorPlatformInfo},
+		{Name: "System prompt", Tokens: 8_200, Percentage: 8.5, Color: engine.ColorSystemPrompt},
 		{Name: "Memory files", Tokens: 3_000, Percentage: 3.1, Color: engine.ColorMemoryFiles},
 		{Name: "System tools", Tokens: 4_000, Percentage: 4.2, Color: engine.ColorSystemTools},
 		{Name: "MCP tools", Tokens: 2_000, Percentage: 2.1, Color: engine.ColorMCPLoaded},

@@ -168,7 +168,7 @@ func TestContextBreakdown_ReservedAtEnd(t *testing.T) {
 func TestScaleProportionally_BasicMath(t *testing.T) {
 	est := componentEstimates{
 		SystemPromptBase: 1000,
-		PlatformInfo:     500,
+		MemoryFiles:      500,
 		Messages:         2000,
 	}
 	out := scaleProportionally(est, 70_000)
@@ -196,7 +196,7 @@ func TestScaleProportionally_ZeroSum(t *testing.T) {
 func TestScaleProportionally_RoundingReconciliation(t *testing.T) {
 	est := componentEstimates{
 		SystemPromptBase: 333,
-		PlatformInfo:     333,
+		MemoryFiles:      333,
 		Messages:         334,
 	}
 	target := 100
@@ -328,10 +328,8 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	})
 	e.mcpRegistry = reg
 	// stubTool and testTool both feed "System tools": the merged category
-	// bills each built-in's full request entry (name + Prompt + schema), and
-	// the Agent stub contributes its static item (name + boilerplate +
-	// schema) — its per-agent lines are the "Custom agents" category, which
-	// the TestAgent definition's line emits.
+	// bills each built-in's full request entry (name + Prompt + schema),
+	// and the Agent stub contributes exactly that same form.
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
 	e.tools["Read"] = &testTool{name: "Read"}
 	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "Launch a new agent."}
@@ -344,12 +342,9 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 
 	want := map[string]string{
 		"System prompt":      "system_prompt",
-		"Platform info":      "platform_info",
-		"Skill listing":      "skill_listing",
 		"Memory files":       "memory_files",
 		"System tools":       "system_tools",
 		"MCP tools":          "mcp_tools",
-		"Custom agents":      "custom_agents",
 		"Messages":           "messages",
 		"Free space":         "free_space",
 		"Autocompact buffer": "autocompact_buffer",
@@ -372,6 +367,138 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 			t.Errorf("category %q not emitted; its ID mapping is untested", name)
 		}
 	}
+}
+
+// 2026-11-15 category merge: "Platform info" and "Skill listing" fold into
+// "System prompt", "Custom agents" into "System tools". The emitted category
+// list is exactly the six merged categories plus the always-emitted
+// free/reserved slices — with every input source active at once.
+func TestContextBreakdown_MergedCategoriesExactlySix(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	// Memory section pinned into the raw prompt so "Memory files" is nonzero
+	// without disk state.
+	e.SetSystemPrompt("You are a test assistant.\n\n# auto memory\n\nmemory section body")
+	e.SetSkillListing("test-skill: a test")
+	e.SetAgentDefs([]*types.AgentDefinition{
+		{AgentType: "TestAgent", WhenToUse: "test use"},
+	})
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	t.Cleanup(func() { _ = reg.Close() })
+	reg.SetToolsForTest([]mcp.DiscoveredTool{
+		{
+			Name: "mcp__srv__always", OriginalName: "always",
+			ServerName: "srv", Description: "always load",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			AlwaysLoad:  true,
+		},
+	})
+	e.mcpRegistry = reg
+	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "Launch a new agent."}
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hello world"},
+		}},
+	}
+	e.ContextTokens = 50_000
+
+	want := []string{
+		"System prompt", "Memory files", "System tools", "MCP tools",
+		"Messages", "Free space", "Autocompact buffer",
+	}
+	bd := e.ContextBreakdown()
+	var got []string
+	for _, c := range bd.Categories {
+		got = append(got, c.Name)
+		if c.Tokens == 0 {
+			t.Errorf("category %q emitted with zero tokens", c.Name)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("categories = %v\nwant exactly the six merged categories plus free/reserved:\n  %v", got, want)
+	}
+}
+
+// The merged "System prompt" estimate keeps the platform and skills text in
+// the base: with exactly System prompt and Messages nonzero and
+// ContextTokens set to their estimate sum, proportional scaling is the
+// identity, so the category value must equal the expanded-raw estimate
+// (stubs expanded, memory stripped — platform/skills NOT stripped).
+func TestContextBreakdown_SystemPromptIncludesPlatformAndSkills(t *testing.T) {
+	// Memory off and an isolated home pin the stub expansion: no memory
+	// section, DefaultBasePrompt fallback, empty soul.
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	e := newTestEngineForBreakdown(t)
+	t.Setenv("HOME", t.TempDir())
+
+	skillListing := "- merge-alpha — pinned skill line alpha\n- merge-beta — pinned skill line beta"
+	b := context.NewBuilder(e.workingDir)
+	b.ProjectDir = e.projectDir
+	b.SkillListing = skillListing
+	raw := b.Build()
+	e.SetSystemPrompt(raw)
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hello world"},
+		}},
+	}
+
+	wantText := strings.Replace(raw, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
+	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
+	wantBase := e.EstimateTokensCalibrated(wantText)
+	wantMessages := int(math.Ceil(float64(e.EstimateTokensCalibrated("hello world")) * 4.0 / 3.0))
+	e.ContextTokens = wantBase + wantMessages
+
+	bd := e.ContextBreakdown()
+	for _, c := range bd.Categories {
+		switch c.Name {
+		case "System prompt":
+			if c.Tokens != wantBase {
+				t.Errorf("System prompt = %d, want %d (base + platform + skills, stubs expanded; raw alone estimates at %d)",
+					c.Tokens, wantBase, e.EstimateTokensCalibrated(raw))
+			}
+		case "Messages":
+			if c.Tokens != wantMessages {
+				t.Errorf("Messages = %d, want %d (4/3-padded user text)", c.Tokens, wantMessages)
+			}
+		}
+	}
+}
+
+// The merged "System tools" category bills the Agent tool's full request
+// entry — estimateSingleTool, whose Prompt() half naturally carries the
+// per-agent lines — not the zero-agent boilerplate static item.
+func TestContextBreakdown_SystemToolsBillsAgentFullEntry(t *testing.T) {
+	// Memory off keeps the scaled pie at exactly base + tools + messages, so
+	// the category value maps 1:1 to the estimate.
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt("x")
+	agentStub := &stubTool{name: "Agent", prompt: strings.Repeat("agent full prompt body ", 300)}
+	e.tools["Agent"] = agentStub
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hi"},
+		}},
+	}
+
+	wantTools := e.estimateSingleTool(agentStub)
+	wantBase := e.EstimateTokensCalibrated("x")
+	wantMessages := int(math.Ceil(float64(e.EstimateTokensCalibrated("hi")) * 4.0 / 3.0))
+	e.ContextTokens = wantBase + wantTools + wantMessages
+
+	bd := e.ContextBreakdown()
+	for _, c := range bd.Categories {
+		if c.Name == "System tools" {
+			if c.Tokens != wantTools {
+				t.Errorf("System tools = %d, want %d (estimateSingleTool on the Agent stub: full Prompt(), not the boilerplate static item)",
+					c.Tokens, wantTools)
+			}
+			return
+		}
+	}
+	t.Fatal(`"System tools" category not emitted`)
 }
 
 // "Tool prompts" merged into "System tools": the merged category bills each
@@ -985,8 +1112,9 @@ func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
 }
 
 // Agent detail rows share the Agent prompt's own line assembly, so each
-// row's tokens are the FormatAgentLine text (Tools segment included) —
-// the rows plus the boilerplate sum back to the category's estimate.
+// row's tokens are the FormatAgentLine text (Tools segment included). The
+// rows are informational detail; the cost itself sits inside the Agent
+// tool's Prompt() and is billed to "System tools".
 func TestContextBreakdown_AgentDetailRowsUsePromptLines(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
@@ -1062,9 +1190,8 @@ func TestContextBreakdown_BuildDetails_MultipleToolCallsAllKept(t *testing.T) {
 
 func TestEstimateSystemPromptSections_UsesRawSystemPrompt(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
 	raw := strings.Repeat("word ", 500) // ~500 tokens
-	sections := (&Engine{}).estimateSystemPromptSections(raw, "", nil, "", "", tmpDir, "")
+	sections := (&Engine{}).estimateSystemPromptSections(raw, "", nil, "")
 	if sections.base < 400 {
 		t.Errorf("base tokens = %d, want >= 400 (raw systemPrompt has ~500 tokens)", sections.base)
 	}
@@ -1236,16 +1363,19 @@ func TestContextBreakdown_MemoryStripSurvivesDiskEdit(t *testing.T) {
 	}
 
 	// The base estimate must strip v1 out of the raw prompt, so the scaled
-	// pie matches the pie derived from v1 inputs (template base, platform
-	// info, v1 memory) — not the double-counted v2 form.
-	wantBase := e.EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n")
-	wantPlatform := e.EstimateTokensCalibrated(b.RuntimeInfo())
+	// pie matches the pie derived from v1 inputs (template base + platform
+	// info + v1 memory) — not the double-counted v2 form.
+	wantText := strings.Replace(raw, "\n\n"+memPromptV1, "", 1)
+	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
+	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
+	wantBase := e.EstimateTokensCalibrated(wantText)
 	wantScaled := scaleProportionally(componentEstimates{
 		SystemPromptBase: wantBase,
-		PlatformInfo:     wantPlatform,
 		MemoryFiles:      e.EstimateTokensCalibrated(memPromptV1),
 	}, 50_000)
-	for _, name := range []string{"System prompt", "Platform info", "Memory files"} {
+	for _, name := range []string{"System prompt", "Memory files"} {
 		got, ok := categoryByName(bd.Categories, name)
 		if !ok {
 			t.Errorf("category %q missing from the breakdown", name)
@@ -1753,25 +1883,19 @@ func TestBuildCategories_AllCategories(t *testing.T) {
 	t.Parallel()
 	scaled := scaledComponents{
 		"System prompt":  1_000,
-		"Platform info":  900,
-		"Skill listing":  700,
 		"Memory files":   600,
 		"System tools":   500,
 		"MCP tools":      400,
-		"Custom agents":  300,
 		"Messages":       200,
 		"Deferred tools": 100, // never emitted: not part of the scaled map in practice
 	}
 	got := categorySig(buildCategories(scaled, 1_000, 500, 10_000))
 	want := []string{
 		"System prompt|1000|p10.0000|" + ColorSystemPrompt + "|free=false|res=false|system_prompt",
-		"Platform info|900|p9.0000|" + ColorPlatformInfo + "|free=false|res=false|platform_info",
-		"Skill listing|700|p7.0000|" + ColorSkillListing + "|free=false|res=false|skill_listing",
 		"Memory files|600|p6.0000|" + ColorMemoryFiles + "|free=false|res=false|memory_files",
 		"System tools|500|p5.0000|" + ColorSystemTools + "|free=false|res=false|system_tools",
 		"MCP tools|400|p4.0000|" + ColorMCPLoaded + "|free=false|res=false|mcp_tools",
 		"Deferred tools|100|p1.0000|" + ColorMCPDeferred + "|free=false|res=false|",
-		"Custom agents|300|p3.0000|" + ColorAgents + "|free=false|res=false|custom_agents",
 		"Messages|200|p2.0000|" + ColorMessages + "|free=false|res=false|messages",
 		"Free space|1000|p10.0000|" + ColorFree + "|free=true|res=false|free_space",
 		"Autocompact buffer|500|p5.0000|" + ColorReserved + "|free=false|res=true|autocompact_buffer",
@@ -1786,13 +1910,13 @@ func TestBuildCategories_ZeroTokenCategoriesDropped(t *testing.T) {
 	scaled := scaledComponents{
 		"System prompt": 0,
 		"Messages":      0,
-		"Custom agents": 7,
+		"Memory files":  7,
 	}
 	// Free space and the autocompact buffer are emitted even at zero tokens —
 	// the drop rule only applies to ordinary (non-free, non-reserved) slices.
 	got := categorySig(buildCategories(scaled, 0, 0, 100))
 	want := []string{
-		"Custom agents|7|p7.0000|" + ColorAgents + "|free=false|res=false|custom_agents",
+		"Memory files|7|p7.0000|" + ColorMemoryFiles + "|free=false|res=false|memory_files",
 		"Free space|0|p0.0000|" + ColorFree + "|free=true|res=false|free_space",
 		"Autocompact buffer|0|p0.0000|" + ColorReserved + "|free=false|res=true|autocompact_buffer",
 	}
@@ -1807,8 +1931,7 @@ func TestBuildCategories_ZeroTokenCategoriesDropped(t *testing.T) {
 
 func scaledSig(out scaledComponents) []string {
 	names := []string{
-		"System prompt", "Platform info", "Skill listing",
-		"Memory files", "System tools", "MCP tools", "Custom agents", "Messages",
+		"System prompt", "Memory files", "System tools", "MCP tools", "Messages",
 	}
 	sig := make([]string, 0, len(out)+1)
 	for _, n := range names {
@@ -1829,13 +1952,13 @@ func TestScaleProportionally_ExactMap(t *testing.T) {
 	t.Parallel()
 	est := componentEstimates{
 		SystemPromptBase: 1_000,
-		PlatformInfo:     500,
+		MemoryFiles:      500,
 		Messages:         500,
 	}
 	got := scaledSig(scaleProportionally(est, 1_000))
 	want := []string{
-		"System prompt=500", "Platform info=250", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=250",
+		"System prompt=500", "Memory files=250",
+		"System tools=0", "MCP tools=0", "Messages=250",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1846,15 +1969,15 @@ func TestScaleProportionally_NeverDropsNonZeroCategory(t *testing.T) {
 	t.Parallel()
 	est := componentEstimates{
 		SystemPromptBase: 1_000,
-		PlatformInfo:     1,
+		MemoryFiles:      1,
 		Messages:         1_000,
 	}
-	// Platform info scales to 0 but must be raised to 1; the rounding
+	// Memory files scales to 0 but must be raised to 1; the rounding
 	// remainder (-1) is then charged to the largest category.
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=4", "Platform info=1", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=5",
+		"System prompt=4", "Memory files=1",
+		"System tools=0", "MCP tools=0", "Messages=5",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1865,16 +1988,16 @@ func TestScaleProportionally_LargestIsNotFirstCategory(t *testing.T) {
 	t.Parallel()
 	est := componentEstimates{
 		SystemPromptBase: 0,
-		PlatformInfo:     1,
-		SkillListing:     1,
 		MemoryFiles:      1,
+		SystemTools:      1,
+		MCPLoaded:        1,
 	}
 	// The remainder must land on the first category holding the maximum
-	// estimate (Platform info), not on estimates[0].
+	// estimate (Memory files), not on estimates[0].
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=0", "Platform info=4", "Skill listing=3",
-		"Memory files=3", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
+		"System prompt=0", "Memory files=4",
+		"System tools=3", "MCP tools=3", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1885,14 +2008,14 @@ func TestScaleProportionally_TieGoesToFirstMax(t *testing.T) {
 	t.Parallel()
 	est := componentEstimates{
 		SystemPromptBase: 0,
-		PlatformInfo:     4,
-		SkillListing:     4,
+		MemoryFiles:      4,
+		SystemTools:      4,
 	}
 	// Ties resolve to the first maximum: >, not >=.
 	got := scaledSig(scaleProportionally(est, 10))
 	want := []string{
-		"System prompt=0", "Platform info=5", "Skill listing=5",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
+		"System prompt=0", "Memory files=5",
+		"System tools=5", "MCP tools=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1904,8 +2027,8 @@ func TestScaleProportionally_ZeroTargetKeepsRawEstimates(t *testing.T) {
 	est := componentEstimates{SystemPromptBase: 100, Messages: 200}
 	got := scaledSig(scaleProportionally(est, 0))
 	want := []string{
-		"System prompt=100", "Platform info=0", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=200",
+		"System prompt=100", "Memory files=0",
+		"System tools=0", "MCP tools=0", "Messages=200",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1917,8 +2040,8 @@ func TestScaleProportionally_NegativeTargetKeepsRawEstimates(t *testing.T) {
 	est := componentEstimates{SystemPromptBase: 100, Messages: 200}
 	got := scaledSig(scaleProportionally(est, -5))
 	want := []string{
-		"System prompt=100", "Platform info=0", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=200",
+		"System prompt=100", "Memory files=0",
+		"System tools=0", "MCP tools=0", "Messages=200",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1931,8 +2054,8 @@ func TestScaleProportionally_TargetOneScales(t *testing.T) {
 	// target 1 is a real scaling target, not the raw-estimate fallback.
 	got := scaledSig(scaleProportionally(est, 1))
 	want := []string{
-		"System prompt=1", "Platform info=0", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
+		"System prompt=1", "Memory files=0",
+		"System tools=0", "MCP tools=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1947,8 +2070,8 @@ func TestScaleProportionally_ZeroSumEstimateReturnsAllKeys(t *testing.T) {
 	}
 	got := scaledSig(out)
 	want := []string{
-		"System prompt=0", "Platform info=0", "Skill listing=0",
-		"Memory files=0", "System tools=0", "MCP tools=0", "Custom agents=0", "Messages=0",
+		"System prompt=0", "Memory files=0",
+		"System tools=0", "MCP tools=0", "Messages=0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("scaled = %v, want %v", got, want)
@@ -1972,12 +2095,12 @@ func TestEstimateComponents_Exact(t *testing.T) {
 		sysText  = "system role message must be skipped"
 	)
 	est := e.estimateComponents(
-		sysPromptSections{base: 10, platform: 20, skill: 40},
+		sysPromptSections{base: 10},
 		[]context.MemoryFile{
 			{Path: "/m/one.md", Content: "memory one content"},
 			{Path: "/m/two.md", Content: "memory two content"},
 		},
-		nil, nil, nil,
+		nil, nil,
 		[]types.Message{
 			{Role: types.RoleUser,
 				Content:    []types.ContentBlock{types.NewTextBlock(userText)},
@@ -1998,7 +2121,7 @@ func TestEstimateComponents_Exact(t *testing.T) {
 		nil, 0,
 	)
 
-	if est.SystemPromptBase != 10 || est.PlatformInfo != 20 || est.SkillListing != 40 {
+	if est.SystemPromptBase != 10 {
 		t.Errorf("sections not copied: %+v", est)
 	}
 	wantMem := e.EstimateTokensCalibrated("memory one content") + e.EstimateTokensCalibrated("memory two content")
@@ -2028,31 +2151,23 @@ func TestEstimateComponents_Exact(t *testing.T) {
 
 func TestEstimateSystemPromptSections_Exact(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	e := &Engine{}
 	skillListing := "- alpha: first skill\n- beta: second skill"
-	raw := "You are a test assistant with a long system prompt for estimation."
-	got := e.estimateSystemPromptSections(raw, "", nil, "", "", dir, skillListing)
+	// The skills section rides inside the raw prompt; after the merge it is
+	// part of the base, not stripped into its own estimate.
+	raw := "You are a test assistant.\n\n## Available Skills\n\n" + skillListing
+	got := e.estimateSystemPromptSections(raw, "", nil, "")
 
 	wantBase := e.EstimateTokensCalibrated(raw)
-	wantSkill := e.EstimateTokensCalibrated(skillListing)
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d", got.base, wantBase)
 	}
-	if got.skill != wantSkill {
-		t.Errorf("skill = %d, want %d", got.skill, wantSkill)
-	}
-	builder := context.NewBuilder(dir)
-	wantPlatform := e.EstimateTokensCalibrated(builder.RuntimeInfo())
-	if got.platform != wantPlatform {
-		t.Errorf("platform = %d, want %d", got.platform, wantPlatform)
-	}
 }
 
-// The memory, platform and skills sections each carry their own category, so
-// the base estimate must be the raw prompt with those exact Build()-written
-// sections removed — estimating the full raw text counts the ~9.5k memory
-// prompt twice (once as "System prompt", once as "Memory files").
+// The typed-memory section carries its own category, so the base estimate
+// must be the raw prompt with that exact Build()-written section removed —
+// estimating the full raw text counts the memory prompt twice (once as
+// "System prompt", once as "Memory files").
 func TestEstimateSystemPromptSections_StripsCategorizedSections(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	// Isolated home so the {{SYSTEM}}/{{SOUL}} expansion below is
@@ -2078,15 +2193,20 @@ func TestEstimateSystemPromptSections_StripsCategorizedSections(t *testing.T) {
 	b.SkillListing = skillListing
 	raw := b.Build()
 
-	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt, projDir, dir, skillListing)
+	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt)
 
-	// Build writes template + "\n\n{{SOUL}}" before the three categorized
-	// sections, so the stripped remainder is exactly that prefix — with the
-	// request-path stubs expanded ({{SYSTEM}} → DefaultBasePrompt, no
-	// SOUL.md → {{SOUL}} → empty).
-	wantBase := (&Engine{}).EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n")
+	// Base = the raw prompt minus the memory section, with the request-path
+	// stubs expanded ({{SYSTEM}} → DefaultBasePrompt, no SOUL.md → empty).
+	// Platform info and the skills section stay in — they are the merged
+	// category's own bytes now.
+	wantText := strings.Replace(raw, "\n\n"+memPrompt, "", 1)
+	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{MODEL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
+	wantBase := (&Engine{}).EstimateTokensCalibrated(wantText)
 	if got.base != wantBase {
-		t.Errorf("base = %d, want %d (template+SOUL only; the memory/platform/skills sections are double-counted)",
+		t.Errorf("base = %d, want %d (memory section stripped once, platform/skills kept)",
 			got.base, wantBase)
 	}
 }
@@ -2115,35 +2235,29 @@ func TestEstimateSystemPromptSections_StripsOnlyTheBuildWrittenCopy(t *testing.T
 		"\n\n## Available Skills\n\n" + skillListing
 	raw := b.Build() + tail
 
-	got := (&Engine{}).estimateSystemPromptSections(raw, "claude-test", nil, memPrompt, "", dir, skillListing)
+	got := (&Engine{}).estimateSystemPromptSections(raw, "claude-test", nil, memPrompt)
 
-	// The tail's RuntimeInfo copy carries model={{MODEL}} and
-	// modalities={{MODALITIES}}; the expansion replaces them there exactly
-	// as the request path would (first occurrence in the stripped text).
-	wantTail := strings.Replace(tail, "{{MODEL}}", "claude-test", 1)
-	wantTail = strings.Replace(wantTail, "{{MODALITIES}}", "text", 1)
-	wantBase := (&Engine{}).EstimateTokensCalibrated(context.DefaultBasePrompt() + "\n\n" + wantTail)
+	// The strip removes exactly one memory copy (Build's); the tail's copy
+	// stays. Stub expansion replaces first occurrences only, so Build's
+	// RuntimeInfo gets model/modalities expanded while the tail's copy keeps
+	// the literal stubs.
+	wantText := strings.Replace(raw, "\n\n"+memPrompt, "", 1)
+	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
+	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
+	wantBase := (&Engine{}).EstimateTokensCalibrated(wantText)
 	if got.base != wantBase {
-		t.Errorf("base = %d, want %d (Build's copies stripped once, the tail copies kept)", got.base, wantBase)
+		t.Errorf("base = %d, want %d (Build's memory copy stripped once, the tail copy kept)",
+			got.base, wantBase)
 	}
 }
 
 func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("", "", nil, "", "", t.TempDir(), "- skill: x")
+	got := (&Engine{}).estimateSystemPromptSections("", "", nil, "")
 	if got != (sysPromptSections{}) {
 		t.Errorf("sections = %+v, want the zero value when the raw prompt is empty", got)
-	}
-}
-
-func TestEstimateSystemPromptSections_SkillListingEmpty(t *testing.T) {
-	t.Parallel()
-	got := (&Engine{}).estimateSystemPromptSections("prompt text here", "", nil, "", "", t.TempDir(), "")
-	if got.skill != 0 {
-		t.Errorf("skill = %d, want 0 for an empty listing", got.skill)
-	}
-	if got.base == 0 {
-		t.Error("base = 0, want a non-zero estimate for a non-empty prompt")
 	}
 }
 
@@ -2158,7 +2272,7 @@ func TestEstimateSystemPromptSections_ExpandsRequestStubs(t *testing.T) {
 	e := &Engine{}
 
 	raw := "You are {{MODEL}}. {{SYSTEM}}\n\n{{SOUL}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "")
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "")
 
 	wantText := "You are claude-test. " + context.DefaultBasePrompt() + "\n\n"
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -2188,7 +2302,7 @@ func TestEstimateSystemPromptSections_ExpandsSystemAndSoulFiles(t *testing.T) {
 	}
 
 	e := &Engine{}
-	got := e.estimateSystemPromptSections("{{SYSTEM}}\n\n{{SOUL}}", "claude-test", nil, "", "", t.TempDir(), "")
+	got := e.estimateSystemPromptSections("{{SYSTEM}}\n\n{{SOUL}}", "claude-test", nil, "")
 
 	wantText := strings.TrimSpace(systemMd) +
 		"\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" +
@@ -2207,7 +2321,7 @@ func TestEstimateSystemPromptSections_ReplacesOnlyFirstStubOccurrence(t *testing
 	e := &Engine{}
 
 	raw := "A {{MODEL}} B {{SYSTEM}} C {{SOUL}} D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "", "", t.TempDir(), "")
+	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "")
 
 	wantText := "A claude-test B " + context.DefaultBasePrompt() + " C  D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -2225,13 +2339,13 @@ func TestEstimateSystemPromptSections_ExpandsModalitiesStub(t *testing.T) {
 	e := &Engine{}
 
 	raw := "A {{MODALITIES}} B {{MODALITIES}}"
-	got := e.estimateSystemPromptSections(raw, "claude-test", []string{"text", "image"}, "", "", t.TempDir(), "")
+	got := e.estimateSystemPromptSections(raw, "claude-test", []string{"text", "image"}, "")
 	wantBase := e.EstimateTokensCalibrated("A text+image B {{MODALITIES}}")
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d (first {{MODALITIES}} expanded, second literal)", got.base, wantBase)
 	}
 
-	got = e.estimateSystemPromptSections("M={{MODALITIES}}", "claude-test", nil, "", "", t.TempDir(), "")
+	got = e.estimateSystemPromptSections("M={{MODALITIES}}", "claude-test", nil, "")
 	wantBase = e.EstimateTokensCalibrated("M=text")
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d (nil modalities default to text)", got.base, wantBase)
@@ -2252,9 +2366,9 @@ func TestEstimateSystemTools_SkipsDoNotStopTheLoop(t *testing.T) {
 	for _, n := range enabledToolNames {
 		want += e.estimateSingleTool(tools[n])
 	}
-	want += agentStaticTokens(e, tools["Agent"])
+	want += e.estimateSingleTool(tools["Agent"])
 	if got != want {
-		t.Errorf("estimateSystemTools = %d, want %d (enabled built-ins + Agent static item)", got, want)
+		t.Errorf("estimateSystemTools = %d, want %d (enabled built-ins incl. the Agent tool's full entry)", got, want)
 	}
 }
 
@@ -2274,11 +2388,11 @@ func TestEstimateSystemTools_DiscoveredDeferredCounts(t *testing.T) {
 	}
 }
 
-// The Agent tool's System-tools share is its static item — name + schema +
-// the zero-agent boilerplate prompt (AgentBoilerplatePrompt) — never its
-// per-agent lines: a stub whose Prompt() embeds line-shaped text must not
-// leak it into System tools.
-func TestEstimateSystemTools_AgentBilledAsStaticItem(t *testing.T) {
+// The Agent tool's System-tools share is its full request entry — name +
+// Prompt() + schema — exactly like every other built-in. A stub whose
+// Prompt() embeds line-shaped text is billed verbatim: the per-agent lines
+// live inside that Prompt() and belong to this category.
+func TestEstimateSystemTools_AgentBilledAsFullEntry(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 	schema := json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"}}}`)
@@ -2295,11 +2409,9 @@ func TestEstimateSystemTools_AgentBilledAsStaticItem(t *testing.T) {
 		"Bash":  &stubTool{name: "Bash", prompt: "Run a shell command."},
 		"Agent": agentStub,
 	}
-	want := e.estimateSingleTool(tools["Bash"]) +
-		e.EstimateTokensCalibrated("Agent"+agenttool.AgentBoilerplatePrompt()) +
-		e.EstimateTokensCalibrated(string(schema))
+	want := e.estimateSingleTool(tools["Bash"]) + e.estimateSingleTool(agentStub)
 	if got := e.estimateSystemTools(tools, nil, nil); got != want {
-		t.Errorf("estimateSystemTools = %d, want %d (Bash full entry + Agent static item: name+boilerplate+schema, no stub prompt text)",
+		t.Errorf("estimateSystemTools = %d, want %d (Bash full entry + Agent full entry: name+Prompt+schema)",
 			got, want)
 	}
 }
@@ -2384,148 +2496,6 @@ func TestEstimateMCPSchema_AddsSchema(t *testing.T) {
 	want := e.EstimateTokensCalibrated("a tool description") + e.EstimateTokensCalibrated(string(schema))
 	if got := e.estimateMCPSchema("a tool description", schema); got != want {
 		t.Errorf("estimateMCPSchema = %d, want %d", got, want)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// estimateAgents
-// ---------------------------------------------------------------------------
-
-func TestEstimateAgents_Empty(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	want := 0
-	if got := e.estimateAgents(nil, nil); got != want {
-		t.Errorf("estimateAgents(nil, nil) = %d, want %d", got, want)
-	}
-}
-
-// The category is Σ FormatAgentLine estimates over the definitions — the
-// snapshot's Agent tool (its Prompt and schema) never enters, and nil
-// definitions carry no line.
-func TestEstimateAgents_SumsFormatAgentLines(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	defs := []*types.AgentDefinition{
-		nil,
-		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read", "Grep"}},
-		{AgentType: "Beta", WhenToUse: "planning work"},
-	}
-	want := e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[1])) +
-		e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[2]))
-	tools := map[string]tool.Tool{"Agent": agenttool.New()}
-	if got := e.estimateAgents(tools, defs); got != want {
-		t.Errorf("estimateAgents = %d, want %d (Σ FormatAgentLine; nil def skipped)", got, want)
-	}
-}
-
-// No-loss/no-double nail across the split: the Agent tool's static item
-// ("System tools") plus the per-agent lines ("Custom agents") must jointly
-// cover the tool's full request entry (estimateSingleTool on the real tool,
-// whose Prompt() embeds the registry's lines). Equality is not exact — the
-// Join "\n" separators (len(defs)−1 newlines) and the estimator's
-// per-string truncation sit between the split and the whole — but the slack
-// is a handful of tokens, while any structural loss (boilerplate ~1.6k
-// tokens) or double-billing lands far outside the bound.
-func TestAgentSplit_CoversFullRequestEntry(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	tl := agenttool.New()
-	defs := agenttool.ListAgentDefinitions()
-	if len(defs) == 0 {
-		t.Fatal("ListAgentDefinitions returned no definitions; the nail needs the registry's lines")
-	}
-	split := e.estimateSystemTools(map[string]tool.Tool{"Agent": tl}, nil, nil) + e.estimateAgents(map[string]tool.Tool{"Agent": tl}, defs)
-	full := e.estimateSingleTool(tl)
-	bound := 2 * (len(defs) + 1)
-	if d := split - full; d < -bound || d > bound {
-		t.Errorf("static item + lines = %d, full request entry = %d (delta %d outside ±%d — split lost or double-billed the Agent entry)",
-			split, full, d, bound)
-	}
-}
-
-// The category mirrors the request: without an enabled Agent tool the
-// description text — boilerplate or per-agent lines — never ships, so
-// the lines must not count even with definitions registered.
-func TestEstimateAgents_ZeroWithoutAgentToolInRequest(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	defs := []*types.AgentDefinition{{AgentType: "Alpha", WhenToUse: "when alpha"}}
-	want := 0
-	if got := e.estimateAgents(map[string]tool.Tool{}, defs); got != want {
-		t.Errorf("estimateAgents with no Agent tool = %d, want %d", got, want)
-	}
-	disabled := map[string]tool.Tool{"Agent": namedDisabledTool{name: "Agent"}}
-	if got := e.estimateAgents(disabled, defs); got != want {
-		t.Errorf("estimateAgents with disabled Agent tool = %d, want %d", got, want)
-	}
-}
-
-// The "Custom agents" category is the per-agent lines the Agent tool's
-// prompt carries — Σ FormatAgentLine estimates — never the tool's whole
-// request entry: the boilerplate and schema belong to System tools' static
-// Agent item. A fat stub Agent tool proves the category ignores the
-// snapshot's Prompt()/InputSchema entirely.
-func TestEstimateComponents_AgentsCategorySumsFormatAgentLines(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	defs := []*types.AgentDefinition{
-		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read", "Grep"}},
-		nil, // nil defs carry no line
-		{AgentType: "Beta", WhenToUse: "planning work"},
-	}
-	fatSchema := json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"` +
-		strings.Repeat("schema body ", 100) + `"}}}`)
-	agentStub := tool.BuildTool(tool.ToolDef{
-		Name_: "Agent",
-		Prompt_: "Launch a sub-agent. - Alpha: research and reading tasks (Tools: Read, Grep) " +
-			strings.Repeat("agent prompt body ", 200),
-		InputSchema_: func() json.RawMessage { return fatSchema },
-		Description_: func(json.RawMessage) (string, error) { return "", nil },
-		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return &tool.ToolResult{Data: "ok"}, nil
-		},
-	})
-	tools := map[string]tool.Tool{
-		"Agent": agentStub,
-		"Bash":  &stubTool{name: "Bash", prompt: "shell"},
-	}
-	est := e.estimateComponents(sysPromptSections{}, nil, tools, nil, defs, nil, nil, 0)
-	want := 0
-	for _, d := range defs {
-		if d == nil {
-			continue
-		}
-		want += e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d))
-	}
-	if est.Agents != want {
-		t.Errorf("est.Agents = %d, want %d (Σ FormatAgentLine estimates; the stub tool's prompt/schema must not feed the category)",
-			est.Agents, want)
-	}
-}
-
-// The agents detail rows and the "Custom agents" category are one source:
-// the row sum must equal the category estimate exactly.
-func TestEstimateComponents_AgentsRowSumEqualsCategory(t *testing.T) {
-	t.Parallel()
-	e := &Engine{}
-	defs := []*types.AgentDefinition{
-		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read"}},
-		{AgentType: "Beta", WhenToUse: "planning work"},
-	}
-	tools := map[string]tool.Tool{
-		"Agent": &stubTool{name: "Agent", prompt: "agent prompt"},
-		"Bash":  &stubTool{name: "Bash", prompt: "shell"},
-	}
-	est := e.estimateComponents(sysPromptSections{}, nil, tools, nil, defs, nil, nil, 0)
-	ds := e.buildDetails(nil, tools, nil, "", defs, nil, nil)
-	rowSum := 0
-	for _, a := range ds.agents {
-		rowSum += a.Tokens
-	}
-	if rowSum != est.Agents {
-		t.Errorf("Σ agent detail rows = %d, category = %d (one source: both Σ FormatAgentLine)",
-			rowSum, est.Agents)
 	}
 }
 
@@ -2684,20 +2654,10 @@ func contextToolSet() map[string]tool.Tool {
 	for _, n := range []string{"ToolSearch", "PlanSearch", "DocSearch"} {
 		tools[n] = deferredStubTool(n)
 	}
-	// Agent is enabled and non-deferred: System tools bills its static item
-	// (name + zero-agent boilerplate + schema); its per-agent lines belong to
-	// the "Custom agents" category.
+	// Agent is enabled and non-deferred: System tools bills its full request
+	// entry (name + Prompt + schema) like every other built-in.
 	tools["Agent"] = &stubTool{name: "Agent", prompt: "agent boilerplate"}
 	return tools
-}
-
-// agentStaticTokens is the test-side formula for the Agent tool's
-// System-tools static item (name + zero-agent boilerplate prompt + schema),
-// spelled out so the assertions pin the formula rather than echoing a
-// production helper.
-func agentStaticTokens(e *Engine, t tool.Tool) int {
-	return e.EstimateTokensCalibrated(t.Name()+agenttool.AgentBoilerplatePrompt()) +
-		e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
 var enabledToolNames = []string{"Bash", "Grep", "Read", "Lsp"}
@@ -2723,7 +2683,7 @@ func TestBuildDetails_SystemAndDeferredTools(t *testing.T) {
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
-	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", e.estimateSingleTool(tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)
@@ -2738,10 +2698,10 @@ func TestBuildDetails_SystemAndDeferredTools(t *testing.T) {
 	}
 }
 
-// The systemTools partition carries an Agent row billed at the static item:
-// name + zero-agent boilerplate + schema. A stub whose Prompt() is
-// line-shaped text must not feed the row.
-func TestBuildDetails_SystemToolsAgentRowUsesStaticItem(t *testing.T) {
+// The systemTools partition carries an Agent row billed at the full request
+// entry — name + Prompt() + schema — like every other built-in; a stub
+// whose Prompt() is line-shaped text feeds the row verbatim.
+func TestBuildDetails_SystemToolsAgentRowUsesFullEntry(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 	agentStub := &stubTool{name: "Agent", prompt: "- Alpha: stub line (Tools: Read)"}
@@ -2750,9 +2710,9 @@ func TestBuildDetails_SystemToolsAgentRowUsesStaticItem(t *testing.T) {
 	if len(ds.systemTools) != 1 || ds.systemTools[0].Name != "Agent" {
 		t.Fatalf("systemTools = %v, want exactly one Agent row", toolDetailSig(ds.systemTools))
 	}
-	want := agentStaticTokens(e, agentStub)
+	want := e.estimateSingleTool(agentStub)
 	if ds.systemTools[0].Tokens != want {
-		t.Errorf("Agent row tokens = %d, want %d (static item: name+boilerplate+schema; the stub's line-like Prompt must not count)",
+		t.Errorf("Agent row tokens = %d, want %d (full request entry: name+Prompt+schema)",
 			ds.systemTools[0].Tokens, want)
 	}
 }
@@ -2771,7 +2731,7 @@ func TestBuildDetails_DiscoveredDeferredIsSkipped(t *testing.T) {
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
-	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", e.estimateSingleTool(tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)
@@ -2796,7 +2756,7 @@ func TestBuildDetails_NilToolSearchDropsDeferredEntry(t *testing.T) {
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
-	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", e.estimateSingleTool(tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)

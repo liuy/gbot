@@ -51,15 +51,6 @@ func AgentPrompt(allowedAgentTypes []string) string {
 	return result
 }
 
-// AgentBoilerplatePrompt returns the Agent tool prompt's zero-agent form —
-// the template with an empty agent list. AgentPrompt always reads the global
-// registry (built-in agents at minimum), so the pure boilerplate is only
-// reachable through this constructor. /context's System tools category bills
-// this static part separately from the per-agent lines ("Custom agents").
-func AgentBoilerplatePrompt() string {
-	return fmt.Sprintf(agentToolPrompt, "")
-}
-
 // agentPrompt returns the full system prompt contribution for the Agent tool.
 // Source: prompt.ts — getPrompt()
 func agentPrompt() string {
@@ -69,7 +60,7 @@ func agentPrompt() string {
 // FormatAgentLine formats one agent definition as a prompt line.
 // Source: prompt.ts:43-46 — formatAgentLine
 // Exported because /context's agent detail rows estimate from the same
-// line text, keeping the "Custom agents" category and its rows one source.
+// line text that the tool prompt embeds.
 func FormatAgentLine(def *types.AgentDefinition) string {
 	toolsDesc := getToolsDescription(def)
 	return fmt.Sprintf("- %s: %s (Tools: %s)", def.AgentType, def.WhenToUse, toolsDesc)

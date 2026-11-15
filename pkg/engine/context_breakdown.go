@@ -144,13 +144,10 @@ type AttachmentByType struct {
 // CategoryColorPalette — TUI-friendly color names for categories.
 const (
 	ColorSystemPrompt = "12"  // blue
-	ColorPlatformInfo = "39"  // sky blue
-	ColorSkillListing = "201" // magenta
 	ColorMemoryFiles  = "220" // yellow
 	ColorSystemTools  = "45"  // green-cyan
 	ColorMCPLoaded    = "46"  // green
 	ColorMCPDeferred  = "22"  // dark green
-	ColorAgents       = "93"  // purple
 	ColorMessages     = "255" // white
 	ColorFree         = "240" // dim
 	ColorReserved     = "160" // red
@@ -189,7 +186,6 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	// Go's RWMutex forbids recursive RLock (a queued writer between the two
 	// acquisitions would deadlock).
 	workingDir := e.workingDir
-	projectDir := e.projectDir
 	memoryDir := e.memoryDir
 	skillListing := e.skillListing
 	agentDefs := agentDefsClone(e.agentDefs)
@@ -231,7 +227,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 		// (matching Build's own gate).
 		memPrompt = context.FormatMemoryPrompt(workingDir, memoryDir)
 	}
-	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt, projectDir, workingDir, skillListing)
+	sections := e.estimateSystemPromptSections(systemPromptRaw, model, modalities, memPrompt)
 	// The system prompt injects the typed-memory prompt (builder.go), not
 	// every memory file's contents — estimating the full file list here
 	// overstated this bucket ~4x and squeezed the message bucket. No legacy
@@ -252,7 +248,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 
 	estimates := e.estimateComponents(
 		sections, memFiles, toolsSnapshot, toolSearchSnap,
-		agentDefs, messages, mcpReg, reserved,
+		messages, mcpReg, reserved,
 	)
 
 	// Scale categories to sum to the full TotalTokens (API-reported actual
@@ -292,21 +288,18 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 // Per-component estimates
 // -----------------------------------------------------------------------
 
-// sysPromptSections holds pre-computed system prompt section token estimates.
+// sysPromptSections holds the pre-computed system prompt base token estimate.
+// The typed-memory section carries its own "Memory files" category; platform
+// info and the skill listing are part of the base ("System prompt").
 type sysPromptSections struct {
-	base     int
-	platform int
-	skill    int
+	base int
 }
 
 type componentEstimates struct {
 	SystemPromptBase int
-	PlatformInfo     int
-	SkillListing     int
 	MemoryFiles      int
 	SystemTools      int
 	MCPLoaded        int
-	Agents           int
 	Messages         int
 }
 
@@ -315,32 +308,25 @@ func (e *Engine) estimateComponents(
 	memFiles []context.MemoryFile,
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
-	agentDefs []*types.AgentDefinition,
 	messages []types.Message,
 	mcpReg *mcp.Registry,
 	reserved int,
 ) componentEstimates {
 	est := componentEstimates{
 		SystemPromptBase: sections.base,
-		PlatformInfo:     sections.platform,
-		SkillListing:     sections.skill,
 	}
 
 	for _, f := range memFiles {
 		est.MemoryFiles += e.EstimateTokensCalibrated(f.Content)
 	}
 
-	// 3. System tools (built-in, non-MCP; the Agent tool enters as its
-	// static item).
+	// 3. System tools (built-in, non-MCP).
 	est.SystemTools = e.estimateSystemTools(toolsSnapshot, toolSearchSnap, mcpReg)
 
 	// 4. MCP loaded tools.
 	est.MCPLoaded = e.estimateMCPLoadedTools(mcpReg)
 
-	// 5. Custom agents.
-	est.Agents = e.estimateAgents(toolsSnapshot, agentDefs)
-
-	// 6. Messages (breakdown + total).
+	// 5. Messages (breakdown + total).
 	total := 0
 	for i := range messages {
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
@@ -362,55 +348,33 @@ func (e *Engine) estimateComponents(
 	return est
 }
 
-// estimateSystemPromptSections returns per-section token estimates.
+// estimateSystemPromptSections returns the base system prompt token estimate.
 // Source: analyzeContext.ts:289-298 — countSystemPromptSections
 func (e *Engine) estimateSystemPromptSections(
 	systemPromptRaw string,
 	model string,
 	modalities []string,
 	memPrompt string,
-	projectDir string,
-	workingDir string,
-	skillListing string,
 ) sysPromptSections {
 	if systemPromptRaw == "" {
 		return sysPromptSections{}
 	}
 
-	// The platform section needs the Builder's RuntimeInfo; every other
-	// section is estimated from its parameter directly (skill listing,
-	// memory files), so no other Builder state is set here. ProjectDir must
-	// match the Builder that produced the raw prompt: RuntimeInfo omits the
-	// projectspace line and the workspace/artifacts bullets without it, and
-	// the strip below then fails to match.
-	builder := context.NewBuilder(workingDir)
-	builder.ProjectDir = projectDir
-	platformStr := builder.RuntimeInfo()
-	platform := e.EstimateTokensCalibrated(platformStr)
-
-	// The memory, platform and skills sections carry their own categories,
-	// so the base estimate strips their exact Build()-written spellings out
-	// of the raw prompt first — estimating the full raw text counted the
-	// same bytes twice (the ~9.5k memory section made "System prompt" 97%
-	// memory). The remainder keeps the template + SOUL + runtime additions
-	// a fresh Builder cannot reconstruct, which is why the estimate starts
-	// from the raw prompt at all.
+	// The typed-memory section carries its own category, so the base estimate
+	// strips its exact Build()-written spelling out of the raw prompt first —
+	// estimating the full raw text counts the same bytes twice (once as
+	// "System prompt", once as "Memory files"). The remainder keeps the
+	// template + SOUL + platform info + skills + runtime additions, which is
+	// what the merged "System prompt" category bills.
 	stripped := systemPromptRaw
-	stripped = strings.Replace(stripped, platformStr, "", 1)
 	if memPrompt != "" {
 		stripped = strings.Replace(stripped, "\n\n"+memPrompt, "", 1)
-	}
-	if skillListing != "" {
-		stripped = strings.Replace(stripped, "\n\n## Available Skills\n\n"+skillListing, "", 1)
 	}
 
 	// The request path (engine.go callLLM) hot-expands {{SYSTEM}}/{{SOUL}}/
 	// {{MODEL}} before the prompt reaches the API; estimating the stub form
-	// left those thousands of tokens invisible to every category, which
-	// scaleProportionally then smeared into the other buckets. Expansion
-	// runs after the strip above: the strip spellings are Build()'s stub
-	// forms (RuntimeInfo carries model={{MODEL}}), and the {{MODEL}} inside
-	// the platform section is that category's own estimate, not base's.
+	// leaves those thousands of tokens invisible to every category, which
+	// scaleProportionally then smears into the other buckets.
 	systemText, _ := context.LoadSystemFile()
 	if systemText == "" {
 		systemText = context.DefaultBasePrompt()
@@ -428,19 +392,14 @@ func (e *Engine) estimateSystemPromptSections(
 	}
 	stripped = strings.Replace(stripped, "{{MODALITIES}}", strings.Join(modalities, "+"), 1)
 
-	base := e.EstimateTokensCalibrated(stripped)
-
-	skill := 0
-	if skillListing != "" {
-		skill = e.EstimateTokensCalibrated(skillListing)
-	}
-
-	return sysPromptSections{base: base, platform: platform, skill: skill}
+	return sysPromptSections{base: e.EstimateTokensCalibrated(stripped)}
 }
 
-// excluding deferred-undiscovered tools and MCP tools. The Agent tool
-// contributes only its static item — name + zero-agent boilerplate prompt +
-// schema; its per-agent lines are the "Custom agents" category's estimate.
+// estimateSystemTools sums the request entries (name + prompt + input schema
+// JSON) of enabled built-in tools, excluding deferred-undiscovered tools and
+// MCP tools. The Agent tool is a built-in like any other: estimateSingleTool
+// bills its full request form, whose Prompt() half carries the per-agent
+// lines.
 func (e *Engine) estimateSystemTools(
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
@@ -452,10 +411,6 @@ func (e *Engine) estimateSystemTools(
 			continue
 		}
 		if isMCPToolName(name) {
-			continue
-		}
-		if name == "Agent" {
-			total += e.estimateAgentToolStatic(t)
 			continue
 		}
 		if tool.IsDeferred(t) && toolSearchSnap != nil && !toolSearchSnap.IsDiscovered(name) {
@@ -500,40 +455,8 @@ func (e *Engine) estimateSingleTool(t tool.Tool) int {
 	return e.EstimateTokensCalibrated(t.Name()+t.Prompt()) + e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
-// estimateAgentToolStatic is estimateSingleTool's Agent variant: the prompt
-// half is the zero-agent boilerplate (AgentBoilerplatePrompt), not the
-// tool's live Prompt() — the per-agent lines inside the live prompt are
-// billed line-by-line to the "Custom agents" category, and counting them
-// here too would double-bill every definition.
-func (e *Engine) estimateAgentToolStatic(t tool.Tool) int {
-	return e.EstimateTokensCalibrated(t.Name()+agenttool.AgentBoilerplatePrompt()) +
-		e.EstimateTokensCalibrated(string(t.InputSchema()))
-}
-
 func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
 	return e.EstimateTokensCalibrated(desc) + e.EstimateTokensCalibrated(string(schema))
-}
-
-// estimateAgents returns the per-agent lines the Agent tool's prompt
-// carries in the parent request — Σ FormatAgentLine estimates, one per
-// definition. Sub-agent system prompts only enter the sub-agent's own
-// request, and the tool's own boilerplate and schema are System tools'
-// static Agent item, so this category is exactly the lines and nothing
-// else. buildDetails' agent rows estimate the same lines, so the row sum
-// equals this category exactly. No enabled Agent tool in the snapshot
-// means the lines never ship — zero, mirroring the request.
-func (e *Engine) estimateAgents(toolsSnapshot map[string]tool.Tool, agentDefs []*types.AgentDefinition) int {
-	if t, ok := toolsSnapshot["Agent"]; !ok || !t.IsEnabled() {
-		return 0
-	}
-	total := 0
-	for _, d := range agentDefs {
-		if d == nil {
-			continue
-		}
-		total += e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d))
-	}
-	return total
 }
 
 func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
@@ -722,12 +645,9 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 		value int
 	}{
 		{"System prompt", est.SystemPromptBase},
-		{"Platform info", est.PlatformInfo},
-		{"Skill listing", est.SkillListing},
 		{"Memory files", est.MemoryFiles},
 		{"System tools", est.SystemTools},
 		{"MCP tools", est.MCPLoaded},
-		{"Custom agents", est.Agents},
 		{"Messages", est.Messages},
 	}
 
@@ -777,13 +697,10 @@ func scaleProportionally(est componentEstimates, target int) scaledComponents {
 
 var categoryOrder = []string{
 	"System prompt",
-	"Platform info",
-	"Skill listing",
 	"Memory files",
 	"System tools",
 	"MCP tools",
 	"Deferred tools",
-	"Custom agents",
 	"Messages",
 	"Free space",
 	"Autocompact buffer",
@@ -791,13 +708,10 @@ var categoryOrder = []string{
 
 var categoryColors = map[string]string{
 	"System prompt":      ColorSystemPrompt,
-	"Platform info":      ColorPlatformInfo,
-	"Skill listing":      ColorSkillListing,
 	"Memory files":       ColorMemoryFiles,
 	"System tools":       ColorSystemTools,
 	"MCP tools":          ColorMCPLoaded,
 	"Deferred tools":     ColorMCPDeferred,
-	"Custom agents":      ColorAgents,
 	"Messages":           ColorMessages,
 	"Free space":         ColorFree,
 	"Autocompact buffer": ColorReserved,
@@ -808,12 +722,9 @@ var categoryColors = map[string]string{
 // present in the scaled map, which never contains it.
 var categoryIDs = map[string]string{
 	"System prompt":      "system_prompt",
-	"Platform info":      "platform_info",
-	"Skill listing":      "skill_listing",
 	"Memory files":       "memory_files",
 	"System tools":       "system_tools",
 	"MCP tools":          "mcp_tools",
-	"Custom agents":      "custom_agents",
 	"Messages":           "messages",
 	"Free space":         "free_space",
 	"Autocompact buffer": "autocompact_buffer",
@@ -1030,22 +941,14 @@ func (e *Engine) buildDetails(
 		})
 	}
 
-	// System tools (per-tool) and deferred built-in tools. The Agent tool's
-	// row carries its static item (name + zero-agent boilerplate + schema)
-	// on the same basis as the "System tools" category; its per-agent lines
-	// are the "Custom agents" rows below.
+	// System tools (per-tool) and deferred built-in tools. The Agent tool is
+	// billed like every other built-in — its full request entry, whose
+	// Prompt() half carries the per-agent lines.
 	for name, t := range toolsSnapshot {
 		if !t.IsEnabled() {
 			continue
 		}
 		if isMCPToolName(name) {
-			continue
-		}
-		if name == "Agent" {
-			ds.systemTools = append(ds.systemTools, SystemToolDetail{
-				Name:   name,
-				Tokens: e.estimateAgentToolStatic(t),
-			})
 			continue
 		}
 		if tool.IsDeferred(t) {
@@ -1086,9 +989,10 @@ func (e *Engine) buildDetails(
 		}
 	}
 
-	// Agents. Rows and the "Custom agents" category are one source: both
-	// estimate the same FormatAgentLine text per definition, so the row sum
-	// equals the category exactly.
+	// Agents. The rows are informational detail: each row estimates the
+	// definition's FormatAgentLine text, the same lines the Agent tool's
+	// Prompt() embeds — that cost sits inside the "System tools" category
+	// via the Agent tool's request entry, not in a category of its own.
 	for _, d := range agentDefs {
 		if d == nil {
 			continue
