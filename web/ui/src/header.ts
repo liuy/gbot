@@ -476,15 +476,15 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
         const segKey = SEGMENT_I18N[seg.id]
         segName.textContent = segKey !== undefined ? t(segKey) : seg.id
         segRow.appendChild(segName)
-        const segTok = createElement('span', 'mono text-[12px] text-t3')
-        segTok.textContent = formatTokenCount(seg.tokens)
-        segRow.appendChild(segTok)
         const badge = sourceBadge(seg.source)
         if (badge !== null) {
           const b = createElement('span', 'text-[10px] text-t3 border border-hairline rounded px-1 shrink-0')
           b.textContent = badge
           segRow.appendChild(b)
         }
+        const segTok = createElement('span', 'mono text-[12px] text-t3')
+        segTok.textContent = formatTokenCount(seg.tokens)
+        segRow.appendChild(segTok)
         segWrap.appendChild(segRow)
         if (hasBody) {
           const body = createElement(
