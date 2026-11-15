@@ -103,7 +103,6 @@ function sampleBreakdown(overrides: Partial<ContextBreakdownData> = {}): Context
     agents: [],
     skills: [],
     messageBreakdown: null,
-    apiUsage: null,
     ...overrides,
   }
 }
@@ -504,7 +503,7 @@ describe('Header context popover i18n', () => {
     expect(text).toContain('技能清单')
   })
 
-  it('renders section titles and API usage rows in zh', () => {
+  it('renders section titles in zh', () => {
     header.setContext(500, 200000)
     header.setContextBreakdown(sampleBreakdown({
       systemTools: [{ name: 'grep', tokens: 200 }],
@@ -512,28 +511,14 @@ describe('Header context popover i18n', () => {
       mcpToolsDeferred: [{ name: 'fetch', serverName: 'ddg', tokens: 0, isLoaded: false }],
       agents: [{ agentType: 'general', source: 'builtin', tokens: 400 }],
       skills: [{ name: 'pdf', source: 'builtin', tokens: 500 }],
-      apiUsage: {
-        inputTokens: 1000,
-        outputTokens: 2000,
-        cacheCreationInputTokens: 300,
-        cacheReadInputTokens: 400,
-      },
     }))
     clickTrigger()
     const text = getPanel()!.textContent ?? ''
-    // The memory-files section is gone: it is always one row (MEMORY.md)
-    // whose tokens are the "Memory files" category row verbatim.
-    expect(text).not.toContain('MEMORY.md')
     expect(text).toContain('系统工具')
     expect(text).toContain('已加载 MCP 工具')
     expect(text).toContain('延迟加载 MCP 工具')
     expect(text).toContain('子代理')
     expect(text).toContain('技能')
-    expect(text).toContain('API 用量')
-    expect(text).toContain('输入')
-    expect(text).toContain('输出')
-    expect(text).toContain('缓存创建')
-    expect(text).toContain('缓存读取')
   })
 })
 

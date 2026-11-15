@@ -706,62 +706,6 @@ func TestUpsertToolCall_UpdateExisting(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// lastAPIUsage tests
-// ---------------------------------------------------------------------------
-
-func TestLastAPIUsage_EmptyMessages(t *testing.T) {
-	t.Parallel()
-	if got := lastAPIUsage(nil); got != nil {
-		t.Error("expected nil for nil messages")
-	}
-	if got := lastAPIUsage([]types.Message{}); got != nil {
-		t.Error("expected nil for empty messages")
-	}
-}
-
-func TestLastAPIUsage_ZeroUsageSkipped(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Usage: &types.Usage{}},
-	}
-	if got := lastAPIUsage(msgs); got != nil {
-		t.Error("expected nil when all usage fields are zero")
-	}
-}
-
-func TestLastAPIUsage_ReturnsLast(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 100, OutputTokens: 50}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("ok")}},
-		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 200, OutputTokens: 80, CacheCreationInputTokens: 10}},
-	}
-	got := lastAPIUsage(msgs)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-	if got.InputTokens != 200 {
-		t.Errorf("InputTokens = %d, want 200", got.InputTokens)
-	}
-	if got.OutputTokens != 80 {
-		t.Errorf("OutputTokens = %d, want 80", got.OutputTokens)
-	}
-	if got.CacheCreationInputTokens != 10 {
-		t.Errorf("CacheCreationInputTokens = %d, want 10", got.CacheCreationInputTokens)
-	}
-}
-
-func TestLastAPIUsage_NoAssistantMessages(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
-	}
-	if got := lastAPIUsage(msgs); got != nil {
-		t.Error("expected nil when no assistant messages")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // tokenCountForBlock tests
 // ---------------------------------------------------------------------------
 
@@ -3043,13 +2987,6 @@ func TestContextBreakdown_FieldWiring(t *testing.T) {
 	if !bd.IsAutoCompact {
 		t.Error("IsAutoCompact = false, want true for a positive context window")
 	}
-	if bd.APIUsage == nil {
-		t.Fatal("APIUsage is nil")
-	}
-	wantUsage := APIUsageSnapshot{InputTokens: 1234, OutputTokens: 567, CacheCreationInputTokens: 89, CacheReadInputTokens: 1011}
-	if *bd.APIUsage != wantUsage {
-		t.Errorf("APIUsage = %+v, want %+v", *bd.APIUsage, wantUsage)
-	}
 	if got := toolDetailSig(bd.SystemTools); !slices.Equal(got,
 		[]string{fmt.Sprintf("Bash=%d", e.estimateSingleTool(e.tools["Bash"]))}) {
 		t.Errorf("SystemTools = %v, want only Bash", got)
@@ -3168,86 +3105,6 @@ func TestComputeReservedTokens_SmallWindow(t *testing.T) {
 	}
 	if got := computeReservedTokens(-5, 0); got != 0 {
 		t.Errorf("computeReservedTokens(-5) = %d, want 0", got)
-	}
-}
-
-func TestLastAPIUsage_SkipsNonAssistantAndZeroUsage(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 10, OutputTokens: 1}},
-		{Role: types.RoleAssistant, Usage: &types.Usage{CacheReadInputTokens: 7}},
-		{Role: types.RoleAssistant, Usage: &types.Usage{}},
-	}
-	got := lastAPIUsage(msgs)
-	want := APIUsageSnapshot{CacheReadInputTokens: 7}
-	if got == nil {
-		t.Fatalf("lastAPIUsage = nil, want %+v", want)
-	}
-	if *got != want {
-		t.Errorf("lastAPIUsage = %+v, want %+v", *got, want)
-	}
-}
-
-func TestLastAPIUsage_IgnoresNonAssistantUsage(t *testing.T) {
-	t.Parallel()
-	// A trailing user message carries usage data; only assistant messages may
-	// answer the API-usage query.
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 42}},
-		{Role: types.RoleUser, Usage: &types.Usage{InputTokens: 999, OutputTokens: 999}},
-	}
-	got := lastAPIUsage(msgs)
-	if got == nil {
-		t.Fatal("lastAPIUsage = nil, want the assistant usage")
-	}
-	if *got != (APIUsageSnapshot{InputTokens: 42}) {
-		t.Errorf("lastAPIUsage = %+v, want InputTokens 42", *got)
-	}
-}
-
-func TestLastAPIUsage_AnySingleNonZeroFieldCounts(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		want APIUsageSnapshot
-	}{
-		{"input", APIUsageSnapshot{InputTokens: 8}},
-		{"output", APIUsageSnapshot{OutputTokens: 5}},
-		{"cache creation", APIUsageSnapshot{CacheCreationInputTokens: 6}},
-		{"cache read", APIUsageSnapshot{CacheReadInputTokens: 7}},
-	} {
-		msgs := []types.Message{
-			{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 42}},
-			{Role: types.RoleAssistant, Usage: &types.Usage{
-				InputTokens:              tc.want.InputTokens,
-				OutputTokens:             tc.want.OutputTokens,
-				CacheCreationInputTokens: tc.want.CacheCreationInputTokens,
-				CacheReadInputTokens:     tc.want.CacheReadInputTokens,
-			}},
-		}
-		got := lastAPIUsage(msgs)
-		if got == nil {
-			t.Errorf("%s: lastAPIUsage = nil, want %+v", tc.name, tc.want)
-			continue
-		}
-		if *got != tc.want {
-			t.Errorf("%s: lastAPIUsage = %+v, want %+v", tc.name, *got, tc.want)
-		}
-	}
-}
-
-func TestLastAPIUsage_ToleratesNilUsage(t *testing.T) {
-	t.Parallel()
-	msgs := []types.Message{
-		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 42}},
-		{Role: types.RoleAssistant},
-	}
-	got := lastAPIUsage(msgs)
-	if got == nil {
-		t.Fatal("lastAPIUsage = nil, want the earlier assistant usage")
-	}
-	if *got != (APIUsageSnapshot{InputTokens: 42}) {
-		t.Errorf("lastAPIUsage = %+v, want InputTokens 42", *got)
 	}
 }
 

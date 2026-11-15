@@ -25,7 +25,6 @@ type contextBreakdownOutbound struct {
 	Agents               []agentDetailWire      `json:"agents"`
 	Skills               []skillDetailWire      `json:"skills"`
 	MessageBreakdown     *messageBreakdownWire  `json:"messageBreakdown"`
-	APIUsage             *apiUsageSnapshotWire  `json:"apiUsage"`
 }
 
 type contextCategoryWire struct {
@@ -86,13 +85,6 @@ type toolCallByTypeWire struct {
 type attachmentByTypeWire struct {
 	Name   string `json:"name"`
 	Tokens int    `json:"tokens"`
-}
-
-type apiUsageSnapshotWire struct {
-	InputTokens              int `json:"inputTokens"`
-	OutputTokens             int `json:"outputTokens"`
-	CacheCreationInputTokens int `json:"cacheCreationInputTokens"`
-	CacheReadInputTokens     int `json:"cacheReadInputTokens"`
 }
 
 func convertMCPTools(in []engine.MCPToolDetail) []mcpToolDetailWire {
@@ -183,18 +175,6 @@ func convertMessageBreakdown(mb *engine.MessageBreakdown) *messageBreakdownWire 
 	}
 }
 
-func convertAPIUsage(u *engine.APIUsageSnapshot) *apiUsageSnapshotWire {
-	if u == nil {
-		return nil
-	}
-	return &apiUsageSnapshotWire{
-		InputTokens:              u.InputTokens,
-		OutputTokens:             u.OutputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		CacheReadInputTokens:     u.CacheReadInputTokens,
-	}
-}
-
 func buildContextBreakdown(bd *engine.ContextBreakdown) []byte {
 	if bd == nil || bd.TotalTokens == 0 {
 		payload, _ := json.Marshal(struct {
@@ -220,7 +200,6 @@ func buildContextBreakdown(bd *engine.ContextBreakdown) []byte {
 		Agents:               convertAgents(bd.Agents),
 		Skills:               convertSkills(bd.Skills),
 		MessageBreakdown:     convertMessageBreakdown(bd.MessageBreakdown),
-		APIUsage:             convertAPIUsage(bd.APIUsage),
 	}
 
 	payload, err := json.Marshal(out)

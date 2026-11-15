@@ -446,15 +446,6 @@ function renderBreakdownContent(panel: HTMLDivElement, data: ContextBreakdownDat
       panel.appendChild(createDetailRow(s.name + ' (' + s.source + ')', s.tokens))
     }
   }
-
-  if (data.apiUsage) {
-    const sec = createSection(t('ctxApiUsage'))
-    panel.appendChild(sec)
-    panel.appendChild(createDetailRow(t('ctxInput'), data.apiUsage.inputTokens))
-    panel.appendChild(createDetailRow(t('ctxOutput'), data.apiUsage.outputTokens))
-    panel.appendChild(createDetailRow(t('ctxCacheCreation'), data.apiUsage.cacheCreationInputTokens))
-    panel.appendChild(createDetailRow(t('ctxCacheRead'), data.apiUsage.cacheReadInputTokens))
-  }
 }
 
 function createContextPopover(onRequest: () => void, onCompact?: () => void): {

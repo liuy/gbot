@@ -6804,7 +6804,7 @@ describe('chat mutation kills: header and input wiring', () => {
       model: 'm', contextWindow: 500000, totalTokens: 5000, percentage: 1, isAutoCompact: false,
       categories: [], mcpToolsLoaded: [], mcpToolsDeferred: [], deferredBuiltinTools: [],
       systemTools: [], agents: [], skills: [],
-      messageBreakdown: null, apiUsage: null,
+      messageBreakdown: null,
     })
     trigger.click() // close (open from the first click)
     trigger.click() // reopen with data
@@ -6830,7 +6830,7 @@ describe('chat mutation kills: header and input wiring', () => {
       model: 'm', contextWindow: 500000, totalTokens: 0, percentage: 0, isAutoCompact: false,
       categories: [], mcpToolsLoaded: [], mcpToolsDeferred: [], deferredBuiltinTools: [],
       systemTools: [], agents: [], skills: [],
-      messageBreakdown: null, apiUsage: null,
+      messageBreakdown: null,
     })
     const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLButtonElement
     trigger.click()

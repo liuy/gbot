@@ -12,7 +12,6 @@ import (
 	"maps"
 	"math"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -48,7 +47,6 @@ type ContextBreakdown struct {
 	Agents               []AgentDetail
 	Skills               []SkillDetail
 	MessageBreakdown     *MessageBreakdown
-	APIUsage             *APIUsageSnapshot
 }
 
 // ContextCategory is one slice of the context pie.
@@ -141,15 +139,6 @@ type ToolCallByType struct {
 type AttachmentByType struct {
 	Name   string
 	Tokens int
-}
-
-// APIUsageSnapshot is the last API response usage for display.
-// Source: analyzeContext.ts:200-205
-type APIUsageSnapshot struct {
-	InputTokens              int
-	OutputTokens             int
-	CacheCreationInputTokens int
-	CacheReadInputTokens     int
 }
 
 // CategoryColorPalette — TUI-friendly color names for categories.
@@ -293,7 +282,6 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	breakdown.Agents = detailSlices.agents
 	breakdown.Skills = detailSlices.skills
 	breakdown.MessageBreakdown = detailSlices.messageBreakdown
-	breakdown.APIUsage = lastAPIUsage(messages)
 	breakdown.IsAutoCompact = contextWindow > 0
 	breakdown.Percentage = min(safePct(totalExact, contextWindow), 100.0)
 
@@ -1204,25 +1192,6 @@ func computeReservedTokens(contextWindow, maxTokens int) int {
 	// 7% of effective window, min 3K. Source: autoCompactBuffer.
 	buf := max(contextWindow*7/100, 3000)
 	return buf
-}
-
-func lastAPIUsage(messages []types.Message) *APIUsageSnapshot {
-	for _, message := range slices.Backward(messages) {
-		if message.Role == types.RoleAssistant && message.Usage != nil {
-			u := message.Usage
-			if u.InputTokens == 0 && u.OutputTokens == 0 &&
-				u.CacheCreationInputTokens == 0 && u.CacheReadInputTokens == 0 {
-				continue
-			}
-			return &APIUsageSnapshot{
-				InputTokens:              u.InputTokens,
-				OutputTokens:             u.OutputTokens,
-				CacheCreationInputTokens: u.CacheCreationInputTokens,
-				CacheReadInputTokens:     u.CacheReadInputTokens,
-			}
-		}
-	}
-	return nil
 }
 
 func safePct(part, whole int) float64 {

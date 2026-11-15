@@ -80,13 +80,6 @@ func buildTestBreakdown() *engine.ContextBreakdown {
 		},
 	}
 
-	bd.APIUsage = &engine.APIUsageSnapshot{
-		InputTokens:              90_000,
-		OutputTokens:             6_400,
-		CacheCreationInputTokens: 0,
-		CacheReadInputTokens:     0,
-	}
-
 	return bd
 }
 

@@ -89,17 +89,13 @@ export type MessageBreakdownData = {
   toolCallsByType: { name: string; callTokens: number; resultTokens: number }[]
   attachmentsByType: { name: string; tokens: number }[]
 }
-export type APIUsageData = {
-  inputTokens: number; outputTokens: number
-  cacheCreationInputTokens: number; cacheReadInputTokens: number
-}
 export type ContextBreakdownData = {
   model: string; contextWindow: number; totalTokens: number; percentage: number
   isAutoCompact: boolean; categories: ContextCategoryData[]
   mcpToolsLoaded: MCPToolDetailData[]; mcpToolsDeferred: MCPToolDetailData[]
   deferredBuiltinTools: SystemToolDetailData[]; systemTools: SystemToolDetailData[]
   agents: AgentDetailData[]; skills: SkillDetailData[]
-  messageBreakdown: MessageBreakdownData | null; apiUsage: APIUsageData | null
+  messageBreakdown: MessageBreakdownData | null
 }
 
 export type TaskWireItem = {

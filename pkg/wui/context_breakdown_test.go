@@ -208,12 +208,6 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 				{Name: "file", Tokens: 500},
 			},
 		},
-		APIUsage: &engine.APIUsageSnapshot{
-			InputTokens:              70000,
-			OutputTokens:             2000,
-			CacheCreationInputTokens: 5000,
-			CacheReadInputTokens:     60000,
-		},
 	}
 	c.mock().contextBreakdownFn = func() *engine.ContextBreakdown { return bd }
 
@@ -269,13 +263,8 @@ func TestContextBreakdownWire_AllFields(t *testing.T) {
 	if sk0["name"] != "commit" {
 		t.Errorf("sk0 name = %v", sk0["name"])
 	}
-
-	api, ok := msg["apiUsage"].(map[string]any)
-	if !ok {
-		t.Fatalf("apiUsage missing")
-	}
-	if api["inputTokens"] != float64(70000) {
-		t.Errorf("apiUsage inputTokens = %v, want 70000", api["inputTokens"])
+	if _, present := msg["apiUsage"]; present {
+		t.Fatal("apiUsage still on the wire")
 	}
 
 	mb, ok := msg["messageBreakdown"].(map[string]any)
@@ -430,17 +419,6 @@ func TestConvertersCopyEveryField(t *testing.T) {
 	}
 	if len(mb.AttachmentsByType) != 1 || mb.AttachmentsByType[0].Name != "file" || mb.AttachmentsByType[0].Tokens != 500 {
 		t.Errorf("attachmentsByType = %+v, want name and tokens", mb.AttachmentsByType)
-	}
-
-	api := convertAPIUsage(&engine.APIUsageSnapshot{
-		InputTokens: 70000, OutputTokens: 2000,
-		CacheCreationInputTokens: 5000, CacheReadInputTokens: 60000,
-	})
-	if api == nil {
-		t.Fatal("apiUsage = nil, want populated")
-	}
-	if api.OutputTokens != 2000 || api.CacheCreationInputTokens != 5000 || api.CacheReadInputTokens != 60000 {
-		t.Errorf("apiUsage = %+v, want output/cache fields copied", api)
 	}
 }
 
