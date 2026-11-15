@@ -4,4 +4,4 @@ package proc
 
 import "os/exec"
 
-func hideWindowWindows(cmd *exec.Cmd) {}
+func hideWindow(cmd *exec.Cmd) {}

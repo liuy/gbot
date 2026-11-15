@@ -5,9 +5,9 @@ import (
 	"syscall"
 )
 
-// hideWindowWindows sets CREATE_NO_WINDOW on the command's SysProcAttr
+// hideWindow sets CREATE_NO_WINDOW on the command's SysProcAttr
 // so child processes don't flash a console window.
-func hideWindowWindows(cmd *exec.Cmd) {
+func hideWindow(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
