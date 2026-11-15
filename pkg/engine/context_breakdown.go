@@ -342,14 +342,15 @@ func (e *Engine) estimateComponents(
 		est.MemoryFiles += e.EstimateTokensCalibrated(f.Content)
 	}
 
-	// 3. System tools (built-in, non-deferred, non-MCP, non-Agent).
+	// 3. System tools (built-in, non-MCP; the Agent tool enters as its
+	// static item).
 	est.SystemTools = e.estimateSystemTools(toolsSnapshot, toolSearchSnap, mcpReg)
 
 	// 4. MCP loaded tools.
 	est.MCPLoaded = e.estimateMCPLoadedTools(mcpReg)
 
 	// 5. Custom agents.
-	est.Agents = e.estimateAgents(toolsSnapshot)
+	est.Agents = e.estimateAgents(agentDefs)
 
 	// 6. Messages (breakdown + total).
 	total := 0
@@ -449,8 +450,9 @@ func (e *Engine) estimateSystemPromptSections(
 	return sysPromptSections{base: base, platform: platform, skill: skill}
 }
 
-// excluding the Agent tool (its whole request entry is the "Custom agents"
-// category's estimate), deferred-undiscovered tools and MCP tools.
+// excluding deferred-undiscovered tools and MCP tools. The Agent tool
+// contributes only its static item — name + zero-agent boilerplate prompt +
+// schema; its per-agent lines are the "Custom agents" category's estimate.
 func (e *Engine) estimateSystemTools(
 	toolsSnapshot map[string]tool.Tool,
 	toolSearchSnap *toolSearchState,
@@ -465,6 +467,7 @@ func (e *Engine) estimateSystemTools(
 			continue
 		}
 		if name == "Agent" {
+			total += e.estimateAgentToolStatic(t)
 			continue
 		}
 		if tool.IsDeferred(t) && toolSearchSnap != nil && !toolSearchSnap.IsDiscovered(name) {
@@ -509,24 +512,36 @@ func (e *Engine) estimateSingleTool(t tool.Tool) int {
 	return e.EstimateTokensCalibrated(t.Name()+t.Prompt()) + e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
+// estimateAgentToolStatic is estimateSingleTool's Agent variant: the prompt
+// half is the zero-agent boilerplate (AgentBoilerplatePrompt), not the
+// tool's live Prompt() — the per-agent lines inside the live prompt are
+// billed line-by-line to the "Custom agents" category, and counting them
+// here too would double-bill every definition.
+func (e *Engine) estimateAgentToolStatic(t tool.Tool) int {
+	return e.EstimateTokensCalibrated(t.Name()+agenttool.AgentBoilerplatePrompt()) +
+		e.EstimateTokensCalibrated(string(t.InputSchema()))
+}
+
 func (e *Engine) estimateMCPSchema(desc string, schema json.RawMessage) int {
 	return e.EstimateTokensCalibrated(desc) + e.EstimateTokensCalibrated(string(schema))
 }
 
-// estimateAgents returns the Agent tool's contribution to the parent
-// request. Sub-agent system prompts only enter the sub-agent's own
-// request, so the parent-side agent cost is the Agent tool's full request
-// entry — name + Prompt() + InputSchema, exactly what buildToolDefs ships.
-// Zero only when the request's tool set carries no enabled Agent tool
-// (no snapshot, tool absent, or disabled): the category mirrors what the
-// request carries, never what the registry knows — zero definitions
-// still ship the tool's boilerplate prompt.
-func (e *Engine) estimateAgents(toolsSnapshot map[string]tool.Tool) int {
-	t, ok := toolsSnapshot["Agent"]
-	if !ok || !t.IsEnabled() {
-		return 0
+// estimateAgents returns the per-agent lines the Agent tool's prompt
+// carries in the parent request — Σ FormatAgentLine estimates, one per
+// definition. Sub-agent system prompts only enter the sub-agent's own
+// request, and the tool's own boilerplate and schema are System tools'
+// static Agent item, so this category is exactly the lines and nothing
+// else. buildDetails' agent rows estimate the same lines, so the row sum
+// equals this category exactly.
+func (e *Engine) estimateAgents(agentDefs []*types.AgentDefinition) int {
+	total := 0
+	for _, d := range agentDefs {
+		if d == nil {
+			continue
+		}
+		total += e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d))
 	}
-	return e.estimateSingleTool(t)
+	return total
 }
 
 func (e *Engine) tokenCountForBlock(block types.ContentBlock) int {
@@ -1023,9 +1038,10 @@ func (e *Engine) buildDetails(
 		})
 	}
 
-	// System tools (per-tool) and deferred built-in tools. The Agent tool
-	// is absent from the systemTools rows: its whole request entry is the
-	// "Custom agents" category, and a row here would double-bill it.
+	// System tools (per-tool) and deferred built-in tools. The Agent tool's
+	// row carries its static item (name + zero-agent boilerplate + schema)
+	// on the same basis as the "System tools" category; its per-agent lines
+	// are the "Custom agents" rows below.
 	for name, t := range toolsSnapshot {
 		if !t.IsEnabled() {
 			continue
@@ -1034,6 +1050,10 @@ func (e *Engine) buildDetails(
 			continue
 		}
 		if name == "Agent" {
+			ds.systemTools = append(ds.systemTools, SystemToolDetail{
+				Name:   name,
+				Tokens: e.estimateAgentToolStatic(t),
+			})
 			continue
 		}
 		if tool.IsDeferred(t) {
@@ -1074,9 +1094,9 @@ func (e *Engine) buildDetails(
 		}
 	}
 
-	// Agents. Detail rows share the Agent prompt's own line assembly, so
-	// the rows approximate the category's estimate (per-line estimates
-	// never sum exactly to the whole-prompt estimate).
+	// Agents. Rows and the "Custom agents" category are one source: both
+	// estimate the same FormatAgentLine text per definition, so the row sum
+	// equals the category exactly.
 	for _, d := range agentDefs {
 		if d == nil {
 			continue

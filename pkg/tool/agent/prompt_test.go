@@ -126,3 +126,28 @@ func TestAgentPrompt_WithAllowedTypes(t *testing.T) {
 		t.Error("filtered prompt should NOT contain General")
 	}
 }
+
+func TestAgentBoilerplatePrompt_ZeroAgentForm(t *testing.T) {
+	bp := AgentBoilerplatePrompt()
+	if bp == "" {
+		t.Fatal("AgentBoilerplatePrompt should not be empty")
+	}
+	if !strings.Contains(bp, "Launch a new agent") {
+		t.Error("boilerplate should carry the tool instructions")
+	}
+	// The zero-agent form is the template with an empty list: the header is
+	// immediately followed by the blank separator the empty %s leaves.
+	if !strings.Contains(bp, "Available agent types and the tools they have access to:\n\n\n") {
+		t.Error("boilerplate should splice an empty agent list into the header")
+	}
+	// AgentPrompt always reads the registry (built-in agents at minimum), so
+	// no registered definition's line may survive in the boilerplate.
+	for _, def := range ListAgentDefinitions() {
+		if line := FormatAgentLine(def); strings.Contains(bp, line) {
+			t.Errorf("boilerplate carries agent line %q", line)
+		}
+	}
+	if bp == AgentPrompt(nil) {
+		t.Error("boilerplate must differ from the registry-filled prompt")
+	}
+}

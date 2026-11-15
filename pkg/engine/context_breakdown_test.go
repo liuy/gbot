@@ -328,10 +328,10 @@ func TestContextBreakdown_CategoryIDs(t *testing.T) {
 	})
 	e.mcpRegistry = reg
 	// stubTool and testTool both feed "System tools": the merged category
-	// bills each built-in's full request entry (name + Prompt + schema). The
-	// Agent stub feeds "Custom agents", which owns the Agent tool's whole
-	// request entry — without an Agent tool in the snapshot the category
-	// emits nothing.
+	// bills each built-in's full request entry (name + Prompt + schema), and
+	// the Agent stub contributes its static item (name + boilerplate +
+	// schema) — its per-agent lines are the "Custom agents" category, which
+	// the TestAgent definition's line emits.
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "Run a shell command."}
 	e.tools["Read"] = &testTool{name: "Read"}
 	e.tools["Agent"] = &stubTool{name: "Agent", prompt: "Launch a new agent."}
@@ -2308,8 +2308,9 @@ func TestEstimateSystemTools_SkipsDoNotStopTheLoop(t *testing.T) {
 	for _, n := range enabledToolNames {
 		want += e.estimateSingleTool(tools[n])
 	}
+	want += agentStaticTokens(e, tools["Agent"])
 	if got != want {
-		t.Errorf("estimateSystemTools = %d, want %d (only the enabled built-ins)", got, want)
+		t.Errorf("estimateSystemTools = %d, want %d (enabled built-ins + Agent static item)", got, want)
 	}
 }
 
@@ -2329,18 +2330,32 @@ func TestEstimateSystemTools_DiscoveredDeferredCounts(t *testing.T) {
 	}
 }
 
-// The Agent tool's request entry is billed wholesale to "Custom agents";
-// System tools must not double-bill it.
-func TestEstimateSystemTools_ExcludesAgentTool(t *testing.T) {
+// The Agent tool's System-tools share is its static item — name + schema +
+// the zero-agent boilerplate prompt (AgentBoilerplatePrompt) — never its
+// per-agent lines: a stub whose Prompt() embeds line-shaped text must not
+// leak it into System tools.
+func TestEstimateSystemTools_AgentBilledAsStaticItem(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
+	schema := json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"}}}`)
+	agentStub := tool.BuildTool(tool.ToolDef{
+		Name_:        "Agent",
+		Prompt_:      "STUB PROMPT WITH LINE - Alpha: stub line (Tools: Read)",
+		InputSchema_: func() json.RawMessage { return schema },
+		Description_: func(json.RawMessage) (string, error) { return "", nil },
+		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	})
 	tools := map[string]tool.Tool{
 		"Bash":  &stubTool{name: "Bash", prompt: "Run a shell command."},
-		"Agent": &stubTool{name: "Agent", prompt: "AGENT BOILERPLATE " + strings.Repeat("agent prompt body ", 40)},
+		"Agent": agentStub,
 	}
-	want := e.EstimateTokensCalibrated("Bash" + "Run a shell command.")
+	want := e.estimateSingleTool(tools["Bash"]) +
+		e.EstimateTokensCalibrated("Agent"+agenttool.AgentBoilerplatePrompt()) +
+		e.EstimateTokensCalibrated(string(schema))
 	if got := e.estimateSystemTools(tools, nil, nil); got != want {
-		t.Errorf("estimateSystemTools = %d, want %d (Agent excluded — its entry is the Custom agents category)",
+		t.Errorf("estimateSystemTools = %d, want %d (Bash full entry + Agent static item: name+boilerplate+schema, no stub prompt text)",
 			got, want)
 	}
 }
@@ -2441,45 +2456,114 @@ func TestEstimateAgents_Empty(t *testing.T) {
 	}
 }
 
-// The category mirrors the request, not the registry: the estimate is the
-// enabled Agent tool's full request entry (name + Prompt + schema) exactly
-// as buildToolDefs ships it. Sub-agent system prompts never enter this —
-// structurally, since the signature carries no definitions to miscount.
-func TestEstimateAgents_MirrorsAgentToolRequestEntry(t *testing.T) {
+// The category is Σ FormatAgentLine estimates over the definitions — the
+// snapshot's Agent tool (its Prompt and schema) never enters, and nil
+// definitions carry no line.
+func TestEstimateAgents_SumsFormatAgentLines(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	schema := json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"` +
-		strings.Repeat("schema body ", 200) + `"}}}`)
-	tl := tool.BuildTool(tool.ToolDef{
-		Name_:        "Agent",
-		Prompt_:      "Launch a sub-agent with a task.",
-		InputSchema_: func() json.RawMessage { return schema },
-		Description_: func(json.RawMessage) (string, error) { return "launch agents", nil },
+	defs := []*types.AgentDefinition{
+		nil,
+		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read", "Grep"}},
+		{AgentType: "Beta", WhenToUse: "planning work"},
+	}
+	want := e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[1])) +
+		e.EstimateTokensCalibrated(agenttool.FormatAgentLine(defs[2]))
+	if got := e.estimateAgents(defs); got != want {
+		t.Errorf("estimateAgents = %d, want %d (Σ FormatAgentLine; nil def skipped)", got, want)
+	}
+}
+
+// No-loss/no-double nail across the split: the Agent tool's static item
+// ("System tools") plus the per-agent lines ("Custom agents") must jointly
+// cover the tool's full request entry (estimateSingleTool on the real tool,
+// whose Prompt() embeds the registry's lines). Equality is not exact — the
+// Join "\n" separators (len(defs)−1 newlines) and the estimator's
+// per-string truncation sit between the split and the whole — but the slack
+// is a handful of tokens, while any structural loss (boilerplate ~1.6k
+// tokens) or double-billing lands far outside the bound.
+func TestAgentSplit_CoversFullRequestEntry(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	tl := agenttool.New()
+	defs := agenttool.ListAgentDefinitions()
+	if len(defs) == 0 {
+		t.Fatal("ListAgentDefinitions returned no definitions; the nail needs the registry's lines")
+	}
+	split := e.estimateSystemTools(map[string]tool.Tool{"Agent": tl}, nil, nil) + e.estimateAgents(defs)
+	full := e.estimateSingleTool(tl)
+	bound := 2 * (len(defs) + 1)
+	if d := split - full; d < -bound || d > bound {
+		t.Errorf("static item + lines = %d, full request entry = %d (delta %d outside ±%d — split lost or double-billed the Agent entry)",
+			split, full, d, bound)
+	}
+}
+
+// The "Custom agents" category is the per-agent lines the Agent tool's
+// prompt carries — Σ FormatAgentLine estimates — never the tool's whole
+// request entry: the boilerplate and schema belong to System tools' static
+// Agent item. A fat stub Agent tool proves the category ignores the
+// snapshot's Prompt()/InputSchema entirely.
+func TestEstimateComponents_AgentsCategorySumsFormatAgentLines(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	defs := []*types.AgentDefinition{
+		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read", "Grep"}},
+		nil, // nil defs carry no line
+		{AgentType: "Beta", WhenToUse: "planning work"},
+	}
+	fatSchema := json.RawMessage(`{"type":"object","properties":{"task":{"type":"string","description":"` +
+		strings.Repeat("schema body ", 100) + `"}}}`)
+	agentStub := tool.BuildTool(tool.ToolDef{
+		Name_: "Agent",
+		Prompt_: "Launch a sub-agent. - Alpha: research and reading tasks (Tools: Read, Grep) " +
+			strings.Repeat("agent prompt body ", 200),
+		InputSchema_: func() json.RawMessage { return fatSchema },
+		Description_: func(json.RawMessage) (string, error) { return "", nil },
 		Call_: func(_ stdctx.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "ok"}, nil
 		},
 	})
-	want := e.EstimateTokensCalibrated("Agent"+"Launch a sub-agent with a task.") +
-		e.EstimateTokensCalibrated(string(schema))
-	if got := e.estimateAgents(map[string]tool.Tool{"Agent": tl}); got != want {
-		t.Errorf("estimateAgents = %d, want %d (the tool's full request entry, nothing else)",
-			got, want)
+	tools := map[string]tool.Tool{
+		"Agent": agentStub,
+		"Bash":  &stubTool{name: "Bash", prompt: "shell"},
+	}
+	est := e.estimateComponents(sysPromptSections{}, nil, tools, nil, defs, nil, nil, 0)
+	want := 0
+	for _, d := range defs {
+		if d == nil {
+			continue
+		}
+		want += e.EstimateTokensCalibrated(agenttool.FormatAgentLine(d))
+	}
+	if est.Agents != want {
+		t.Errorf("est.Agents = %d, want %d (Σ FormatAgentLine estimates; the stub tool's prompt/schema must not feed the category)",
+			est.Agents, want)
 	}
 }
 
-// The category mirrors what the request carries: without an enabled Agent
-// tool in the snapshot there is no agent cost in the request to report,
-// even with definitions registered.
-func TestEstimateAgents_ZeroWithoutAgentToolInRequest(t *testing.T) {
+// The agents detail rows and the "Custom agents" category are one source:
+// the row sum must equal the category estimate exactly.
+func TestEstimateComponents_AgentsRowSumEqualsCategory(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	want := 0
-	if got := e.estimateAgents(map[string]tool.Tool{}); got != want {
-		t.Errorf("estimateAgents with no Agent tool = %d, want %d", got, want)
+	defs := []*types.AgentDefinition{
+		{AgentType: "Alpha", WhenToUse: "research and reading tasks", Tools: []string{"Read"}},
+		{AgentType: "Beta", WhenToUse: "planning work"},
 	}
-	disabled := map[string]tool.Tool{"Agent": namedDisabledTool{name: "Agent"}}
-	if got := e.estimateAgents(disabled); got != want {
-		t.Errorf("estimateAgents with disabled Agent tool = %d, want %d", got, want)
+	tools := map[string]tool.Tool{
+		"Agent": &stubTool{name: "Agent", prompt: "agent prompt"},
+		"Bash":  &stubTool{name: "Bash", prompt: "shell"},
+	}
+	est := e.estimateComponents(sysPromptSections{}, nil, tools, nil, defs, nil, nil, 0)
+	ds := e.buildDetails(nil, tools, nil, "", defs, nil, nil)
+	rowSum := 0
+	for _, a := range ds.agents {
+		rowSum += a.Tokens
+	}
+	if rowSum != est.Agents {
+		t.Errorf("Σ agent detail rows = %d, category = %d (one source: both Σ FormatAgentLine)",
+			rowSum, est.Agents)
 	}
 }
 
@@ -2638,10 +2722,20 @@ func contextToolSet() map[string]tool.Tool {
 	for _, n := range []string{"ToolSearch", "PlanSearch", "DocSearch"} {
 		tools[n] = deferredStubTool(n)
 	}
-	// Agent is enabled and non-deferred but still skipped: its whole request
-	// entry belongs to the "Custom agents" category.
+	// Agent is enabled and non-deferred: System tools bills its static item
+	// (name + zero-agent boilerplate + schema); its per-agent lines belong to
+	// the "Custom agents" category.
 	tools["Agent"] = &stubTool{name: "Agent", prompt: "agent boilerplate"}
 	return tools
+}
+
+// agentStaticTokens is the test-side formula for the Agent tool's
+// System-tools static item (name + zero-agent boilerplate prompt + schema),
+// spelled out so the assertions pin the formula rather than echoing a
+// production helper.
+func agentStaticTokens(e *Engine, t tool.Tool) int {
+	return e.EstimateTokensCalibrated(t.Name()+agenttool.AgentBoilerplatePrompt()) +
+		e.EstimateTokensCalibrated(string(t.InputSchema()))
 }
 
 var enabledToolNames = []string{"Bash", "Grep", "Read", "Lsp"}
@@ -2663,10 +2757,11 @@ func TestBuildDetails_SystemAndDeferredTools(t *testing.T) {
 	ts := newToolSearchState()
 	ds := e.buildDetails(nil, tools, ts, "", nil, nil, nil)
 
-	wantSystem := make([]string, 0, 4)
+	wantSystem := make([]string, 0, 5)
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)
@@ -2681,6 +2776,25 @@ func TestBuildDetails_SystemAndDeferredTools(t *testing.T) {
 	}
 }
 
+// The systemTools partition carries an Agent row billed at the static item:
+// name + zero-agent boilerplate + schema. A stub whose Prompt() is
+// line-shaped text must not feed the row.
+func TestBuildDetails_SystemToolsAgentRowUsesStaticItem(t *testing.T) {
+	t.Parallel()
+	e := &Engine{}
+	agentStub := &stubTool{name: "Agent", prompt: "- Alpha: stub line (Tools: Read)"}
+	tools := map[string]tool.Tool{"Agent": agentStub}
+	ds := e.buildDetails(nil, tools, nil, "", nil, nil, nil)
+	if len(ds.systemTools) != 1 || ds.systemTools[0].Name != "Agent" {
+		t.Fatalf("systemTools = %v, want exactly one Agent row", toolDetailSig(ds.systemTools))
+	}
+	want := agentStaticTokens(e, agentStub)
+	if ds.systemTools[0].Tokens != want {
+		t.Errorf("Agent row tokens = %d, want %d (static item: name+boilerplate+schema; the stub's line-like Prompt must not count)",
+			ds.systemTools[0].Tokens, want)
+	}
+}
+
 func TestBuildDetails_DiscoveredDeferredIsSkipped(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
@@ -2691,10 +2805,11 @@ func TestBuildDetails_DiscoveredDeferredIsSkipped(t *testing.T) {
 
 	// A discovered deferred tool is neither a loaded system tool nor a
 	// deferred entry: the deferred branch always continues past it.
-	wantSystem := make([]string, 0, 4)
+	wantSystem := make([]string, 0, 5)
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)
@@ -2715,10 +2830,11 @@ func TestBuildDetails_NilToolSearchDropsDeferredEntry(t *testing.T) {
 	if len(ds.deferredBuiltin) != 0 {
 		t.Errorf("deferredBuiltin = %v, want empty", toolDetailSig(ds.deferredBuiltin))
 	}
-	wantSystem := make([]string, 0, 4)
+	wantSystem := make([]string, 0, 5)
 	for _, n := range []string{"Bash", "Grep", "Read", "Lsp"} {
 		wantSystem = append(wantSystem, fmt.Sprintf("%s=%d", n, e.estimateSingleTool(tools[n])))
 	}
+	wantSystem = append(wantSystem, fmt.Sprintf("Agent=%d", agentStaticTokens(e, tools["Agent"])))
 	slices.Sort(wantSystem)
 	if got := toolDetailSig(ds.systemTools); !slices.Equal(got, wantSystem) {
 		t.Errorf("systemTools = %v, want %v", got, wantSystem)
