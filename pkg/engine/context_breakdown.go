@@ -399,12 +399,7 @@ func (e *Engine) estimateSystemPromptSections(
 		systemText = context.DefaultBasePrompt()
 	}
 	stripped = strings.Replace(stripped, "{{SYSTEM}}", systemText, 1)
-
-	soulText := ""
-	if soul, _ := context.LoadSoulFile(); soul != "" {
-		soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
-	}
-	stripped = strings.Replace(stripped, "{{SOUL}}", soulText, 1)
+	stripped = strings.Replace(stripped, "{{SOUL}}", context.SoulExpansion(), 1)
 	stripped = strings.Replace(stripped, "{{MODEL}}", model, 1)
 	if len(modalities) == 0 {
 		modalities = []string{"text"}

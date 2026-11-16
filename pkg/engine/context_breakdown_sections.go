@@ -96,13 +96,14 @@ func (e *Engine) buildSystemPromptSections(
 		case "soul":
 			// The expansion value carries its own leading "\n\n" on top of the
 			// span's; both must go for the persona header to lead the display.
-			soulText := ""
-			if soul, _ := context.LoadSoulFile(); soul != "" {
-				soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+			// Badge mirrors the base section: SOUL.md present → file badge,
+			// embedded default → none.
+			soul, _ := context.LoadSoulFile()
+			source := "soul_md"
+			if soul == "" {
+				source = ""
 			}
-			if soulText != "" {
-				outs = append(outs, sectionOut{"soul", strings.TrimPrefix(soulText, "\n\n"), "soul_md"})
-			}
+			outs = append(outs, sectionOut{"soul", strings.TrimPrefix(context.SoulExpansion(), "\n\n"), source})
 		case "runtime":
 			outs = append(outs, sectionOut{"runtime", expand(strings.TrimPrefix(stripped[a.start:end], "\n\n")), ""})
 		case "skills":

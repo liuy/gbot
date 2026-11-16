@@ -21,6 +21,12 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// defaultSoulWrappedForTest is the request-path {{SOUL}} expansion with the
+// embedded default persona, for tests that isolate HOME without a SOUL.md.
+func defaultSoulWrappedForTest() string {
+	return "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + context.DefaultSoulPrompt()
+}
+
 func newTestEngineForBreakdown(t *testing.T) *Engine {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -443,7 +449,7 @@ func TestContextBreakdown_SystemPromptIncludesPlatformAndSkills(t *testing.T) {
 	}
 
 	wantText := strings.Replace(raw, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
-	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", defaultSoulWrappedForTest(), 1)
 	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
 	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -1373,7 +1379,7 @@ func TestContextBreakdown_MemoryStripSurvivesDiskEdit(t *testing.T) {
 	// info + v1 memory) — not the double-counted v2 form.
 	wantText := strings.Replace(raw, "\n\n"+memPromptV1, "", 1)
 	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
-	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", defaultSoulWrappedForTest(), 1)
 	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
 	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
 	wantBase := e.EstimateTokensCalibrated(wantText)
@@ -2202,12 +2208,14 @@ func TestEstimateSystemPromptSections_StripsCategorizedSections(t *testing.T) {
 	got := (&Engine{}).estimateSystemPromptSections(raw, "", nil, memPrompt)
 
 	// Base = the raw prompt minus the memory section, with the request-path
-	// stubs expanded ({{SYSTEM}} → DefaultBasePrompt, no SOUL.md → empty).
+	// stubs expanded ({{SYSTEM}} → DefaultBasePrompt, no SOUL.md →
+	// DefaultSoulPrompt with the persona wrapper).
 	// Platform info and the skills section stay in — they are the merged
 	// category's own bytes now.
+	soulWrapped := "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + context.DefaultSoulPrompt()
 	wantText := strings.Replace(raw, "\n\n"+memPrompt, "", 1)
 	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
-	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", soulWrapped, 1)
 	wantText = strings.Replace(wantText, "{{MODEL}}", "", 1)
 	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
 	wantBase := (&Engine{}).EstimateTokensCalibrated(wantText)
@@ -2249,7 +2257,7 @@ func TestEstimateSystemPromptSections_StripsOnlyTheBuildWrittenCopy(t *testing.T
 	// the literal stubs.
 	wantText := strings.Replace(raw, "\n\n"+memPrompt, "", 1)
 	wantText = strings.Replace(wantText, "{{SYSTEM}}", context.DefaultBasePrompt(), 1)
-	wantText = strings.Replace(wantText, "{{SOUL}}", "", 1)
+	wantText = strings.Replace(wantText, "{{SOUL}}", defaultSoulWrappedForTest(), 1)
 	wantText = strings.Replace(wantText, "{{MODEL}}", "claude-test", 1)
 	wantText = strings.Replace(wantText, "{{MODALITIES}}", "text", 1)
 	wantBase := (&Engine{}).EstimateTokensCalibrated(wantText)
@@ -2271,7 +2279,7 @@ func TestEstimateSystemPromptSections_EmptyRawReturnsZero(t *testing.T) {
 // {{MODEL}} before the prompt reaches the API. Estimating the stub form
 // leaves the real SYSTEM/SOUL tokens invisible to every category, which
 // proportional scaling then smears across the board. Isolated home with no
-// SYSTEM.md/SOUL.md pins the DefaultBasePrompt fallback and empty-soul
+// SYSTEM.md/SOUL.md pins the DefaultBasePrompt/DefaultSoulPrompt fallback
 // branches of the expansion.
 func TestEstimateSystemPromptSections_ExpandsRequestStubs(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -2280,10 +2288,11 @@ func TestEstimateSystemPromptSections_ExpandsRequestStubs(t *testing.T) {
 	raw := "You are {{MODEL}}. {{SYSTEM}}\n\n{{SOUL}}"
 	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "")
 
-	wantText := "You are claude-test. " + context.DefaultBasePrompt() + "\n\n"
+	soulWrapped := "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + context.DefaultSoulPrompt()
+	wantText := "You are claude-test. " + context.DefaultBasePrompt() + soulWrapped
 	wantBase := e.EstimateTokensCalibrated(wantText)
 	if got.base != wantBase {
-		t.Errorf("base = %d, want %d (stub form estimates at %d — the whole default base prompt was invisible)",
+		t.Errorf("base = %d, want %d (stub form estimates at %d — the default base+soul were invisible)",
 			got.base, wantBase, e.EstimateTokensCalibrated(raw))
 	}
 }
@@ -2329,7 +2338,7 @@ func TestEstimateSystemPromptSections_ReplacesOnlyFirstStubOccurrence(t *testing
 	raw := "A {{MODEL}} B {{SYSTEM}} C {{SOUL}} D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
 	got := e.estimateSystemPromptSections(raw, "claude-test", nil, "")
 
-	wantText := "A claude-test B " + context.DefaultBasePrompt() + " C  D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
+	wantText := "A claude-test B " + context.DefaultBasePrompt() + " C " + defaultSoulWrappedForTest() + " D {{MODEL}} E {{SYSTEM}} F {{SOUL}}"
 	wantBase := e.EstimateTokensCalibrated(wantText)
 	if got.base != wantBase {
 		t.Errorf("base = %d, want %d (exactly one occurrence of each stub expanded)", got.base, wantBase)

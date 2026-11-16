@@ -62,8 +62,10 @@ func TestBuildSystemPromptSections_MainPath(t *testing.T) {
 	e := newSectionsFixture(t, t.TempDir(), memDir, listing)
 
 	bd := e.ContextBreakdown()
-	if got := sectionIDs(bd.SystemPromptSections); !slices.Equal(got, []string{"base", "runtime", "skills", "voice"}) {
-		t.Fatalf("section ids = %v, want [base runtime skills voice]", got)
+	// No SOUL.md in the isolated HOME → the embedded DefaultSoulPrompt
+	// backs the section, same logic as SYSTEM's DefaultBasePrompt.
+	if got := sectionIDs(bd.SystemPromptSections); !slices.Equal(got, []string{"base", "soul", "runtime", "skills", "voice"}) {
+		t.Fatalf("section ids = %v, want [base soul runtime skills voice]", got)
 	}
 
 	base := sectionByID(bd.SystemPromptSections, "base")
@@ -75,6 +77,16 @@ func TestBuildSystemPromptSections_MainPath(t *testing.T) {
 	}
 	if base.Tokens != e.EstimateTokensCalibrated(context.DefaultBasePrompt()) {
 		t.Errorf("base tokens = %d, want %d", base.Tokens, e.EstimateTokensCalibrated(context.DefaultBasePrompt()))
+	}
+	soul := sectionByID(bd.SystemPromptSections, "soul")
+	if !strings.HasPrefix(soul.Text, "---\n\nEmbody the persona and tone defined below.") {
+		t.Errorf("soul text starts with %q, want the persona wrapper header", firstLine(soul.Text))
+	}
+	if !strings.Contains(soul.Text, context.DefaultSoulPrompt()) {
+		t.Error("soul text does not embed DefaultSoulPrompt")
+	}
+	if soul.Source != "" {
+		t.Errorf("soul source = %q, want empty (no SOUL.md → no file badge)", soul.Source)
 	}
 
 	runtime_ := sectionByID(bd.SystemPromptSections, "runtime")

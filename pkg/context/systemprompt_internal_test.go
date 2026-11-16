@@ -46,6 +46,60 @@ func TestLoadSystemFile_NoFile(t *testing.T) {
 	}
 }
 
+// The embedded default persona is real content, not an empty stub — it
+// ships on machines where SOUL.md was never created.
+func TestDefaultSoulPrompt(t *testing.T) {
+	t.Parallel()
+	got := DefaultSoulPrompt()
+	if got == "" {
+		t.Fatal("DefaultSoulPrompt is empty")
+	}
+	for _, sentinel := range []string{"Core Truths", "single emoji instead of a full message"} {
+		if !strings.Contains(got, sentinel) {
+			t.Errorf("DefaultSoulPrompt missing %q", sentinel)
+		}
+	}
+}
+
+// SoulExpansion: no SOUL.md → wrapper + the embedded default; file present
+// → wrapper + the file's persona, never the default.
+func TestSoulExpansion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got := SoulExpansion()
+	if !strings.HasPrefix(got, "\n\n---\n\nEmbody the persona and tone defined below.") {
+		t.Errorf("SoulExpansion starts with %q, want the persona wrapper header", firstLineOf(got))
+	}
+	if !strings.Contains(got, DefaultSoulPrompt()) {
+		t.Error("SoulExpansion without SOUL.md must embed DefaultSoulPrompt")
+	}
+
+	home := t.TempDir()
+	gbotDir := filepath.Join(home, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gbotDir, "SOUL.md"), []byte("# Mine\nMy persona."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	got = SoulExpansion()
+	if !strings.Contains(got, "# Mine\nMy persona.") {
+		t.Error("SoulExpansion with SOUL.md must embed the file's persona")
+	}
+	if strings.Contains(got, DefaultSoulPrompt()) {
+		t.Error("SoulExpansion with SOUL.md must not fall back to the default")
+	}
+}
+
+func firstLineOf(s string) string {
+	for l := range strings.SplitSeq(s, "\n") {
+		if l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
 func TestLoadSystemFile_FileExists(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

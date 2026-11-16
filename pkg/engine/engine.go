@@ -3039,12 +3039,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{{SYSTEM}}", systemText, 1)
 
-		// Hot-load SOUL.md via {{SOUL}} stub at end of system prompt
-		soulText := ""
-		if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
-			soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
-		}
-		systemPrompt = strings.Replace(systemPrompt, "{{SOUL}}", soulText, 1)
+		// Hot-load SOUL.md via {{SOUL}} stub at end of system prompt;
+		// no file → the embedded default persona (SoulExpansion)
+		systemPrompt = strings.Replace(systemPrompt, "{{SOUL}}", ctxbuild.SoulExpansion(), 1)
 		systemPrompt = strings.Replace(systemPrompt, "{{MODEL}}", e.model, 1)
 		modalities := e.inputModalities
 		if len(modalities) == 0 {
@@ -4313,11 +4310,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	}
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SYSTEM}}", systemText, 1)
 
-	soulText := ""
-	if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
-		soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
-	}
-	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SOUL}}", soulText, 1)
+	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SOUL}}", ctxbuild.SoulExpansion(), 1)
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{MODEL}}", model, 1)
 	if len(modalities) == 0 {
 		modalities = []string{"text"}
