@@ -3058,6 +3058,102 @@ describe('chat integration', () => {
     vi.useRealTimers()
   })
 
+  it('sub-agent usage does not overwrite the header context badge', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // setContext hides the trigger while contextTotal is 0 — the badge test
+    // must arm the total first or the usage assertions read a hidden node.
+    dispatch({ type: 'stats', contextTotal: 200000 })
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 40000, output_tokens: 2000 } },
+    ])
+    const trigger = document.querySelector('[data-testid="context-trigger"]') as HTMLElement
+    // formatTokenCount is 1024-based: 42000 → '41.0k', 200000 → '195.3k'.
+    expect(trigger.textContent).toBe('41.0k/195.3k')
+
+    dispatchEvents([
+      { type: 'usage', usage_event: { input_tokens: 15000, output_tokens: 100 }, agent: { parent_tool_use_id: 'tu-1', agent_type: 'sub', depth: 1 } },
+    ])
+    // The badge shows the main agent's window; a sub-agent turn owns its own.
+    expect(trigger.textContent).toBe('41.0k/195.3k')
+  })
+
+  it('sub-agent usage does not reconcile the main agent local output sum', () => {
+    vi.useFakeTimers()
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('write a long answer')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+    ])
+    const outEl = () =>
+      Array.from(document.querySelectorAll('span')).find((s) =>
+        s.textContent?.startsWith('↓'),
+      ) as HTMLElement
+    for (let i = 0; i < 3; i++) {
+      dispatchEvents([{ type: 'text_delta', text: 'streamed chunk of text', tokens: 40 }])
+      vi.advanceTimersByTime(1000)
+    }
+    // Main usage reconciles the 120 local tokens; 30 more stream after it.
+    dispatchEvents([{ type: 'usage', usage_event: { input_tokens: 10, output_tokens: 200 } }])
+    dispatchEvents([{ type: 'text_delta', text: 'more text streams in', tokens: 30 }])
+    vi.advanceTimersByTime(200)
+    expect(outEl()?.textContent).toBe('↓230')
+
+    // The sub-agent's output bills the shared ledger (200 + 50 = 250) but
+    // must not zero the main agent's 30 in-flight local tokens: the next
+    // tick keeps 280 instead of dipping back to the bare ledger 250.
+    dispatchEvents([
+      { type: 'usage', usage_event: { input_tokens: 500, output_tokens: 50 }, agent: { parent_tool_use_id: 'tu-1', agent_type: 'sub', depth: 1 } },
+    ])
+    expect(outEl()?.textContent).toBe('↓250')
+    vi.advanceTimersByTime(200)
+    expect(outEl()?.textContent).toBe('↓280')
+    vi.useRealTimers()
+  })
+
+  it('sub-agent usage does not write the streaming main message usage', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'text_delta', text: 'main answer text', tokens: 5 },
+      { type: 'usage', usage_event: { input_tokens: 15000, output_tokens: 100 }, agent: { parent_tool_use_id: 'tu-1', agent_type: 'sub', depth: 1 } },
+    ])
+    expect(chat.lastMessageUsage()).toEqual({ inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 })
+    // The write itself stays for main-engine events.
+    dispatchEvents([{ type: 'usage', usage_event: { input_tokens: 400, output_tokens: 20 } }])
+    expect(chat.lastMessageUsage()).toEqual({ inputTokens: 400, outputTokens: 20, cacheRead: 0, cacheCreation: 0 })
+  })
+
+  it('main usage writes only onto a streaming assistant message', () => {
+    const chat = mount()
+    dispatch({ type: 'connect_status', connected: true })
+    // No message exists yet: the write is skipped, not crashed into.
+    dispatchEvents([{ type: 'usage', usage_event: { input_tokens: 10, output_tokens: 5 } }])
+    expect(chat.lastMessageUsage()).toBeUndefined()
+
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'turn_start' },
+      { type: 'usage', usage_event: { input_tokens: 400, output_tokens: 20 } },
+      { type: 'turn_end' },
+      { type: 'query_end' },
+      // Late billing after the turn closed: the done message keeps its usage.
+      { type: 'usage', usage_event: { input_tokens: 900, output_tokens: 99 } },
+    ])
+    expect(chat.lastMessageUsage()).toEqual({ inputTokens: 400, outputTokens: 20, cacheRead: 0, cacheCreation: 0 })
+  })
+
   it('sub-agent thinking_end accumulates into progress display', () => {
     vi.useFakeTimers()
     mount()

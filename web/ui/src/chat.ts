@@ -146,6 +146,9 @@ export interface ChatHandles {
   // Exposed for integration tests (Phase 2 asserts job feed state at the
   // store layer before the Phase 3 expansion UI renders it).
   jobsStore: JobsStoreHandle
+  // Exposed for integration tests: message usage has no DOM render, so the
+  // sub-agent usage-ownership regression test reads the state directly.
+  lastMessageUsage: () => { inputTokens: number; outputTokens: number; cacheRead: number; cacheCreation: number } | undefined
   cleanup: () => void
 }
 
@@ -2233,25 +2236,33 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!e.agent) pendingInputEstimate = 0
         progressUsage.inputTokens += u.input_tokens
         progressUsage.outputTokens += u.output_tokens
-        // The billed count now covers the streamed deltas: drop the local
-        // running sum so ↓output does not double-count them.
-        tokenRate().reconcileLocal()
         progressUsage.cacheRead += u.cache_read_input_tokens ?? 0
         progressUsage.cacheCreation += u.cache_creation_input_tokens ?? 0
-        // contextUsed = this turn's total tokens in context (not cumulative)
-        const ctxUsed = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + u.output_tokens
-        header.setContext(ctxUsed, contextTotal)
+        // The ledger above is shared — sub-agent tokens bill the same totals
+        // — but the guarded effects describe the main agent's own turn (the
+        // progress-bar re-render below stays outside: it reads the shared
+        // ledger). A sub-agent usage arriving mid-turn would flip the
+        // context badge to its window, zero the main stream's local sum
+        // (↓output dip) and stamp its usage onto the streaming main message.
+        if (!e.agent) {
+          // The billed count now covers the streamed deltas: drop the local
+          // running sum so ↓output does not double-count them.
+          tokenRate().reconcileLocal()
+          // contextUsed = this turn's total tokens in context (not cumulative)
+          const ctxUsed = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + u.output_tokens
+          header.setContext(ctxUsed, contextTotal)
+          const last = messages[messages.length - 1]
+          if (last && last.role === 'assistant' && last.status === 'streaming') {
+            last.usage = {
+              inputTokens: u.input_tokens,
+              outputTokens: u.output_tokens,
+              cacheRead: u.cache_read_input_tokens ?? 0,
+              cacheCreation: u.cache_creation_input_tokens ?? 0,
+            }
+          }
+        }
         if (progressHandles) {
           setProgressBarUsage(progressHandles, displayedProgressUsage())
-        }
-        const last = messages[messages.length - 1]
-        if (last && last.role === 'assistant' && last.status === 'streaming') {
-          last.usage = {
-            inputTokens: u.input_tokens,
-            outputTokens: u.output_tokens,
-            cacheRead: u.cache_read_input_tokens ?? 0,
-            cacheCreation: u.cache_creation_input_tokens ?? 0,
-          }
         }
         return
       }
@@ -3074,5 +3085,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     if (refreshInterval !== null) clearInterval(refreshInterval)
   }
 
-  return { root, scrollEl: scroll, inputBar, jobsStore: taskPanel.jobsStore, cleanup }
+  const lastMessageUsage = () => {
+    const last = messages[messages.length - 1]
+    return last ? last.usage : undefined
+  }
+
+  return { root, scrollEl: scroll, inputBar, jobsStore: taskPanel.jobsStore, lastMessageUsage, cleanup }
 }
