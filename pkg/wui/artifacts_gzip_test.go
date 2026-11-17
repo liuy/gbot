@@ -586,6 +586,158 @@ func statArtifact(t *testing.T, dir, name string) os.FileInfo {
 	return fi
 }
 
+// gzipCacheBytes reads artifactGzipCache.bytes under its mutex so tests can
+// assert pinned memory without racing the route.
+func gzipCacheBytes() int64 {
+	artifactGzipCache.mu.Lock()
+	defer artifactGzipCache.mu.Unlock()
+	return artifactGzipCache.bytes
+}
+
+// TestArtifactGzipSkipsIncompressibleExtensions pins the extension gate: a
+// file named as an already-compressed medium must serve identity even when
+// its bytes sniff as plain text, because the sniff classifies several of
+// these formats (avi/zst/br/7z/rar/woff2/pdf...) as application/octet-stream
+// and would compress them for <1% size change.
+func TestArtifactGzipSkipsIncompressibleExtensions(t *testing.T) {
+	resetArtifactGzipCache(t)
+	dir := t.TempDir()
+	// Text filler past artifactGzipMinSize: only the extension, not the
+	// content sniff, can keep these files off the gzip path.
+	content := strings.Repeat("media payload row\n", 87400)
+	exts := []string{
+		".mp4", ".webm", ".avi", ".mkv", ".mov",
+		".mp3", ".flac", ".ogg",
+		".png", ".jpg", ".jpeg", ".gif", ".webp",
+		".zip", ".gz", ".br", ".zst", ".7z", ".rar", ".pdf", ".woff2",
+	}
+	names := make([]string, 0, len(exts)+1)
+	for _, ext := range exts {
+		names = append(names, "media"+ext)
+	}
+	// Uppercase spelling must gate identically.
+	names = append(names, "MOVIE.MOV")
+	for _, name := range names {
+		writeArtifactFile(t, dir, name, content)
+	}
+	srv := newArtifactTestServer(t, dir)
+
+	for _, name := range names {
+		status, h, body, contentLength := probeArtifact(t, srv.URL+"/artifacts/"+name, "gzip", nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", name, status)
+		}
+		if got := h.Get("Content-Encoding"); got != "" {
+			t.Errorf("%s Content-Encoding = %q, want empty (incompressible ext skips gzip)", name, got)
+		}
+		if !identityETagRe.MatchString(h.Get("ETag")) {
+			t.Errorf("%s ETag = %q, want identity format \"<hex>-<hex>\"", name, h.Get("ETag"))
+		}
+		if contentLength != int64(len(content)) {
+			t.Errorf("%s Content-Length = %d, want the exact file size %d", name, contentLength, len(content))
+		}
+		if !bytes.Equal(body, []byte(content)) {
+			t.Errorf("%s body = %d bytes, want the exact file content (%d)", name, len(body), len(content))
+		}
+	}
+	if got := artifactGzipCache.compressions.Load(); got != 0 {
+		t.Errorf("compressions after %d skipped GETs = %d, want 0", len(names), got)
+	}
+	if got := gzipCacheBytes(); got != 0 {
+		t.Errorf("gzip cache bytes = %d, want 0 (skipped files never enter the cache)", got)
+	}
+}
+
+// testArtifactGzipCap mirrors artifactGzipMaxSize as a literal so the
+// boundary fixtures below stay at 32 MiB when the constant is mutated: a
+// shifted cap then reclassifies a fixture and kills the mutant, which a
+// fixture derived from the constant itself could never do.
+const testArtifactGzipCap = 32 << 20
+
+// TestArtifactGzipSkipsOversizedFile pins the size ceiling: above
+// artifactGzipMaxSize the identity path streams the original bytes at
+// constant memory instead of ReadAll+gzip+pinned cache entry (~2x file-size
+// transient RSS — the shape of the 2026-11-13/14 RSS >1GB incidents).
+func TestArtifactGzipSkipsOversizedFile(t *testing.T) {
+	resetArtifactGzipCache(t)
+	dir := t.TempDir()
+	content := strings.Repeat("y", testArtifactGzipCap+1)
+	writeArtifactFile(t, dir, "huge.html", content)
+	srv := newArtifactTestServer(t, dir)
+	url := srv.URL + "/artifacts/huge.html"
+
+	status, h, body, contentLength := probeArtifact(t, url, "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "" {
+		t.Errorf("Content-Encoding = %q, want empty (oversized file skips gzip)", got)
+	}
+	if !identityETagRe.MatchString(h.Get("ETag")) {
+		t.Errorf("ETag = %q, want identity format \"<hex>-<hex>\"", h.Get("ETag"))
+	}
+	if contentLength != int64(len(content)) {
+		t.Errorf("Content-Length = %d, want the exact file size %d", contentLength, len(content))
+	}
+	if !bytes.Equal(body, []byte(content)) {
+		t.Errorf("body = %d bytes, want the exact file content (%d)", len(body), len(content))
+	}
+	if got := h.Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8 (skip path still previews)", got)
+	}
+
+	// Revalidation keeps the identity 304 semantics: the ETag from the first
+	// response must short-circuit the second one with no body.
+	status, h2, body2, _ := probeArtifact(t, url, "gzip", map[string]string{"If-None-Match": h.Get("ETag")})
+	if status != http.StatusNotModified {
+		t.Fatalf("INM status = %d, want 304", status)
+	}
+	if len(body2) != 0 {
+		t.Errorf("304 body = %d bytes, want 0", len(body2))
+	}
+	if got := h2.Get("Content-Encoding"); got != "" {
+		t.Errorf("304 Content-Encoding = %q, want empty", got)
+	}
+
+	if got := artifactGzipCache.compressions.Load(); got != 0 {
+		t.Errorf("compressions after oversized GET = %d, want 0", got)
+	}
+	if got := gzipCacheBytes(); got != 0 {
+		t.Errorf("gzip cache bytes = %d, want 0 (oversized file never enters the cache)", got)
+	}
+}
+
+// TestArtifactGzipBoundaryFileStillCompresses pins the ceiling as strictly
+// greater-than: a file of exactly artifactGzipMaxSize bytes stays on the
+// gzip path, so the cap cannot regress into excluding every eligible payload.
+func TestArtifactGzipBoundaryFileStillCompresses(t *testing.T) {
+	resetArtifactGzipCache(t)
+	dir := t.TempDir()
+	content := strings.Repeat("x", testArtifactGzipCap)
+	writeArtifactFile(t, dir, "cap.html", content)
+	srv := newArtifactTestServer(t, dir)
+
+	status, h, body, contentLength := probeArtifact(t, srv.URL+"/artifacts/cap.html", "gzip", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := h.Get("Content-Encoding"); got != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip (exactly at the cap still compresses)", got)
+	}
+	if !gzipETagRe.MatchString(h.Get("ETag")) {
+		t.Errorf("ETag = %q, want gzip format \"gz-<hex>-<hex>\"", h.Get("ETag"))
+	}
+	if contentLength != int64(len(body)) {
+		t.Errorf("Content-Length = %d, want the exact compressed size %d", contentLength, len(body))
+	}
+	if plain := gunzipAll(t, body); !bytes.Equal(plain, []byte(content)) {
+		t.Errorf("gunzipped body = %d bytes, want the exact file content (%d)", len(plain), len(content))
+	}
+	if got := artifactGzipCache.compressions.Load(); got != 1 {
+		t.Errorf("compressions = %d, want 1", got)
+	}
+}
+
 func TestArtifactGzipHTMLContentType(t *testing.T) {
 	dir := t.TempDir()
 	content := "<!doctype html><html><body>" + strings.Repeat("<p>resume</p>\n", 100000) + "</body></html>"

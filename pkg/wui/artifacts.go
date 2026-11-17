@@ -133,8 +133,33 @@ func RegisterArtifactRoutes(mux *http.ServeMux, dir string, observe ObserveProvi
 
 // artifactGzipMinSize is the floor under which compression costs more than
 // it saves: the HTML/JS artifacts this daemon serves are KB-scale, so only
-// the big model/video payloads ever qualify.
+// payloads at mebibyte scale ever qualify.
 const artifactGzipMinSize = 1 << 20
+
+// artifactGzipMaxSize is the ceiling of the gzip path. Compressing reads the
+// whole file (io.ReadAll) while holding source and compressed copy
+// concurrently, then pins the result in the 400 MiB LRU — on the large
+// payloads behind the 2026-11-13/14 RSS >1GB incidents (heap dumps pointed
+// at serveArtifactGzipped) gzip bought <1%, so that memory bought nothing.
+// Above the ceiling the identity path streams the file at constant memory.
+// 32 MiB still covers every real text artifact (HTML/JS/JSON are KB-to-MB).
+const artifactGzipMaxSize = 32 << 20
+
+// artifactIncompressibleExt lists extensions of formats that already carry
+// compression — gzip on them costs CPU and RSS for <1% size change. The
+// content sniff below catches most media by magic bytes, but formats like
+// zst/br/7z/pdf sniff as application/octet-stream, so the
+// extension is the authoritative gate and the sniff stays as the fallback
+// for misnamed files.
+var artifactIncompressibleExt = map[string]bool{
+	".mp4": true, ".webm": true, ".avi": true, ".mkv": true, ".mov": true,
+	".m4a": true, ".m4v": true,
+	".mp3": true, ".flac": true, ".ogg": true,
+	".heic": true, ".avif": true, ".jxl": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".zip": true, ".gz": true, ".br": true, ".zst": true, ".7z": true,
+	".rar": true, ".pdf": true, ".woff2": true,
+}
 
 // artifactContentType pins the Content-Type for model formats. The system
 // mime table is machine-dependent (/etc/mime.types may or may not know glb),
@@ -163,15 +188,22 @@ func acceptsGzip(r *http.Request) bool {
 }
 
 // gzipEligible reports whether the request's client accepts gzip and the
-// file would benefit: at least artifactGzipMinSize bytes and not already a
-// compressed medium. A non-seekable or unreadable file returns false, which
-// only downgrades to the identity path (ServeContent would fail on such a
-// file regardless).
+// file would benefit: within the [artifactGzipMinSize, artifactGzipMaxSize]
+// window, not an incompressible extension, and not already a compressed
+// medium per the content sniff. A non-seekable or unreadable file returns
+// false, which only downgrades to the identity path (ServeContent would
+// fail on such a file regardless).
 func gzipEligible(r *http.Request, f *os.File, st os.FileInfo) (eligible bool) {
 	if !acceptsGzip(r) {
 		return false
 	}
 	if st.Size() < artifactGzipMinSize {
+		return false
+	}
+	if st.Size() > artifactGzipMaxSize {
+		return false
+	}
+	if artifactIncompressibleExt[strings.ToLower(filepath.Ext(st.Name()))] {
 		return false
 	}
 	// The sniff below consumes bytes; every exit from here on must rewind
@@ -323,10 +355,10 @@ func serveArtifactGzipped(w http.ResponseWriter, r *http.Request, f *os.File, st
 	}
 }
 
-// artifactGzipCacheMaxEntries/Bytes bound the pinned memory: three resident
-// ~80 MB compressed GLBs (the 97 MB test model compresses to ~81 MB) stay
-// well under the byte cap, and a fourth distinct model evicts the least
-// recently used one instead of growing.
+// artifactGzipCacheMaxEntries/Bytes bound the pinned memory. Eligible
+// sources are capped at artifactGzipMaxSize, so three resident entries stay
+// far under the byte cap; the byte cap remains as a backstop, and a fourth
+// distinct entry evicts the least recently used one instead of growing.
 const (
 	artifactGzipCacheMaxEntries = 3
 	artifactGzipCacheMaxBytes   = 400 << 20
