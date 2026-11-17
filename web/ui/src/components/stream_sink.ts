@@ -20,6 +20,7 @@ import {
   type ToolDomHandles,
   appendTextBlock,
   appendToolChildrenContainer,
+  appendToolBrief,
   setToolSummary,
   setToolOutput,
   writeThinkingText,
@@ -364,6 +365,9 @@ export function createFeedSink(opts: FeedSinkOptions): FeedSinkHandle {
     if (!b) return
     if (b.state === 'running') {
       setToolSummary(handles, b.summary, b.name)
+      // tool_start rendered the block, tool_run delivered the brief after —
+      // patch the box in here (before the children expand below reveals it).
+      if (b.brief) appendToolBrief(handles, b.brief)
       if (b.displayOutput) setToolOutput(handles, b.displayOutput)
       if (isCollapsibleBlock(b)) markToolCollapsible(handles.root)
       if (b.children && b.children.length > 0) expandToolChildrenForRunning(handles)

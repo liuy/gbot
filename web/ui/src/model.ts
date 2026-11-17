@@ -27,6 +27,10 @@ export type Block =
 			// the subtree_page walk back into them while the block runs.
 			truncated?: number
 			truncatedCursor?: string
+			// Agent orchestrator prompt (capped at 16384 chars server-side);
+			// renders as the brief box above the output on expand. Only Agent
+			// blocks carry it.
+			brief?: string
 	  }
 
 export type ChatMessage = {

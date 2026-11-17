@@ -462,7 +462,8 @@ func (c *WUIConnector) clearTerminalJobsLocked(slot *engineSlot) {
 func isJobFeedEventType(t types.QueryEventType) bool {
 	switch t {
 	case types.EventTextDelta, types.EventToolStart, types.EventToolParamDelta,
-		types.EventToolEnd, types.EventToolOutputDelta, types.EventAttachment,
+		types.EventToolRun, types.EventToolEnd, types.EventToolOutputDelta,
+		types.EventAttachment,
 		types.EventThinkingStart, types.EventThinkingDelta, types.EventThinkingEnd:
 		return true
 	}

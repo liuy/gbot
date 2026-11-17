@@ -60,6 +60,21 @@ export const toolDuration = tv({
 })
 export const toolBody = tv({ base: 'md-body ml-6 font-mono text-sm leading-relaxed text-t2 overflow-x-auto break-words hidden' })
 export const toolChildren = tv({ base: 'ml-6 mt-1 space-y-1 border-l border-t3/30 pl-2 hidden' })
+// Agent brief: a one-line "Prompt" fold bar + a quoted prompt body, both
+// mounted/hidden together with the tool block's expansion via the wrapper.
+// The quote holds the verbatim orchestrator prompt — plain pre-wrapped text,
+// never markdown.
+export const toolBrief = tv({ base: 'ml-6 my-1 mr-2 hidden' })
+export const toolBriefBar = tv({
+  base: 'inline-flex ml-[-5.5px] cursor-pointer select-none items-center gap-1 rounded pr-1.5 py-0.5 text-xs text-t3 transition-colors hover:bg-ink3/50',
+})
+// The 1px rule matches the children container's left border (toolChildren,
+// same wrapper margin) so both verticals sit at the same x; the bar carries
+// ml-[-5.5px] to center the rotated chevron on that line's 0.5px-inset
+// center.
+export const toolBriefQuote = tv({
+  base: 'mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap break-words border-l border-t3/30 pl-2 text-[13px] leading-relaxed text-t2 hidden',
+})
 
 export const groupSummary = tv({ base: 'font-mono text-sm text-blue' })
 export const groupDuration = tv({ base: 'font-mono text-xs text-t3' })

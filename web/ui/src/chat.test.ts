@@ -7,6 +7,7 @@ import { createTTSQueue } from './voice_tts'
 import { floatTo16Le } from './stt'
 import * as sttModule from './stt'
 import * as streamBlocks from './components/stream_blocks'
+import { renderStreamBlock } from './components/stream_blocks'
 import { copyText } from './utils/copy_button'
 import { uploadAttachment } from './upload'
 import type { HistoryChatMsg, HistoryBlock } from './types'
@@ -9355,4 +9356,189 @@ describe('chat mutation kills: residual round two', () => {
     expect(box.className).toContain('border-red/40')
   })
 
+})
+
+describe('agent brief fold bar + quote integration', () => {
+  const BRIEF_PROMPT = '按账本重写 pkg/tui 键位测试三段，每段收工即 add，mutate 对账 KILLED 恢复率 100%。'
+  const AGENT_INPUT = { description: '重写键位测试', prompt: BRIEF_PROMPT, subagent_type: 'Executor' }
+
+  function briefBox(): HTMLElement {
+    const el = document.querySelector('[data-tool-brief]') as HTMLElement | null
+    expect(el).toBeTruthy()
+    return el!
+  }
+
+  function briefQuote(): HTMLElement {
+    const el = document.querySelector('[data-tool-brief-quote]') as HTMLElement | null
+    expect(el).toBeTruthy()
+    return el!
+  }
+
+  it('live full path: tool_run stamps the quote hidden; expand reveals the fold bar above the body; commit keeps it', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'ag-1', name: 'Agent', input: {} } },
+    ])
+    // tool_run carries the full input (content_block_stop): the fold bar +
+    // quote appear but stay hidden — the block has not been expanded yet.
+    dispatchEvents([
+      { type: 'tool_run', tool_use: { id: 'ag-1', name: 'Agent', input: AGENT_INPUT } },
+    ])
+    const box = briefBox()
+    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(box.classList.contains('hidden')).toBe(true)
+    // Background-style end: tool_end right after tool_run (launch语, no sub
+    // events). The settle must keep the brief hidden but preserve its text.
+    dispatchEvents([
+      { type: 'tool_end', tool_result: { tool_use_id: 'ag-1', display_output: '已启动 Executor（后台）' } },
+    ])
+    const root = toolRootByName('Agent')
+    expect(box.classList.contains('hidden')).toBe(true)
+    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    // User expands via the header chevron: the fold bar reveals, positioned
+    // before the output body; the quote stays collapsed until its bar is
+    // clicked.
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(box.classList.contains('hidden')).toBe(false)
+    const bar = box.querySelector('[data-tool-brief-bar]') as HTMLElement
+    expect(bar.textContent).toBe('Prompt')
+    expect(briefQuote().classList.contains('hidden')).toBe(true)
+    const kids = Array.from(root.children)
+    expect(kids.indexOf(box)).toBe(1)
+    const body = kids[2] as HTMLElement
+    expect(body.classList.contains('md-body')).toBe(true)
+    expect(body.textContent).toContain('已启动 Executor（后台）')
+    // query_end commits the message verbatim: the quote survives with the
+    // exact prompt, and fold+re-expand reveals the bar again.
+    dispatchEvents([{ type: 'query_end' }])
+    const boxAfter = briefBox()
+    expect(boxAfter).toBe(box)
+    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(boxAfter.classList.contains('hidden')).toBe(false)
+  })
+
+  it('a Bash tool_run in the live path never produces a box', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'b-1', name: 'Bash', input: {} } },
+      { type: 'tool_run', tool_use: { id: 'b-1', name: 'Bash', input: { command: 'ls' } } },
+    ])
+    expect(document.querySelector('[data-tool-brief]')).toBeNull()
+  })
+
+  it('snapshot and live render the same brief: server Block with brief matches the live DOM anatomy', () => {
+    // Live path first.
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'ag-snap', name: 'Agent', input: {} } },
+      { type: 'tool_run', tool_use: { id: 'ag-snap', name: 'Agent', input: AGENT_INPUT } },
+    ])
+    const liveQuote = briefQuote()
+    // Go-identical takeover snapshot block (kind tool + brief), rendered
+    // through the shared renderStreamBlock: same dataset anchor, same quote
+    // text, same slot between header and body.
+    const parent = document.createElement('div')
+    document.body.appendChild(parent)
+    renderStreamBlock(parent, {
+      kind: 'tool',
+      id: 'ag-snap',
+      name: 'Agent',
+      summary: '',
+      isSearch: false,
+      isRead: false,
+      isList: false,
+      isLsp: false,
+      isWeb: false,
+      isTask: false,
+      state: 'running',
+      timingNs: 0,
+      displayOutput: '',
+      startedAt: 0,
+      children: [],
+      brief: BRIEF_PROMPT,
+    }, null, null)
+    const snapBox = parent.querySelector('[data-tool-brief]') as HTMLElement
+    const snapQuote = snapBox.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(snapQuote).toBeTruthy()
+    expect(snapQuote.textContent).toBe(liveQuote.textContent)
+    expect(snapQuote.textContent).toBe(BRIEF_PROMPT)
+    const snapRoot = parent.querySelector('[data-tool-root]') as HTMLElement
+    expect(Array.from(snapRoot.children).indexOf(snapBox)).toBe(1)
+    expect(Array.from(snapRoot.children)[0].hasAttribute('data-tool-header')).toBe(true)
+  })
+
+  it('history mapping: tools[].brief flows to the block and the committed renderer shows the fold bar', () => {
+    // Mapping layer: h.blocks[].tool.brief → Block.brief.
+    const mapped = mapHistoryToChatMessages([
+      histMsg({
+        blocks: [{ kind: 'tool', tool: { id: 'h-1', name: 'Agent', brief: BRIEF_PROMPT, summary: '任务' } }],
+      }),
+    ])
+    const blk = mapped[0].blocks[0]
+    expect(blk.kind).toBe('tool')
+    if (blk.kind !== 'tool') throw new Error('expected tool block')
+    expect(blk.brief).toBe(BRIEF_PROMPT)
+    // Committed renderer: the brief renders (folded until expanded).
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-brief',
+        role: 'assistant',
+        text: '',
+        thinking: [],
+        tools: [{ id: 'h-1', name: 'Agent', brief: BRIEF_PROMPT, summary: '任务' }],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '',
+        status: 'done',
+        startedAt: 0,
+        blocks: [{ kind: 'tool', tool: { id: 'h-1', name: 'Agent', brief: BRIEF_PROMPT, summary: '任务' } }],
+      }],
+      nextCursor: '',
+      hasMore: false,
+    })
+    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(briefBox().classList.contains('hidden')).toBe(true)
+    const root = toolRootByName('Agent')
+    ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
+    expect(briefBox().classList.contains('hidden')).toBe(false)
+  })
+
+  it('history without brief (pre-feature sessions) renders no box', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'history',
+      messages: [{
+        id: 'm-nobrief',
+        role: 'assistant',
+        text: '',
+        thinking: [],
+        tools: [{ id: 'h-2', name: 'Agent', summary: '老会话' }],
+        usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 },
+        error: '',
+        status: 'done',
+        startedAt: 0,
+        blocks: [{ kind: 'tool', tool: { id: 'h-2', name: 'Agent', summary: '老会话' } }],
+      }],
+      nextCursor: '',
+      hasMore: false,
+    })
+    expect(document.querySelector('[data-tool-brief]')).toBeNull()
+  })
 })

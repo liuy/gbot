@@ -5,6 +5,7 @@
 // pipeline, no parallel rendering code per surface).
 import type { Block } from '../model'
 import type { QueryEvent } from '../types'
+import { extractAgentBrief } from '../utils'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -42,7 +43,7 @@ export function applyStreamEvent(blocks: Block[], target: Block[] | null, e: Que
     case 'tool_start': {
       if (!target || !e.tool_use) return false
       const tu = e.tool_use
-      target.push({
+      const blk: ToolBlock = {
         kind: 'tool',
         id: tu.id,
         name: tu.name,
@@ -58,7 +59,23 @@ export function applyStreamEvent(blocks: Block[], target: Block[] | null, e: Que
         displayOutput: '',
         startedAt: Date.now(),
         children: [],
-      })
+      }
+      // Non-streaming providers deliver the full input on tool_start — carve
+      // the brief immediately so live store and takeover snapshot agree
+      // during the whole tool window. Only set when non-empty: a Bash block
+      // must stay briefless (undefined), not carry an empty string.
+      const brief = extractAgentBrief(tu.name, tu.input)
+      if (brief) blk.brief = brief
+      target.push(blk)
+      return true
+    }
+    case 'tool_run': {
+      if (!e.tool_use) return false
+      const b = findBlock(blocks, e.tool_use.id)
+      if (!b) return false
+      const brief = extractAgentBrief(e.tool_use.name, e.tool_use.input)
+      if (!brief || b.brief) return false
+      b.brief = brief
       return true
     }
     case 'tool_param_delta': {

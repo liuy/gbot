@@ -128,6 +128,7 @@ export type HistoryBlockTool = {
   name: string
   summary?: string
   displayOutput?: string
+  brief?: string
   isError?: boolean
   isRunning?: boolean
   durationNs?: number
@@ -156,7 +157,7 @@ export type HistoryChatMsg = {
   compactBoundary?: boolean
   text: string
   thinking: { text: string; durationNs: number }[]
-  tools: { id: string; name: string; summary?: string; displayOutput?: string; isError?: boolean; isRunning?: boolean; durationNs?: number; is_search?: boolean; is_read?: boolean; is_list?: boolean; is_lsp?: boolean; is_task?: boolean }[]
+  tools: { id: string; name: string; summary?: string; displayOutput?: string; brief?: string; isError?: boolean; isRunning?: boolean; durationNs?: number; is_search?: boolean; is_read?: boolean; is_list?: boolean; is_lsp?: boolean; is_task?: boolean }[]
   blocks?: HistoryBlock[]
   usage: {
     inputTokens: number

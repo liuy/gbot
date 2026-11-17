@@ -3349,8 +3349,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolRun,
 						ToolUse: &types.ToolUseEvent{
-							ID:   cb.ID,
-							Name: cb.Name,
+							ID:    cb.ID,
+							Name:  cb.Name,
+							Input: cb.Input,
 						},
 					})
 					streamingExecutor.SetAssistantContent(contentBlocks)

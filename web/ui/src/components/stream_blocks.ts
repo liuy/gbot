@@ -19,6 +19,7 @@ import {
   appendQueuedMessageBlock,
   appendToolBlock,
   appendToolChildrenContainer,
+  appendToolBrief,
   setToolSummary,
   writeThinkingStream,
   finishThinking,
@@ -189,6 +190,9 @@ export function renderStreamBlock(
   } else if (block.kind === 'tool') {
     const handles = appendToolBlock(parent, block.name, before, isCollapsibleBlock(block))
     if (block.summary) setToolSummary(handles, block.summary, block.name)
+    // Before the state branches: a running block with children expands below,
+    // and that reveal must also uncover the just-inserted brief.
+    if (block.brief) appendToolBrief(handles, block.brief)
     if (block.state === 'running') {
       live?.onToolRunning(handles, block, parentID)
       if ((block.children && block.children.length > 0) || (block.truncated ?? 0) > 0) {

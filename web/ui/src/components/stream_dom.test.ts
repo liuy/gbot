@@ -20,6 +20,8 @@ import {
   refreshToolDuration,
   expandToolChildrenForRunning,
   collapseToolChildrenOnDone,
+  setToolBodyVisible,
+  appendToolBrief,
   finishThinking,
 } from './stream_dom'
 import { stopStatusSweep } from './status_sweep'
@@ -686,6 +688,119 @@ describe('expandToolChildrenForRunning / collapseToolChildrenOnDone', () => {
     expect(h.childrenContainer.children.length).toBe(0)
     expect(h.childrenContainer.classList.contains('hidden')).toBe(true)
     expect(svg.getAttribute('class')).not.toContain('rotate-90')
+  })
+})
+
+describe('appendToolBrief', () => {
+  it('creates a Prompt fold bar + quote between header and body — quote collapsed with verbatim text', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, '全文任务书\n第二行')
+    const brief = h.root.querySelector('[data-tool-brief]') as HTMLElement
+    expect(brief).not.toBeNull()
+    // DOM order: header → brief → body → childrenContainer.
+    expect(h.root.children[0]).toBe(h.header)
+    expect(h.root.children[1]).toBe(brief)
+    expect(h.root.children[2]).toBe(h.body)
+    expect(h.root.children[3]).toBe(h.childrenContainer)
+    // Fold bar: literal Prompt label with a collapsed chevron.
+    const bar = brief.querySelector('[data-tool-brief-bar]') as HTMLElement
+    expect(bar).not.toBeNull()
+    expect(bar.textContent).toBe('Prompt')
+    expect(bar.getAttribute('role')).toBe('button')
+    expect(bar.tabIndex).toBe(0)
+    const svg = bar.querySelector('svg')!
+    expect(svg.getAttribute('class')).not.toContain('rotate-90')
+    // Quote body: verbatim prompt, collapsed by default; the wrapper itself is
+    // hidden until the tool block expands.
+    const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('全文任务书\n第二行')
+    expect(quote.classList.contains('hidden')).toBe(true)
+    expect(brief.classList.contains('hidden')).toBe(true)
+    expect(h.briefEl).toBe(brief)
+  })
+
+  it('clicking the fold bar toggles the quote body and syncs the chevron rotation', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, '点开看全文')
+    // Stand-in for an expanded block: the wrapper is only un-hidden by the
+    // flip drivers, never by the bar itself.
+    const brief = h.briefEl!
+    brief.classList.remove('hidden')
+    const bar = brief.querySelector('[data-tool-brief-bar]') as HTMLElement
+    const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
+    const svg = bar.querySelector('svg')!
+    bar.click()
+    expect(quote.classList.contains('hidden')).toBe(false)
+    expect(svg.getAttribute('class')).toContain('rotate-90')
+    bar.click()
+    expect(quote.classList.contains('hidden')).toBe(true)
+    expect(svg.getAttribute('class')).not.toContain('rotate-90')
+    expect(quote.textContent).toBe('点开看全文')
+    expect(brief.classList.contains('hidden')).toBe(false)
+  })
+
+  it('repeated calls reuse the same node and only update the quote text', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, 'first')
+    const first = h.briefEl
+    appendToolBrief(h, 'second')
+    expect(h.briefEl).toBe(first)
+    expect(h.root.querySelectorAll('[data-tool-brief]').length).toBe(1)
+    expect(h.root.querySelectorAll('[data-tool-brief-bar]').length).toBe(1)
+    const quote = h.root.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('second')
+  })
+
+  it('toggleToolExpanded mirrors the brief: expand reveals, fold hides with quote text kept', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, 'keep me')
+    toggleToolExpanded(h)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(false)
+    toggleToolExpanded(h)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(true)
+    const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('keep me')
+  })
+
+  it('setToolBodyVisible mirrors the brief visibility', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, 'b')
+    setToolBodyVisible(h, true)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(false)
+    setToolBodyVisible(h, false)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(true)
+  })
+
+  it('expandToolChildrenForRunning reveals the brief; collapseToolChildrenOnDone hides it but keeps quote text', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, 'survive settle')
+    expandToolChildrenForRunning(h)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(false)
+    collapseToolChildrenOnDone(h)
+    expect(h.briefEl!.classList.contains('hidden')).toBe(true)
+    const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('survive settle')
+  })
+
+  it('a plain tool without a brief toggles fine — null briefEl never throws', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Bash')
+    expect(h.briefEl).toBeNull()
+    expect(() => {
+      toggleToolExpanded(h)
+      setToolBodyVisible(h, true)
+      expandToolChildrenForRunning(h)
+      collapseToolChildrenOnDone(h)
+      toggleToolExpanded(h)
+    }).not.toThrow()
+    expect(h.root.querySelector('[data-tool-brief]')).toBeNull()
+    expect(h.root.querySelector('[data-tool-brief-bar]')).toBeNull()
   })
 })
 

@@ -1642,6 +1642,34 @@ func TestApplyJobStreamEvent_Guards(t *testing.T) {
 	}
 }
 
+// TestApplyJobStreamEvent_ToolRunBrief pins that a nested Agent tool_run folds
+// into the job feed region and stamps Brief on the block: without
+// EventToolRun in isJobFeedEventType the event would be dropped and the
+// nested block would stay briefless, forking feed vs snapshot hydration.
+func TestApplyJobStreamEvent_ToolRunBrief(t *testing.T) {
+	c := newTestConnector(t)
+	slot := mutDSlot()
+	slot.streams["agent-1"] = &streamState{feedAnchor: "toolu_p"}
+
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_p", JobID: "agent-1"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_outer", Name: "Bash"}})
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_outer", JobID: "agent-1"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_nested", Name: "Agent"}})
+	c.applyJobStreamEvent(slot, types.QueryEvent{Type: types.EventToolRun,
+		Agent:   &types.AgentMeta{ParentToolUseID: "toolu_outer", JobID: "agent-1"},
+		ToolUse: &types.ToolUseEvent{ID: "toolu_nested", Name: "Agent", Input: json.RawMessage(`{"prompt":"喂内任务书"}`)}})
+
+	nested := slot.streams["agent-1"].blocks[0].Children
+	if len(nested) != 1 || nested[0].ID != "toolu_nested" {
+		t.Fatalf("nested blocks = %+v, want exactly [tool toolu_nested]", nested)
+	}
+	if nested[0].Brief != "喂内任务书" {
+		t.Fatalf("nested Brief = %q, want 喂内任务书", nested[0].Brief)
+	}
+}
+
 // newBlankJobsSlot builds a slot with every jobs map initialised and nothing
 // in it, for the locked-function tests that drive the panel internals
 // directly.

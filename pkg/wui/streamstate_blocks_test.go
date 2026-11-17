@@ -517,3 +517,140 @@ func TestUpdateStreamState_TaskFlagPlumbing(t *testing.T) {
 		t.Fatal("expected IsTask=true after tool_end")
 	}
 }
+
+func TestUpdateStreamState_AgentBriefFromToolRun(t *testing.T) {
+	// Streaming shape: tool_start carries empty input; the brief arrives on
+	// tool_run (content_block_stop), before any sub-agent event.
+	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_a", Name: "Agent"},
+	})
+	if ss.blocks[0].Brief != "" {
+		t.Fatalf("expected empty Brief after tool_start with empty input, got %q", ss.blocks[0].Brief)
+	}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "tu_a", Name: "Agent", Input: json.RawMessage(`{"description":"d","prompt":"全文任务书"}`)},
+	})
+	if ss.blocks[0].Brief != "全文任务书" {
+		t.Fatalf("Brief = %q, want 全文任务书", ss.blocks[0].Brief)
+	}
+	if raw := string(buildPendingBlocks(ss)); !strings.Contains(raw, `"brief":"全文任务书"`) {
+		t.Fatalf("expected \"brief\":\"全文任务书\" in snapshot JSON, got: %s", raw)
+	}
+
+	// Non-streaming shape: content_block_start already carries the full input.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_b", Name: "Agent", Input: json.RawMessage(`{"prompt":"即刻任务书"}`)},
+	})
+	if ss.blocks[0].Brief != "即刻任务书" {
+		t.Fatalf("Brief after tool_start with full input = %q, want 即刻任务书", ss.blocks[0].Brief)
+	}
+
+	// Non-Agent tools never carry a brief, snapshot JSON has no brief key.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_c", Name: "Bash"},
+	})
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "tu_c", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+	})
+	if ss.blocks[0].Brief != "" {
+		t.Fatalf("Bash Brief = %q, want empty", ss.blocks[0].Brief)
+	}
+	if raw := string(buildPendingBlocks(ss)); strings.Contains(raw, "brief") {
+		t.Fatalf("expected no brief key in Bash snapshot JSON (omitempty), got: %s", raw)
+	}
+
+	// Undecodable input yields empty brief, no panic.
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "tu_c", Name: "Bash", Input: json.RawMessage(`not json`)},
+	})
+	if ss.blocks[0].Brief != "" {
+		t.Fatalf("bad-JSON Brief = %q, want empty", ss.blocks[0].Brief)
+	}
+
+	// Empty Agent input and promptless Agent input yield empty brief.
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_d", Name: "Agent"},
+	})
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "tu_d", Name: "Agent", Input: json.RawMessage(`{"description":"no prompt field"}`)},
+	})
+	if ss.blocks[0].Brief != "" {
+		t.Fatalf("promptless Agent Brief = %q, want empty", ss.blocks[0].Brief)
+	}
+
+	// Over-cap prompt truncates to 16384 runes + "..." (16387 runes total).
+	long := strings.Repeat("长", 20000)
+	ss = streamState{}
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "tu_e", Name: "Agent"},
+	})
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "tu_e", Name: "Agent", Input: json.RawMessage(`{"prompt":"` + long + `"}`)},
+	})
+	if got := []rune(ss.blocks[0].Brief); len(got) != 16387 {
+		t.Fatalf("truncated Brief rune count = %d, want 16387", len(got))
+	}
+	if !strings.HasSuffix(ss.blocks[0].Brief, "...") {
+		t.Fatalf("truncated Brief must end with ..., got suffix %q", ss.blocks[0].Brief[len(ss.blocks[0].Brief)-6:])
+	}
+	if ss.blocks[0].Brief == long {
+		t.Fatal("truncated Brief must differ from the full 20000-rune prompt")
+	}
+}
+
+func TestUpdateStreamState_ToolRunBriefUnknownBlock(t *testing.T) {
+	// tool_run for a block the snapshot never saw must not panic or append.
+	var ss streamState
+	updateStreamState(&ss, types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "ghost", Name: "Agent", Input: json.RawMessage(`{"prompt":"x"}`)},
+	})
+	if len(ss.blocks) != 0 {
+		t.Fatalf("expected no blocks, got %d", len(ss.blocks))
+	}
+	updateStreamState(&ss, types.QueryEvent{
+		Type: types.EventToolRun,
+	})
+	if len(ss.blocks) != 0 {
+		t.Fatalf("nil-ToolUse tool_run must be a no-op, got %d blocks", len(ss.blocks))
+	}
+}
+
+// TestAgentBriefFromInput_Boundaries pins the helper's guards directly: the
+// stream-level tests only feed well-formed flows, so a mutant dropping the
+// name check (a Bash input that happens to carry a prompt key would mint a
+// brief) or the Unmarshal error guard (a type-error input that still
+// populates the prompt prefix) survived here.
+func TestAgentBriefFromInput_Boundaries(t *testing.T) {
+	if got := agentBriefFromInput("Bash", json.RawMessage(`{"prompt":"x"}`)); got != "" {
+		t.Fatalf("non-Agent input with a prompt key = %q, want empty", got)
+	}
+	if got := agentBriefFromInput("", json.RawMessage(`{"prompt":"x"}`)); got != "" {
+		t.Fatalf("empty tool name = %q, want empty", got)
+	}
+	// Type errors leave earlier fields populated (prompt="x") while err != nil —
+	// the guard must discard the partial parse, not trust it.
+	if got := agentBriefFromInput("Agent", json.RawMessage(`{"prompt":"x","description":123}`)); got != "" {
+		t.Fatalf("unmarshal-error input = %q, want empty", got)
+	}
+	if got := agentBriefFromInput("Agent", nil); got != "" {
+		t.Fatalf("nil input = %q, want empty", got)
+	}
+	if got := agentBriefFromInput("Agent", json.RawMessage(`{"prompt":""}`)); got != "" {
+		t.Fatalf("empty prompt = %q, want empty", got)
+	}
+}

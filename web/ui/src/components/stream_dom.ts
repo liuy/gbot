@@ -30,6 +30,9 @@ import {
   toolDuration,
   toolBody,
   toolChildren,
+  toolBrief,
+  toolBriefBar,
+  toolBriefQuote,
   groupSummary,
   groupDuration,
   groupToolsContainer,
@@ -101,6 +104,9 @@ export interface ToolDomHandles {
   summaryEl: HTMLSpanElement
   durEl: HTMLSpanElement
   body: HTMLDivElement
+  // Agent brief fold bar + quote (orchestrator prompt); null until
+  // appendToolBrief first runs — most tool blocks never carry one.
+  briefEl: HTMLDivElement | null
   childrenContainer: HTMLDivElement
   // Any manual fold (header/body click) marks user intent — the finish-time
   // settle fold must never override it afterwards.
@@ -442,6 +448,7 @@ export function appendToolBlock(parent: HTMLElement, name: string, before?: Node
     summaryEl,
     durEl,
     body,
+    briefEl: null,
     childrenContainer,
     userTouched: false,
     pendingOutput: null,
@@ -541,6 +548,48 @@ export function appendToolChildrenContainer(handles: ToolDomHandles): HTMLDivEle
   return handles.childrenContainer
 }
 
+// Renders the Agent brief (orchestrator prompt) between header and body as a
+// fold bar ("Prompt" + chevron) plus a quoted prompt body; clicking the bar
+// toggles the quote with the same chevron-rotation idiom as the tool header.
+// Idempotent — patchTool and repeated tool_run frames call this every delta —
+// so an existing node is reused and only the quote text is updated.
+export function appendToolBrief(handles: ToolDomHandles, brief: string): void {
+  if (handles.briefEl) {
+    // quote was created by this function on first render and never removed.
+    const quote = handles.briefEl.querySelector('[data-tool-brief-quote]')!
+    if (quote.textContent !== brief) quote.textContent = brief
+    return
+  }
+  const el = createElement('div', toolBrief())
+  el.dataset.toolBrief = '1'
+
+  const bar = createElement('span', toolBriefBar())
+  bar.dataset.toolBriefBar = '1'
+  bar.setAttribute('role', 'button')
+  bar.tabIndex = 0
+  const chevronEl = createElement('span')
+  chevronEl.innerHTML = `<svg class="${chevron({ expanded: false })}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4.5 3L7.5 6L4.5 9"/></svg>`
+  bar.appendChild(chevronEl)
+  const label = createElement('span')
+  label.textContent = 'Prompt'
+  bar.appendChild(label)
+  el.appendChild(bar)
+
+  const quote = createElement('div', toolBriefQuote())
+  quote.dataset.toolBriefQuote = '1'
+  quote.textContent = brief
+  el.appendChild(quote)
+
+  bar.addEventListener('click', () => {
+    const collapsed = quote.classList.toggle('hidden')
+    const svg = chevronEl.querySelector('svg')
+    if (svg) svg.setAttribute('class', chevron({ expanded: !collapsed }))
+  })
+
+  handles.root.insertBefore(el, handles.body)
+  handles.briefEl = el
+}
+
 export function setToolSummary(handles: ToolDomHandles, summary: string, toolName?: string): void {
   if (!summary) {
     handles.summaryEl.textContent = ''
@@ -588,6 +637,7 @@ export function refreshToolDuration(handles: ToolDomHandles, startedAt: number):
 // like it, keeps the chevron synced with the body.
 export function setToolBodyVisible(handles: ToolDomHandles, visible: boolean): void {
   handles.body.classList.toggle('hidden', !visible)
+  handles.briefEl?.classList.toggle('hidden', !visible)
   const svg = handles.header.querySelector('svg')
   if (svg) svg.setAttribute('class', chevron({ expanded: visible }))
 }
@@ -628,9 +678,11 @@ export function toggleToolExpanded(handles: ToolDomHandles): void {
   if (collapsed) {
     handles.body.classList.add('hidden')
     handles.childrenContainer.classList.add('hidden')
+    handles.briefEl?.classList.add('hidden')
   } else {
     handles.body.classList.remove('hidden')
     handles.childrenContainer.classList.remove('hidden')
+    handles.briefEl?.classList.remove('hidden')
     if (handles.pendingOutput !== null) {
       // Body is visible now, so this renders (render-on-visible flush).
       const pending = handles.pendingOutput
@@ -645,6 +697,7 @@ export function toggleToolExpanded(handles: ToolDomHandles): void {
 
 export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
   handles.childrenContainer.classList.remove('hidden')
+  handles.briefEl?.classList.remove('hidden')
   const svg = handles.header.querySelector('svg')
   if (svg) svg.setAttribute('class', chevron({ expanded: true }))
 }
@@ -652,6 +705,9 @@ export function expandToolChildrenForRunning(handles: ToolDomHandles): void {
 export function collapseToolChildrenOnDone(handles: ToolDomHandles): void {
   handles.childrenContainer.replaceChildren()
   handles.childrenContainer.classList.add('hidden')
+  // Fold the brief with the children but keep its text — the bar must
+  // survive to re-expand (unlike children, whose content is transient).
+  handles.briefEl?.classList.add('hidden')
   const svg = handles.header.querySelector('svg')
   if (svg) svg.setAttribute('class', chevron({ expanded: false }))
 }

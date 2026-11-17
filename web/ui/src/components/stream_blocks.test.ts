@@ -213,3 +213,59 @@ describe('renderStreamBlock — live sink', () => {
     expect(sink.onToolRunning).toHaveBeenCalledTimes(0)
   })
 })
+
+describe('renderStreamBlock — agent brief fold bar + quote', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+  it('a tool block with brief renders bar + quote between header and body, text verbatim incl. newline', () => {
+    const parent = mount()
+    renderStreamBlock(parent, toolBlock('t1', 'Agent', { brief: '全文任务书\n第二行' }), null, null)
+    const root = parent.querySelector('[data-tool-root]') as HTMLElement
+    expect(root).not.toBeNull()
+    const brief = root.querySelector('[data-tool-brief]') as HTMLElement
+    expect(brief).not.toBeNull()
+    const header = root.querySelector('[data-tool-header]') as HTMLElement
+    expect(header).not.toBeNull()
+    // DOM order: header → brief → body → children.
+    expect(root.children[0]).toBe(header)
+    expect(root.children[1]).toBe(brief)
+    expect(root.children[2].classList.contains('md-body')).toBe(true)
+    // Fold bar carries the literal label; the quote holds the verbatim prompt.
+    const bar = brief.querySelector('[data-tool-brief-bar]') as HTMLElement
+    expect(bar.textContent).toBe('Prompt')
+    const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('全文任务书\n第二行')
+    // Done snapshot blocks render folded — brief hidden until expand.
+    expect(brief.classList.contains('hidden')).toBe(true)
+    expect(quote.classList.contains('hidden')).toBe(true)
+  })
+
+  it('a tool block without brief renders no box', () => {
+    const parent = mount()
+    renderStreamBlock(parent, toolBlock('t2', 'Bash'), null, null)
+    expect(parent.querySelector('[data-tool-brief]')).toBeNull()
+    expect(parent.querySelector('[data-tool-brief-quote]')).toBeNull()
+  })
+
+  it('a running block with children expands and reveals the brief in one render', () => {
+    const parent = mount()
+    renderStreamBlock(
+      parent,
+      toolBlock('t3', 'Agent', {
+        state: 'running',
+        brief: '跑动中的任务书',
+        children: [{ kind: 'text', id: '', text: 'sub line' }],
+      }),
+      null,
+      null,
+    )
+    const brief = parent.querySelector('[data-tool-brief]') as HTMLElement
+    expect(brief).not.toBeNull()
+    expect(brief.classList.contains('hidden')).toBe(false)
+    const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('跑动中的任务书')
+    const childText = parent.querySelector('[data-tool-children]')!.textContent
+    expect(childText).toContain('sub line')
+  })
+})

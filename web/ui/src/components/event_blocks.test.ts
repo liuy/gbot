@@ -243,3 +243,73 @@ describe('event block store — change feed / version / reset', () => {
     expect(seen).toEqual(['reset'])
   })
 })
+
+describe('event block store — agent brief', () => {
+  it('tool_run with a full Agent input stamps brief and reports a change', () => {
+    const store = createEventBlockStore()
+    store.apply(toolStart('tu1', 'Agent'))
+    expect(store.apply({
+      type: 'tool_run',
+      tool_use: { id: 'tu1', name: 'Agent', input: { description: 'd', prompt: '全文任务书' } },
+    })).toBe(true)
+    const b = firstBlock(store.blocks())
+    if (b.kind !== 'tool') throw new Error('expected tool block')
+    expect(b.brief).toBe('全文任务书')
+  })
+
+  it('non-streaming shape: tool_start with full input carves the brief immediately', () => {
+    const store = createEventBlockStore()
+    store.apply({
+      type: 'tool_start',
+      tool_use: { id: 'tu2', name: 'Agent', input: { prompt: '即刻任务书' } },
+    })
+    const b = firstBlock(store.blocks())
+    if (b.kind !== 'tool') throw new Error('expected tool block')
+    expect(b.brief).toBe('即刻任务书')
+    // A later tool_run must not overwrite (first extraction wins).
+    expect(store.apply({
+      type: 'tool_run',
+      tool_use: { id: 'tu2', name: 'Agent', input: { prompt: '另一份' } },
+    })).toBe(false)
+    expect(b.brief).toBe('即刻任务书')
+  })
+
+  it('Bash tool_run never yields a brief and reports no change', () => {
+    const store = createEventBlockStore()
+    store.apply(toolStart('tu3', 'Bash'))
+    expect(store.apply({
+      type: 'tool_run',
+      tool_use: { id: 'tu3', name: 'Bash', input: { command: 'ls' } },
+    })).toBe(false)
+    const b = firstBlock(store.blocks())
+    if (b.kind !== 'tool') throw new Error('expected tool block')
+    expect(b.brief).toBeUndefined()
+  })
+
+  it('a second tool_run for the same Agent block does not overwrite the brief', () => {
+    const store = createEventBlockStore()
+    store.apply(toolStart('tu4', 'Agent'))
+    store.apply({ type: 'tool_run', tool_use: { id: 'tu4', name: 'Agent', input: { prompt: '第一版' } } })
+    expect(store.apply({ type: 'tool_run', tool_use: { id: 'tu4', name: 'Agent', input: { prompt: '第二版' } } })).toBe(false)
+    const b = firstBlock(store.blocks())
+    if (b.kind !== 'tool') throw new Error('expected tool block')
+    expect(b.brief).toBe('第一版')
+  })
+
+  it('tool_run for an unknown block or without tool_use is a no-op', () => {
+    const store = createEventBlockStore()
+    expect(store.apply({ type: 'tool_run', tool_use: { id: 'ghost', name: 'Agent', input: { prompt: 'x' } } })).toBe(false)
+    expect(store.apply({ type: 'tool_run' })).toBe(false)
+    expect(store.blocks()).toHaveLength(0)
+  })
+
+  it('a truncated brief mirrors the 16384-char cap with "..." suffix', () => {
+    const store = createEventBlockStore()
+    store.apply(toolStart('tu5', 'Agent'))
+    store.apply({ type: 'tool_run', tool_use: { id: 'tu5', name: 'Agent', input: { prompt: 'a'.repeat(16385) } } })
+    const b = firstBlock(store.blocks())
+    if (b.kind !== 'tool') throw new Error('expected tool block')
+    expect(b.brief!.length).toBe(16387)
+    expect(b.brief!.endsWith('...')).toBe(true)
+  })
+})

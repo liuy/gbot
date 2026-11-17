@@ -3452,6 +3452,58 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 	}
 }
 
+// TestQuery_EventToolRunCarriesFullInput pins that EventToolRun (emitted at
+// content_block_stop) carries the complete accumulated tool input — the wui
+// brief box extracts the Agent prompt from it, so a missing Input would
+// silently drop every brief.
+func TestQuery_EventToolRunCarriesFullInput(t *testing.T) {
+	t.Parallel()
+
+	inputJSON := `{"description":"d","prompt":"全文任务书"}`
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_1", "Agent", inputJSON), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: "Agent", enabled: true}
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "test", "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	toolRunEvents := ec.FindEvents(types.EventToolRun)
+	if len(toolRunEvents) == 0 {
+		t.Fatal("expected EventToolRun event to be emitted")
+	}
+	var got *types.ToolUseEvent
+	for i := range toolRunEvents {
+		if toolRunEvents[i].ToolUse != nil && toolRunEvents[i].ToolUse.ID == "tu_1" {
+			got = toolRunEvents[i].ToolUse
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("no EventToolRun for tool use tu_1")
+	}
+	if string(got.Input) != inputJSON {
+		t.Errorf("EventToolRun Input = %q, want %q", string(got.Input), inputJSON)
+	}
+}
+
 func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 	t.Parallel()
 

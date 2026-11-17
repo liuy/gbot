@@ -29,6 +29,7 @@ import {
   stripAnsi,
   createOutsideClick,
   isImeKeyEvent,
+  extractAgentBrief,
 } from './utils'
 import type { Block } from './model'
 
@@ -1369,5 +1370,69 @@ describe('isImeKeyEvent', () => {
 
   it('a plain Enter keydown is not an IME key', () => {
     expect(isImeKeyEvent(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(false)
+  })
+})
+
+describe('extractAgentBrief', () => {
+  it('Agent input with a prompt returns it verbatim (CJK preserved)', () => {
+    const input = { description: 'd', prompt: '全文任务书\n第二行', subagent_type: 'Executor' }
+    expect(extractAgentBrief('Agent', input)).toBe('全文任务书\n第二行')
+  })
+
+  it('non-Agent tool names never yield a brief', () => {
+    expect(extractAgentBrief('Bash', { prompt: 'x' })).toBe('')
+    expect(extractAgentBrief('', { prompt: 'x' })).toBe('')
+  })
+
+  it('null / primitive / promptless / non-string prompt inputs yield empty', () => {
+    expect(extractAgentBrief('Agent', null)).toBe('')
+    expect(extractAgentBrief('Agent', undefined)).toBe('')
+    expect(extractAgentBrief('Agent', 'just a string')).toBe('')
+    expect(extractAgentBrief('Agent', 42)).toBe('')
+    expect(extractAgentBrief('Agent', {})).toBe('')
+    expect(extractAgentBrief('Agent', { prompt: 42 })).toBe('')
+    expect(extractAgentBrief('Agent', { prompt: '' })).toBe('')
+  })
+
+  it('a prompt over 16384 chars truncates to 16384 chars + "..." suffix', () => {
+    const long = 'a'.repeat(16385)
+    const got = extractAgentBrief('Agent', { prompt: long })
+    expect(got.length).toBe(16387)
+    expect(got.endsWith('...')).toBe(true)
+    expect(got.startsWith('a'.repeat(100))).toBe(true)
+    expect(got).not.toBe(long)
+  })
+
+  it('a prompt of exactly 16384 chars passes through untruncated', () => {
+    const exact = 'a'.repeat(16384)
+    expect(extractAgentBrief('Agent', { prompt: exact })).toBe(exact)
+  })
+
+  it('a surrogate-pair prompt over 16384 UTF-16 units but within 16384 runes is not split', () => {
+    // 9000 emoji = 18000 UTF-16 units — the naive length check treats it as
+    // over-cap, but the rune spread sees 9000 runes ≤ 16384 and passes it
+    // through unsplit. (8000 would be 16000 units and exit at the fast path.)
+    const emojiPrompt = '🦊'.repeat(9000)
+    expect(extractAgentBrief('Agent', { prompt: emojiPrompt })).toBe(emojiPrompt)
+  })
+
+  it('a prompt of exactly 16384 astral code points (32768 UTF-16 units) passes through untruncated', () => {
+    // 32768 units clears the fast path; 16384 runes sits exactly on the
+    // rune-count cap — a `<` there would wrongly append "...".
+    const exact = '🦊'.repeat(16384)
+    expect(extractAgentBrief('Agent', { prompt: exact })).toBe(exact)
+  })
+
+  it('a surrogate pair straddling the cap truncates at the rune boundary without a lone surrogate', () => {
+    // 16383 ASCII + 3 emoji = 16386 runes (16389 UTF-16 units): truncation
+    // must cut at 16384 RUNES — ending mid-emoji-pair is the bug this pins.
+    const emojiPrompt = 'a'.repeat(16383) + '🦊'.repeat(3)
+    const got = extractAgentBrief('Agent', { prompt: emojiPrompt })
+    expect(got.endsWith('...')).toBe(true)
+    const body = [...got.slice(0, -3)]
+    expect(body.length).toBe(16384)
+    expect(body.every((ch) => ch === 'a' || ch === '🦊')).toBe(true)
+    expect(body[body.length - 1]).toBe('🦊')
+    expect(got.length).toBe(16383 + 2 + 3)  // 16383 BMP units + 1 astral pair + "..."
   })
 })

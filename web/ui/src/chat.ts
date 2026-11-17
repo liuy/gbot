@@ -5,7 +5,7 @@ import {
   newAssistantMessage,
   newUserMessage,
 } from './model'
-import { classifyTool, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, unwrapEnvelopeDisplay, classifyReminderMessage, cronReminderEnvelope, formatTokenCount, VOICE_MSG_MARKER, stripVoiceMarker, type ReminderRow } from './utils'
+import { classifyTool, extractAgentBrief, isCollapsibleBlock, timeDividerLabel, unwrapQueuedReminder, unwrapEnvelopeDisplay, classifyReminderMessage, cronReminderEnvelope, formatTokenCount, VOICE_MSG_MARKER, stripVoiceMarker, type ReminderRow } from './utils'
 import { initShareMenu, type ShareSource } from './share_menu'
 import { renderMarkdown } from './markdown'
 import { morphHtml } from './morph'
@@ -46,6 +46,7 @@ import {
   expandToolChildrenForRunning,
   collapseToolChildrenOnDone,
   markToolCollapsible,
+  appendToolBrief,
 } from './components/stream_dom'
 import { writeSweepChars, stopStatusSweep } from './components/status_sweep'
 import { avatarGStyle, initAvatars, renderAvatarInto } from './avatar'
@@ -234,6 +235,7 @@ export function mapHistoryToChatMessages(histMsgs: HistoryChatMsg[]): ChatMessag
             state: (t.isError ? 'error' : t.isRunning ? 'running' : 'done') as 'error' | 'running' | 'done',
             timingNs: t.durationNs ?? 0,
             displayOutput: t.displayOutput ?? '',
+            brief: t.brief,
             startedAt: 0,
             children: [],
           })
@@ -455,6 +457,7 @@ function renderCommittedMessageDOM(
     } else if (b.kind === 'tool') {
       const handles = appendToolBlock(content, b.name, undefined, isCollapsibleBlock(b))
       if (b.summary) setToolSummary(handles, b.summary, b.name)
+      if (b.brief) appendToolBrief(handles, b.brief)
       if (b.state === 'running') {
         runningTools.push({ id: b.id, handles, block: b })
       } else {
@@ -1284,8 +1287,9 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
     is_list?: boolean
     is_lsp?: boolean
     is_task?: boolean
+    input?: unknown
   }): ToolBlock {
-    return {
+    const base: ToolBlock = {
       kind: 'tool',
       id: tu.id,
       name: tu.name,
@@ -1302,6 +1306,11 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       startedAt: Date.now(),
       children: [],
     }
+    // Non-streaming providers deliver the full input on tool_start; streaming
+    // ones fill the brief in at tool_run.
+    const brief = extractAgentBrief(tu.name, tu.input)
+    if (brief) base.brief = brief
+    return base
   }
 
   function pendingChildrenFor(parentID: string): Block[] | null {
@@ -2172,6 +2181,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (!ruEntry) return
         if (isCollapsibleBlock(ruEntry.pendingBlock)) {
           markToolCollapsible(ruEntry.handles.root)
+        }
+        // Streaming providers deliver the input here, at content_block_stop:
+        // stamp the store block and patch the box into the DOM. Idempotent,
+        // and identical for top-level and nested Agent blocks (both register
+        // in toolEntries).
+        const brief = extractAgentBrief(e.tool_use.name, e.tool_use.input)
+        if (brief) {
+          ruEntry.pendingBlock.brief = brief
+          appendToolBrief(ruEntry.handles, brief)
         }
         return
       }

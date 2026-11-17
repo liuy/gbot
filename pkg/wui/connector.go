@@ -343,6 +343,7 @@ type streamBlock struct {
 	IsLsp         bool          `json:"isLsp,omitempty"`         // kind == "tool"
 	IsTask        bool          `json:"isTask,omitempty"`        // kind == "tool"
 	IsWeb         bool          `json:"isWeb,omitempty"`         // kind == "tool"
+	Brief         string        `json:"brief,omitempty"`         // kind == "tool": Agent orchestrator prompt for the brief box
 	State         string        `json:"state,omitempty"`         // kind == "tool": "running" | "done" | "error"
 	DisplayOutput string        `json:"displayOutput,omitempty"` // kind == "tool"
 	TimingNs      int64         `json:"timingNs,omitempty"`      // kind == "tool"
@@ -1196,7 +1197,7 @@ func updateStreamState(ss *streamState, event hub.Event) {
 		if list == nil {
 			return
 		}
-		*list = append(*list, streamBlock{
+		blk := streamBlock{
 			Kind:      "tool",
 			ID:        event.ToolUse.ID,
 			Name:      event.ToolUse.Name,
@@ -1210,7 +1211,24 @@ func updateStreamState(ss *streamState, event hub.Event) {
 			State:     "running",
 			StartedAt: time.Now().UnixMilli(),
 			Children:  []streamBlock{},
-		})
+		}
+		// Non-streaming providers deliver the full input on content_block_start,
+		// so the brief can be carved immediately; streaming ones leave it empty
+		// here and tool_run fills it in.
+		blk.Brief = agentBriefFromInput(blk.Name, event.ToolUse.Input)
+		*list = append(*list, blk)
+
+	case types.EventToolRun:
+		if event.ToolUse == nil {
+			return
+		}
+		b := findBlock(ss.blocks, event.ToolUse.ID)
+		if b == nil {
+			return
+		}
+		if brief := agentBriefFromInput(event.ToolUse.Name, event.ToolUse.Input); brief != "" {
+			b.Brief = brief
+		}
 
 	case types.EventTurnStart:
 		// Top-level turn_start opens the streaming region for
@@ -1965,6 +1983,7 @@ func (c *WUIConnector) buildHistoryChatMsg(m types.Message, tools map[string]too
 				ID:      cb.ID,
 				Name:    historyAgentToolName(cb.Name, cb.Input),
 				Summary: computeToolSummary(cb.Name, cb.Input, tools),
+				Brief:   agentBriefFromInput(cb.Name, cb.Input),
 			}
 			// Compute search/read/list classification from tool definition.
 			if t, ok := tools[cb.Name]; ok {
@@ -2610,6 +2629,28 @@ func historyAgentToolName(name string, input json.RawMessage) string {
 	return display + " " + parsed.SubagentType
 }
 
+// agentBriefMaxRunes caps the brief stored in stream snapshots and history:
+// metadata frames resend the snapshot on every takeover, so a pathological
+// multi-megabyte prompt must not ride along. LLM context keeps the full text.
+const agentBriefMaxRunes = 16384
+
+// agentBriefFromInput extracts the orchestrator's prompt from an Agent tool
+// call input for the wui brief box. Non-Agent names and undecodable input
+// return "" — the box simply doesn't render.
+func agentBriefFromInput(name string, input json.RawMessage) string {
+	if name != "Agent" || len(input) == 0 {
+		return ""
+	}
+	var parsed types.AgentInput
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return ""
+	}
+	if parsed.Prompt == "" {
+		return ""
+	}
+	return tool.TruncateRunes(parsed.Prompt, agentBriefMaxRunes)
+}
+
 // computeToolSummary calls the tool's Description — same as TUI.
 func computeToolSummary(name string, input json.RawMessage, tools map[string]tool.Tool) string {
 	t, ok := tools[name]
@@ -2784,14 +2825,17 @@ type historyToolEntry struct {
 	Name          string `json:"name"`
 	Summary       string `json:"summary,omitempty"`
 	DisplayOutput string `json:"displayOutput,omitempty"`
-	IsError       bool   `json:"isError,omitempty"`
-	IsRunning     bool   `json:"isRunning,omitempty"`
-	DurationNs    int64  `json:"durationNs,omitempty"`
-	IsSearch      bool   `json:"is_search,omitempty"`
-	IsRead        bool   `json:"is_read,omitempty"`
-	IsList        bool   `json:"is_list,omitempty"`
-	IsLsp         bool   `json:"is_lsp,omitempty"`
-	IsTask        bool   `json:"is_task,omitempty"`
+	// Brief is the Agent orchestrator prompt extracted from the persisted
+	// tool_use input, for the wui brief box on history replay.
+	Brief      string `json:"brief,omitempty"`
+	IsError    bool   `json:"isError,omitempty"`
+	IsRunning  bool   `json:"isRunning,omitempty"`
+	DurationNs int64  `json:"durationNs,omitempty"`
+	IsSearch   bool   `json:"is_search,omitempty"`
+	IsRead     bool   `json:"is_read,omitempty"`
+	IsList     bool   `json:"is_list,omitempty"`
+	IsLsp      bool   `json:"is_lsp,omitempty"`
+	IsTask     bool   `json:"is_task,omitempty"`
 }
 
 type historyUsage struct {

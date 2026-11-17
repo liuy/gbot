@@ -1401,3 +1401,50 @@ describe('jobs section — incremental DOM sink', () => {
     vi.useRealTimers()
   })
 })
+
+describe('jobs section — agent brief box in feed', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+  it('tool_run patches the brief box into the rendered nested Agent card', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([agentJob('agent-1', 'running')])
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    // Streaming shape: tool_start carries an empty input; the brief arrives
+    // only on tool_run — patchTool (via the dirty tool id) is what gets it
+    // into the DOM.
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 'tu_feed_1', name: 'Agent', input: {} } }))
+    await nextFrame()
+    expect(feed.querySelector('[data-tool-brief]')).toBeNull()
+    ctx.store.applyEvent(
+      agentEvent('tool_run', {
+        tool_use: { id: 'tu_feed_1', name: 'Agent', input: { description: 'd', prompt: '喂内任务书\n两行' } },
+      }),
+    )
+    await nextFrame()
+    const brief = feed.querySelector('[data-tool-brief]') as HTMLElement
+    expect(brief).not.toBeNull()
+    const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.textContent).toBe('喂内任务书\n两行')
+    // Brief sits inside the tool card, after the header.
+    const root = feed.querySelector('[data-tool-root]') as HTMLElement
+    const kids = Array.from(root.children)
+    expect(kids.findIndex((el) => el.hasAttribute('data-tool-header'))).toBeLessThan(kids.indexOf(brief))
+  })
+
+  it('a Bash tool_run does not produce a brief box', async () => {
+    const ctx = mount()
+    ctx.store.setJobs([agentJob('agent-1', 'running')])
+    ctx.rerender()
+    rowFor(ctx.host, 'agent-1').click()
+    const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+    ctx.store.applyEvent(agentEvent('tool_start', { tool_use: { id: 'tu_feed_2', name: 'Bash', input: {} } }))
+    ctx.store.applyEvent(
+      agentEvent('tool_run', { tool_use: { id: 'tu_feed_2', name: 'Bash', input: { command: 'ls' } } }),
+    )
+    await nextFrame()
+    expect(feed.querySelector('[data-tool-brief]')).toBeNull()
+  })
+})

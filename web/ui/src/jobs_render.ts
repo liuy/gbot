@@ -105,6 +105,11 @@ export function createJobsSection(): JobsSectionHandles {
         // the container the event routed to.
         if (c.e.type === 'tool_param_delta') {
           if (c.e.partial_input?.id) rec.tools.add(c.e.partial_input.id)
+        } else if (c.e.type === 'tool_run') {
+          // tool_run carries tool_use (not tool_result) — its own branch or
+          // the id extraction below would never fire and the brief box would
+          // never reach the feed DOM via flush's patchTool loop.
+          if (c.e.tool_use?.id) rec.tools.add(c.e.tool_use.id)
         } else if (c.e.type === 'tool_output_delta' || c.e.type === 'tool_end') {
           if (c.e.tool_result?.tool_use_id) rec.tools.add(c.e.tool_result.tool_use_id)
         } else {

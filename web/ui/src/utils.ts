@@ -35,6 +35,20 @@ export function classifyTool(name: string): ToolClassification {
   }
 }
 
+// Mirrors pkg/wui connector.go agentBriefFromInput: the brief box shows the
+// orchestrator's prompt verbatim, capped at 16384 characters with an "..."
+// suffix so live store, server snapshot and history replay stay identical
+// (Go truncates by runes; the spread handles surrogate pairs at the seam).
+export function extractAgentBrief(name: string, input: unknown): string {
+  if (name !== 'Agent' || input === null || typeof input !== 'object') return ''
+  const prompt = (input as { prompt?: unknown }).prompt
+  if (typeof prompt !== 'string' || prompt === '') return ''
+  if (prompt.length <= 16384) return prompt
+  const chars = [...prompt]
+  if (chars.length <= 16384) return prompt
+  return chars.slice(0, 16384).join('') + '...'
+}
+
 export function formatDuration(seconds: number): string {
   const s = Math.floor(seconds)
   if (s < 1) {
