@@ -128,8 +128,8 @@ func TestStartPprofServer_DisableTokensSkipTheBind(t *testing.T) {
 	slog.SetDefault(slog.New(rec))
 	defer slog.SetDefault(prev)
 
-	startPprofServer("off")
-	startPprofServer("-")
+	StartPprofServer("off", nil)
+	StartPprofServer("-", nil)
 
 	if got := rec.all(); !reflect.DeepEqual(got, []string{"INFO pprof:disabled", "INFO pprof:disabled"}) {
 		t.Errorf("pprof records for \"off\" and \"-\" = %v, want two pprof:disabled records", got)
@@ -144,7 +144,7 @@ func TestStartPprofServer_EnvAddrWinsAndIsLogged(t *testing.T) {
 	slog.SetDefault(slog.New(rec))
 	defer slog.SetDefault(prev)
 
-	startPprofServer("off") // the env address must win over the cfg argument
+	StartPprofServer("off", nil) // the env address must win over the cfg argument
 
 	if !rec.waitFor("INFO pprof:listen addr="+envAddr, 3*time.Second) {
 		t.Errorf("no pprof:listen record for the env address %q, got %v", envAddr, rec.all())

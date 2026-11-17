@@ -5,8 +5,9 @@
 //
 // Env:
 //
-//	UPGRADE_TEST_DIR  — directory for signal files (ready-*, pid-*, upgrade, upgrade-failed, upgraded)
-//	UPGRADE_TEST_ADDR — listen address
+//	UPGRADE_TEST_DIR       — directory for signal files (ready-*, pid-*, upgrade, upgrade-failed, upgraded, root-exited)
+//	UPGRADE_TEST_ADDR      — listen address
+//	UPGRADE_TEST_PPROF_ADDR — pprof address for the app.StartPprofServer leg ("off" when empty)
 package main
 
 import (
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cloudflare/tableflip"
+	"github.com/liuy/gbot/pkg/app"
 )
 
 func signalFile(dir, name string) string { return filepath.Join(dir, name) }
@@ -52,6 +54,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "upgradehelper: listen %s: %v\n", addr, err)
 		os.Exit(1)
 	}
+	// Production order (start.go): the pprof fd must join the upgrader
+	// before Ready() so it is part of every later handover.
+	pprofAddr := os.Getenv("UPGRADE_TEST_PPROF_ADDR")
+	if pprofAddr == "" {
+		pprofAddr = "off"
+	}
+	app.StartPprofServer(pprofAddr, upg)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/who", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, who)
@@ -103,6 +112,10 @@ func main() {
 				srv.Close()
 			}
 			dcancel()
+			// Signals the test that the parent is fully dead: from here on
+			// only the child holds the sockets, so its probes can assert the
+			// child's pprof deterministically.
+			touch(dir, "root-exited")
 			os.Exit(0)
 		}
 		time.Sleep(50 * time.Millisecond)

@@ -74,7 +74,7 @@ func dialReachable(t *testing.T, addr string) string {
 // the server responds with the pprof index page.
 func TestStartPprofServer_Default(t *testing.T) {
 	addr := freePort(t)
-	startPprofServer(addr)
+	StartPprofServer(addr, nil)
 
 	base := dialReachable(t, addr)
 	resp, err := http.Get(base + "/debug/pprof/")
@@ -91,7 +91,7 @@ func TestStartPprofServer_Default(t *testing.T) {
 // TestStartPprofServer_Disabled verifies that addr "off" skips starting
 // the server (no listener is created).
 func TestStartPprofServer_Disabled(t *testing.T) {
-	startPprofServer("off")
+	StartPprofServer("off", nil)
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6060", 100*time.Millisecond)
 	if err == nil {
 		_ = conn.Close()
@@ -107,7 +107,7 @@ func TestStartPprofServer_EnvOverride(t *testing.T) {
 
 	// Pass a different addr; env should win.
 	cfgAddr := freePort(t)
-	startPprofServer(cfgAddr)
+	StartPprofServer(cfgAddr, nil)
 
 	// envAddr must be reachable.
 	dialReachable(t, envAddr)
@@ -124,7 +124,7 @@ func TestStartPprofServer_EnvOverride(t *testing.T) {
 // valid output — the main motivating use case for the server.
 func TestStartPprofServer_HeapProfile(t *testing.T) {
 	addr := freePort(t)
-	startPprofServer(addr)
+	StartPprofServer(addr, nil)
 	base := dialReachable(t, addr)
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", base+"/debug/pprof/heap", nil)

@@ -116,8 +116,8 @@ func RegisterDeviceWS(mux *http.ServeMux, reg *ConnectionRegistry) {
 
 // StartWSServer starts the daemon's inbound WebSocket listener. Each upgraded
 // connection is wrapped in a *deviceClient and stored in reg under its source IP
-// host portion. Mirrors cmd/gbot/main.go startPprofServer's net.Listen-then-
-// go pattern (synchronous bind failure, async serve). The returned
+// host portion. Mirrors pkg/app StartPprofServer's net.Listen-then-go pattern
+// (synchronous bind failure, async serve). The returned
 // *http.Server's Close stops the listener.
 //
 // mux is the shared ServeMux the daemon mounts all HTTP/WS routes on; device

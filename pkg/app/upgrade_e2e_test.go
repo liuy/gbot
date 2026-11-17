@@ -41,8 +41,15 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 
 	sigDir := t.TempDir()
 	addr := "127.0.0.1:" + freeTCPPort(t)
+	pprofAddr := "127.0.0.1:" + freeTCPPort(t)
 	t.Setenv("UPGRADE_TEST_DIR", sigDir)
 	t.Setenv("UPGRADE_TEST_ADDR", addr)
+	t.Setenv("UPGRADE_TEST_PPROF_ADDR", pprofAddr)
+	// The helper inherits the test process env; GBOT_PPROF_ADDR outranks the
+	// cfg argument inside StartPprofServer, so a stray value from the shell
+	// running the tests would silently move BOTH generations off pprofAddr
+	// and void every assertion below. Empty string is semantically unset.
+	t.Setenv("GBOT_PPROF_ADDR", "")
 
 	// A fresh helper must not believe it has a tableflip parent. When this
 	// test runs INSIDE a hot-restarted daemon (the daemon is itself a
@@ -65,9 +72,17 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 	if !waitForFile(t, sigDir, "ready-root", 5*time.Second) {
 		t.Fatal("root helper never reached ready-root within 5s")
 	}
+	// Precheck: the pprof leg must be armed before any upgrade happens,
+	// otherwise the handover assertions below would pass vacuously.
+	pprofBase := "http://" + pprofAddr
+	if code, err := pprofGet(pprofBase); err != nil || code != http.StatusOK {
+		t.Fatalf("pprof precheck GET = (%d, %v), want 200 — the pprof leg is not armed", code, err)
+	}
 
 	// Continuous probe: every failure (dial error or non-200) is recorded.
+	// pprof failures count separately — same handover, separate socket.
 	var probeFailures atomic.Int64
+	var pprofProbeFailures atomic.Int64
 	var probeWG sync.WaitGroup
 	probeStop := make(chan struct{})
 	base := "http://" + addr
@@ -90,6 +105,9 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 				if resp.StatusCode != http.StatusOK {
 					probeFailures.Add(1)
 				}
+			}
+			if code, err := pprofGet(pprofBase); err != nil || code != http.StatusOK {
+				pprofProbeFailures.Add(1)
 			}
 			time.Sleep(25 * time.Millisecond) // REAL-TIME — real TCP probe cadence
 		}
@@ -162,10 +180,25 @@ func TestUpgradeE2E_FDInheritanceZeroDowntimeAndRollback(t *testing.T) {
 		time.Sleep(25 * time.Millisecond) // REAL-TIME
 	}
 
+	// The parent's exit is deterministic now (root-exited touch); probes run
+	// through the whole drain window, covering fd handover + graceful drain.
+	if !waitForFile(t, sigDir, "root-exited", 10*time.Second) {
+		t.Fatal("root-exited never appeared within 10s — the draining parent did not exit")
+	}
+	// Parent dead: only the child holds the pprof socket. A child that
+	// raced the draining parent into EADDRINUSE would have warned and left
+	// this port dead for its whole lifetime.
+	if code, err := pprofGet(pprofBase); err != nil || code != http.StatusOK {
+		t.Fatalf("post-parent-death pprof GET = (%d, %v), want 200 — the upgraded child did not inherit the pprof listener", code, err)
+	}
+
 	stopProbes()
 	probeWG.Wait()
 	if n := probeFailures.Load(); n != 0 {
 		t.Fatalf("probe failures across the full handover = %d, want 0 (FD inheritance + graceful drain)", n)
+	}
+	if n := pprofProbeFailures.Load(); n != 0 {
+		t.Fatalf("pprof probe failures across the full handover = %d, want 0 (same fd handed over, zero window)", n)
 	}
 	if _, err := os.Stat(filepath.Join(sigDir, "pid-upgraded")); err != nil {
 		t.Fatal("pid-upgraded file missing — the upgraded child never wrote its pid")
@@ -187,6 +220,19 @@ func getWho(t *testing.T, base string) string {
 		t.Fatalf("read /who body: %v", err)
 	}
 	return strings.TrimSpace(string(body))
+}
+
+// pprofGet fetches /debug/pprof/ and returns the status code, draining and
+// closing the body; transport errors surface as (0, err).
+func pprofGet(base string) (int, error) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(base + "/debug/pprof/")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
 }
 
 // waitForFile polls for a signal file's existence.

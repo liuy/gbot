@@ -174,7 +174,7 @@ func Start(opts Options) (*Instance, error) {
 		slog.Warn("config: settings load failed, using defaults", "reason", cfgWarn.Reason)
 	}
 
-	startPprofServer(cfg.PprofAddr)
+	StartPprofServer(cfg.PprofAddr, upg)
 
 	// The degrade ladder: boot never dies on config (user ruling). Broken
 	// settings fall back tier by tier — see config.ResolveBoot.
