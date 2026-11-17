@@ -764,8 +764,8 @@ func TestFinalizeResult_FallbacksCarryToolUseCount(t *testing.T) {
 		result *types.SubQueryResult
 		want   string
 	}{
-		{"no-text", noText, "tool_uses: 3"},
-		{"interrupted", interrupted, "tool_uses: 2"},
+		{"no-text", noText, "3 tools"},
+		{"interrupted", interrupted, "2 tools"},
 	} {
 		blocks := at.FormatWireBlocks(tc.result)
 		if len(blocks) != 1 {

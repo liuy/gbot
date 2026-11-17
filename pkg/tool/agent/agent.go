@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -328,6 +329,32 @@ func (t *AgentTool) DecodeResult(raw json.RawMessage) (any, error) {
 	return &r, nil
 }
 
+// formatUsageTokens renders a token count on a decimal 1000 base ("84.8k"),
+// unlike utils.FormatTokenCount which is 1024-based for context-window sizes.
+func formatUsageTokens(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
+	}
+}
+
+// formatUsageDuration renders milliseconds as coarse units (42s/32m/1.4h),
+// unlike utils.FormatDuration which keeps trailing seconds for TUI displays.
+func formatUsageDuration(ms int64) string {
+	switch {
+	case ms < 60_000:
+		return fmt.Sprintf("%ds", ms/1000)
+	case ms < 3_600_000:
+		return fmt.Sprintf("%dm", ms/60_000)
+	default:
+		return fmt.Sprintf("%.1fh", float64(ms)/3_600_000)
+	}
+}
+
 // FormatWireBlocks formats the tool result for the LLM wire format as an array
 // of ContentBlock (single text block in this case).
 // Source: AgentTool.tsx:1340-1374
@@ -354,7 +381,7 @@ func (t *AgentTool) FormatWireBlocks(data any) []types.ContentBlock {
 	if result.AgentID != "" {
 		fmt.Fprintf(&sb, "\n\nagentId: %s (addressable via the message tool with to: '%s' while running)", result.AgentID, result.AgentID)
 	}
-	fmt.Fprintf(&sb, "\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", result.TotalTokens, result.TotalToolUseCount, result.TotalDurationMs)
+	fmt.Fprintf(&sb, "\n%s tok · %d tools · %s", formatUsageTokens(result.TotalTokens), result.TotalToolUseCount, formatUsageDuration(result.TotalDurationMs))
 	return []types.ContentBlock{types.NewTextBlock(sb.String())}
 }
 

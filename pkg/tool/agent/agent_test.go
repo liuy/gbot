@@ -915,8 +915,8 @@ func TestFormatWireBlocks_GeneralAgent(t *testing.T) {
 	if !strings.Contains(blocks[0].Text, "task done") {
 		t.Errorf("should contain content, got %q", blocks[0].Text)
 	}
-	if !strings.Contains(blocks[0].Text, "<usage>") {
-		t.Errorf("General agent should include usage trailer, got %q", blocks[0].Text)
+	if blocks[0].Text != "task done\n5.0k tok · 5 tools · 1s" {
+		t.Errorf("General agent should append one-line usage trailer, got %q", blocks[0].Text)
 	}
 	if strings.Contains(blocks[0].Text, "agentId:") {
 		t.Errorf("General without AgentID should not have agentId hint, got %q", blocks[0].Text)
@@ -940,7 +940,7 @@ func TestFormatWireBlocks_ForkWithAgentID(t *testing.T) {
 	if !strings.Contains(blocks[0].Text, `agentId: fork-1`) {
 		t.Errorf("should contain agentId hint, got %q", blocks[0].Text)
 	}
-	if !strings.Contains(blocks[0].Text, "<usage>") {
+	if !strings.Contains(blocks[0].Text, "\n3.0k tok · 1 tools · 2s") {
 		t.Errorf("should include usage trailer, got %q", blocks[0].Text)
 	}
 }
@@ -980,7 +980,7 @@ func TestFormatWireBlocks_OneShotWithAgentID(t *testing.T) {
 	if !strings.Contains(blocks[0].Text, `agentId: fork-3`) {
 		t.Errorf("one-shot with AgentID should have agentId hint, got %q", blocks[0].Text)
 	}
-	if !strings.Contains(blocks[0].Text, "<usage>") {
+	if !strings.Contains(blocks[0].Text, "\n500 tok · 1 tools · 0s") {
 		t.Errorf("one-shot with AgentID should have usage trailer, got %q", blocks[0].Text)
 	}
 }
@@ -997,6 +997,58 @@ func TestFormatWireBlocks_NonSubQueryResult(t *testing.T) {
 	// Should fallback to JSON marshaling
 	if !strings.Contains(blocks[0].Text, "plain string") {
 		t.Errorf("non-SubQueryResult should be JSON-marshaled, got %q", blocks[0].Text)
+	}
+}
+
+func TestFormatUsageTokens(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1.0k"},
+		{84800, "84.8k"},
+		{999999, "1000.0k"},
+		{1000000, "1.0m"},
+		{1500000, "1.5m"},
+		// Huge magnitudes make an off-by-one in the 1e6 divisor visible at
+		// one decimal place.
+		{100000000000, "100000.0m"},
+	}
+	for _, c := range cases {
+		if got := formatUsageTokens(c.n); got != c.want {
+			t.Errorf("formatUsageTokens(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+func TestFormatUsageDuration(t *testing.T) {
+	cases := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "0s"},
+		{500, "0s"},
+		{42000, "42s"},
+		{59999, "59s"},
+		{60000, "1m"},
+		// 119999 crosses a minute boundary only when divided by 59999, and
+		// 3599999 lands in the h-branch only when the bound is 3599999.
+		{119999, "1m"},
+		{1920000, "32m"},
+		{3599000, "59m"},
+		{3599999, "59m"},
+		{3600000, "1.0h"},
+		{5040000, "1.4h"},
+		// Huge magnitude makes an off-by-one in the 3.6e6 divisor visible at
+		// one decimal place.
+		{2000000000000, "555555.6h"},
+	}
+	for _, c := range cases {
+		if got := formatUsageDuration(c.ms); got != c.want {
+			t.Errorf("formatUsageDuration(%d) = %q, want %q", c.ms, got, c.want)
+		}
 	}
 }
 
