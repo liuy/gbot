@@ -235,29 +235,6 @@ func TestExploreSystemPromptContainsReadOnly(t *testing.T) {
 	}
 }
 
-func TestIsOneShotAgent(t *testing.T) {
-	tests := []struct {
-		agentType string
-		want      bool
-	}{
-		{"Explore", true},
-		{"Plan", true},
-		{"Planner", true},
-		{"General", false},
-		{"Executor", false},
-		{"Reviewer", false},
-		{"", false},
-		{"nonexistent", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.agentType, func(t *testing.T) {
-			if got := IsOneShotAgent(tt.agentType); got != tt.want {
-				t.Errorf("IsOneShotAgent(%q) = %v, want %v", tt.agentType, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuiltInAgentsHaveSourceField(t *testing.T) {
 	for _, def := range ListAgentDefinitions() {
 		if def.Source != types.AgentSourceBuiltIn {

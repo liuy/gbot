@@ -367,20 +367,17 @@ func (t *AgentTool) FormatWireBlocks(data any) []types.ContentBlock {
 		b, _ := json.Marshal(data)
 		return []types.ContentBlock{types.NewTextBlock(string(b))}
 	}
-	// One-shot: skip trailer (TS: ONE_SHOT_BUILTIN_AGENT_TYPES + !worktreeInfoText)
-	// Also skip if async-launched (fork launch message already has agentId)
-	if IsOneShotAgent(result.AgentType) && result.AgentID == "" && !result.AsyncLaunched {
-		return []types.ContentBlock{types.NewTextBlock(result.Content)}
-	}
-	// Async-launched fork: just the launch message, no trailer
+	// Async launch is the only shape where "addressable while running" holds,
+	// and the launch message already names the agent — so it stays content-only.
 	if result.AsyncLaunched {
 		return []types.ContentBlock{types.NewTextBlock(result.Content)}
 	}
+	// Deliberate divergence from TS: no OneShotAgentTypes skip-trailer branch
+	// and no agentId hint here. Addressability is a runtime property, not a
+	// static type property, and a finished agent cannot be messaged anyway —
+	// every completed result gets the same content + usage trailer.
 	var sb strings.Builder
 	sb.WriteString(result.Content)
-	if result.AgentID != "" {
-		fmt.Fprintf(&sb, "\n\nagentId: %s (addressable via the message tool with to: '%s' while running)", result.AgentID, result.AgentID)
-	}
 	fmt.Fprintf(&sb, "\n%s tok · %d tools · %s", formatUsageTokens(result.TotalTokens), result.TotalToolUseCount, formatUsageDuration(result.TotalDurationMs))
 	return []types.ContentBlock{types.NewTextBlock(sb.String())}
 }

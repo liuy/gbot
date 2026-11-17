@@ -854,7 +854,7 @@ func TestCallFork_NoForkWithoutSetNotifyFn(t *testing.T) {
 // FormatWireBlocks tests
 // ---------------------------------------------------------------------------
 
-func TestFormatWireBlocks_OneShotExplore(t *testing.T) {
+func TestFormatWireBlocks_ExploreUniformTrailer(t *testing.T) {
 	at := New()
 	result := &types.SubQueryResult{
 		AgentType:         "Explore",
@@ -870,12 +870,12 @@ func TestFormatWireBlocks_OneShotExplore(t *testing.T) {
 	if blocks[0].Type != types.ContentTypeText {
 		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
 	}
-	if blocks[0].Text != "found 3 files" {
-		t.Errorf("one-shot Explore should return only content, got %q", blocks[0].Text)
+	if blocks[0].Text != "found 3 files\n1.0k tok · 2 tools · 0s" {
+		t.Errorf("Explore result should carry the uniform usage trailer, got %q", blocks[0].Text)
 	}
 }
 
-func TestFormatWireBlocks_OneShotPlan(t *testing.T) {
+func TestFormatWireBlocks_PlanUniformTrailer(t *testing.T) {
 	at := New()
 	result := &types.SubQueryResult{
 		AgentType:         "Plan",
@@ -891,8 +891,8 @@ func TestFormatWireBlocks_OneShotPlan(t *testing.T) {
 	if blocks[0].Type != types.ContentTypeText {
 		t.Fatalf("blocks[0].Type = %q, want %q", blocks[0].Type, types.ContentTypeText)
 	}
-	if blocks[0].Text != "implementation plan" {
-		t.Errorf("one-shot Plan should return only content, got %q", blocks[0].Text)
+	if blocks[0].Text != "implementation plan\n2.0k tok · 3 tools · 0s" {
+		t.Errorf("Plan result should carry the uniform usage trailer, got %q", blocks[0].Text)
 	}
 }
 
@@ -923,7 +923,7 @@ func TestFormatWireBlocks_GeneralAgent(t *testing.T) {
 	}
 }
 
-func TestFormatWireBlocks_ForkWithAgentID(t *testing.T) {
+func TestFormatWireBlocks_SyncResultNoAgentIdHint(t *testing.T) {
 	at := New()
 	result := &types.SubQueryResult{
 		AgentID:           "fork-1",
@@ -937,11 +937,13 @@ func TestFormatWireBlocks_ForkWithAgentID(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
 	}
-	if !strings.Contains(blocks[0].Text, `agentId: fork-1`) {
-		t.Errorf("should contain agentId hint, got %q", blocks[0].Text)
+	// "addressable while running" is an empty promise for a finished agent:
+	// the sync result never carries the agentId hint.
+	if strings.Contains(blocks[0].Text, "agentId:") {
+		t.Errorf("sync result must not contain an agentId hint, got %q", blocks[0].Text)
 	}
-	if !strings.Contains(blocks[0].Text, "\n3.0k tok · 1 tools · 2s") {
-		t.Errorf("should include usage trailer, got %q", blocks[0].Text)
+	if blocks[0].Text != "completed\n3.0k tok · 1 tools · 2s" {
+		t.Errorf("sync result should be content + usage trailer only, got %q", blocks[0].Text)
 	}
 }
 
@@ -962,7 +964,7 @@ func TestFormatWireBlocks_AsyncLaunched(t *testing.T) {
 	}
 }
 
-func TestFormatWireBlocks_OneShotWithAgentID(t *testing.T) {
+func TestFormatWireBlocks_ExploreWithAgentIDNoHint(t *testing.T) {
 	at := New()
 	result := &types.SubQueryResult{
 		AgentID:           "fork-3",
@@ -976,12 +978,11 @@ func TestFormatWireBlocks_OneShotWithAgentID(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("len(blocks) = %d, want 1", len(blocks))
 	}
-	// One-shot WITH AgentID should NOT skip trailer (has agentId hint + usage)
-	if !strings.Contains(blocks[0].Text, `agentId: fork-3`) {
-		t.Errorf("one-shot with AgentID should have agentId hint, got %q", blocks[0].Text)
+	if strings.Contains(blocks[0].Text, "agentId:") {
+		t.Errorf("sync result must not contain an agentId hint, got %q", blocks[0].Text)
 	}
-	if !strings.Contains(blocks[0].Text, "\n500 tok · 1 tools · 0s") {
-		t.Errorf("one-shot with AgentID should have usage trailer, got %q", blocks[0].Text)
+	if blocks[0].Text != "search results\n500 tok · 1 tools · 0s" {
+		t.Errorf("result with AgentID should be content + uniform trailer, got %q", blocks[0].Text)
 	}
 }
 

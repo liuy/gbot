@@ -899,13 +899,13 @@ func TestRenderResult_StringPassthrough(t *testing.T) {
 	if got := at.RenderResult("plain string"); got != "plain string" {
 		t.Errorf("RenderResult(string) = %q, want %q", got, "plain string")
 	}
-	oneShotAsync := &types.SubQueryResult{AgentType: "Explore", AgentID: "agent-3", Content: "launched", AsyncLaunched: true}
-	if got := at.RenderResult(oneShotAsync); got != "Explore agent agent-3 running in background..." {
+	asyncExplore := &types.SubQueryResult{AgentType: "Explore", AgentID: "agent-3", Content: "launched", AsyncLaunched: true}
+	if got := at.RenderResult(asyncExplore); got != "Explore agent agent-3 running in background..." {
 		t.Errorf("RenderResult(async Explore) = %q", got)
 	}
 }
 
-func TestFormatWireBlocks_OneShotAsyncSkipsTrailer(t *testing.T) {
+func TestFormatWireBlocks_AsyncLaunchedSkipsTrailer(t *testing.T) {
 	t.Parallel()
 	at := New()
 	blocks := at.FormatWireBlocks(&types.SubQueryResult{
@@ -1256,28 +1256,6 @@ func TestBuiltInAgentWhenToUse(t *testing.T) {
 	}
 	if got := builtInAgents["Explore"].WhenToUse; got != wantExplore {
 		t.Errorf("Explore.WhenToUse = %q, want %q", got, wantExplore)
-	}
-}
-
-func TestIsOneShotAgent_EveryType(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		agentType string
-		want      bool
-	}{
-		{"Explore", true},
-		{"Plan", true},
-		{"Planner", true},
-		{"Critic", true},
-		{"General", false},
-		{"Executor", false},
-		{"Reviewer", false},
-		{"fork", false},
-		{"", false},
-	} {
-		if got := IsOneShotAgent(tc.agentType); got != tc.want {
-			t.Errorf("IsOneShotAgent(%q) = %v, want %v", tc.agentType, got, tc.want)
-		}
 	}
 }
 

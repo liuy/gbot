@@ -150,28 +150,10 @@ func ListAgentDefinitions() []*types.AgentDefinition {
 	return sortByAgentType(defs)
 }
 
-// ---------------------------------------------------------------------------
-// One-shot agent types
-// Source: tools/AgentTool/constants.ts:6-12 — ONE_SHOT_BUILTIN_AGENT_TYPES
-// ---------------------------------------------------------------------------
-
-// OneShotAgentTypes are agent types that run once and return a report.
-// Their wire result omits the agentId hint and usage trailer to save tokens.
-// Source: tools/AgentTool/constants.ts:6-12
-//
-// "Plan" is kept for backward compatibility (old skills may still reference
-// it); "Planner" is the current bundled name.
-var OneShotAgentTypes = map[string]bool{
-	"Explore": true,
-	"Plan":    true,
-	"Planner": true,
-	"Critic":  true,
-}
-
-// IsOneShotAgent returns true if the agent type is a one-shot agent.
-func IsOneShotAgent(agentType string) bool {
-	return OneShotAgentTypes[agentType]
-}
+// The former OneShotAgentTypes / IsOneShotAgent classification (TS
+// constants.ts ONE_SHOT_BUILTIN_AGENT_TYPES) was removed: it existed only to
+// skip the result trailer and split result formats by static type. All agent
+// types now share the uniform content + usage trailer — see FormatWireBlocks.
 
 // ---------------------------------------------------------------------------
 // System prompts — source: tools/AgentTool/built-in/*.ts
