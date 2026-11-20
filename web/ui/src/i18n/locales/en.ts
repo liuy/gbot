@@ -158,6 +158,8 @@ export const dict = {
   headerDeleteEngines: 'Delete engines',
   engineDelete: 'Delete engine',
   engineDeleteFailed: 'Delete failed — ',
+  headerRenameEngine: 'Rename engine',
+  engineRenameFailed: 'Rename failed — ',
   headerMenu: 'Menu',
   ctxTitle: 'Context Usage',
   ctxCompact: 'Compact',

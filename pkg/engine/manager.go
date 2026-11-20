@@ -268,6 +268,23 @@ func (m *EngineManager) EngineBySession(sessionID string) *Engine {
 	return nil
 }
 
+// Rename replaces an engine's display name. Engine itself is nameless —
+// vs.Name is the single source of truth (buildEngineList reads it,
+// PersistMeta serializes it) — so a rename is this field plus the caller's
+// persist. The not-found error is defense-in-depth: the wui handler
+// resolves the view state first (its scoped-error channel needs the id in
+// the message), same shape as Remove under handleEngineDelete.
+func (m *EngineManager) Rename(id, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	vs, ok := m.engines[id]
+	if !ok {
+		return fmt.Errorf("engine: %q not found", id)
+	}
+	vs.Name = name
+	return nil
+}
+
 // SetActiveModel updates the active engine's Model field. Per-engine model
 // is authoritative at runtime; settings.json is only the default for
 // newly-created engines.

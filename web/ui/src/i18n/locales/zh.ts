@@ -133,6 +133,8 @@ export const dict: Dict = {
   headerDeleteEngines: '删除引擎',
   engineDelete: '删除引擎',
   engineDeleteFailed: '删除失败 — ',
+  headerRenameEngine: '重命名引擎',
+  engineRenameFailed: '重命名失败 — ',
   headerMenu: '菜单',
   ctxTitle: '上下文用量',
   ctxCompact: '压缩',

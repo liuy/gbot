@@ -36,6 +36,7 @@ export type IconName =
   | 'door-exit'
   | 'download'
   | 'trash'
+  | 'pencil'
   | 'rotate-cw'
   | 'mic'
 
@@ -245,6 +246,14 @@ const ICONS: Record<IconName, IconDef> = {
     path: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
     variant: 'outline',
     defaultStrokeWidth: 2,
+  },
+  pencil: {
+    // lucide pencil — the engine picker footer's rename tool (prototype
+    // path verbatim). Same 2.5 stroke as the sibling +/− so the three-tool
+    // toolbar carries identical weight.
+    path: '<path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2.5,
   },
   'rotate-cw': {
     path: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',

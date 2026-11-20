@@ -41,6 +41,7 @@ import (
 	"github.com/liuy/gbot/pkg/transport"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
+	"unicode/utf8"
 )
 
 // queryEventWithAbort embeds QueryEvent and adds an "aborted" boolean for the
@@ -3844,6 +3845,86 @@ func (c *WUIConnector) switchEngine(newID string) {
 	} else {
 		newSlot.active.Store(true)
 	}
+}
+
+// engineRenameScope marks error frames produced by the engine_rename
+// handler: the client toasts them like engine_delete rejections instead of
+// routing the refusal into the chat error box.
+const engineRenameScope = "engine_rename"
+
+// maxEngineNameLen caps a rename: the name renders in the header combo and
+// the picker rows, where an unbounded string would blow out the layout.
+const maxEngineNameLen = 64
+
+// handleEngineRename sets a new display name on an engine, persists the
+// updated meta.json, and answers with a fresh engine list (action-receipt
+// pattern — no dedicated push channel). Rejections answer with a scoped
+// error frame on the same channel as engine_delete failures.
+func (c *WUIConnector) handleEngineRename(engineID, name string) {
+	if c.mgr == nil {
+		c.sendWS(buildScopedError(engineRenameScope, errors.New("engine manager unavailable")))
+		return
+	}
+	vs := c.mgr.Get(engineID)
+	if vs == nil {
+		c.sendWS(buildScopedError(engineRenameScope, fmt.Errorf("unknown engine: %s", engineID)))
+		return
+	}
+	// Same identity rejection as engine_delete: an external connector owns
+	// this engine's state, so its display name is not ours to change.
+	if vs.ReadOnly {
+		c.sendWS(buildScopedError(engineRenameScope, fmt.Errorf("engine %q is driven by an external connector and cannot be renamed", vs.Name)))
+		return
+	}
+	// Trim before the checks: a whitespace-only name IS an empty name, and
+	// the stored/echoed name must never carry padding (same normalization
+	// as createEngineForWUI).
+	name = strings.TrimSpace(name)
+	if name == "" {
+		c.sendWS(buildScopedError(engineRenameScope, errors.New("engine name must not be empty")))
+		return
+	}
+	// Characters, not bytes: the cap reads "64 characters" and a CJK name
+	// would trip a byte cap at ~21 runes.
+	if utf8.RuneCountInString(name) > maxEngineNameLen {
+		c.sendWS(buildScopedError(engineRenameScope, fmt.Errorf("engine name must be at most %d characters", maxEngineNameLen)))
+		return
+	}
+	// Renaming to the engine's own current name is a no-op success —
+	// ValidateName would reject it as a duplicate of itself.
+	if vs.Name == name {
+		c.sendWS(c.buildEngineList())
+		return
+	}
+	// The creation-path name contract applies to renames too (reserved
+	// ids, agent-N grammar, duplicates): GetByName resolution depends on
+	// names staying unambiguous.
+	if err := c.mgr.ValidateName(name); err != nil {
+		c.sendWS(buildScopedError(engineRenameScope, err))
+		return
+	}
+	if err := c.mgr.Rename(engineID, name); err != nil {
+		c.sendWS(buildScopedError(engineRenameScope, err))
+		return
+	}
+	// Same dir resolution as handleEngineDelete (slot first, view-state
+	// engine second): PersistMeta writes ALL engines from one shared
+	// project dir, any engine's dir locates the file. Empty dir (lazy view
+	// state with no slot) degrades to a no-op persist — in production the
+	// rename target is the active engine, which is always materialized.
+	dir := ""
+	c.slotsMu.RLock()
+	slot := c.slots[engineID]
+	c.slotsMu.RUnlock()
+	if slot != nil && slot.engine != nil {
+		dir = slot.engine.ProjectDir()
+	} else if vs.Engine != nil {
+		dir = vs.Engine.ProjectDir()
+	}
+	if err := c.mgr.PersistMeta(dir); err != nil {
+		slog.Warn("wui:engine_rename:PersistMeta failed", "error", err)
+	}
+	c.sendWS(c.buildEngineList())
 }
 
 // handleEngineSwitch is kept for test compatibility and readLoop dispatch.

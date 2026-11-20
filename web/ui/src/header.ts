@@ -1,6 +1,6 @@
 // @ts-expect-error fuzzysearch has no types
 import fuzzysearch from 'fuzzysearch'
-import { createPopupPanel, createPopupHost, createOutsideClick, formatTokenCount } from './utils'
+import { createPopupPanel, createPopupHost, createOutsideClick, formatTokenCount, isImeKeyEvent } from './utils'
 import type { ContextBreakdownData, ContextCategoryData, PromptSectionData } from './types'
 import { createElement, createNode, cx } from './dom'
 import { createIconButton, createTextButton, createComboButton } from './buttons'
@@ -166,6 +166,7 @@ function createModelPicker(
 function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
+  onRename?: (engineID: string, name: string) => void,
   onDelete?: (engineID: string) => void,
   onRequestEngines?: () => void,
 ): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
@@ -179,103 +180,168 @@ function createEnginePicker(
   // re-pull mid-mode keeps the mode without resurrecting armed state —
   // rows are rebuilt un-armed either way.
   let delMode = false
+  // The engine whose row is showing the inline rename input, or null. The
+  // input replaces the row's name span (prototype renameCurrent); its
+  // finalizers (Enter / Esc / blur / popup close) all funnel through
+  // renamingID — clearing it first makes every later finalizer a no-op,
+  // which is both the double-submit guard and the close-cancels rule.
+  let renamingID: string | null = null
 
-  const renderList = () => {
-    listContainer.innerHTML = ''
-    for (const entry of allEngines) {
-      const isActive = entry.id === activeID
-      const item = createElement(
-        'button',
-        cx(
-          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
-          'hover:bg-ink3/50',
-        ),
-      )
-      item.dataset.engineId = entry.id
-      const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
-      item.appendChild(dot)
-      // Single busy state, pulled on open: busy = breathing green (the
-      // ruled status green #3fb950/#1a7f37 via engine-busy, not the app-wide
-      // --color-green token); it outranks the active blue because a busy
-      // engine is the more urgent signal in the picker. Idle keeps current
-      // colors — sub-second streaming/tool alternation was visual noise.
-      let nameCls = isActive ? 'text-blue' : 'text-t2'
-      if (entry.busy) nameCls = 'text-engine-busy breathe'
-      const nameSpan = createElement('span', cx('text-[13px]', nameCls))
-      nameSpan.textContent = entry.name || entry.id
-      item.appendChild(nameSpan)
-      const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
-      modelSpan.textContent = entry.model
-      item.appendChild(modelSpan)
-      // Delete affordance appears on deletable rows only, and only while
-      // delete mode is on: the main engine is the boot anchor and system
-      // engines (dream) run daemon loops — neither can be removed. A span,
-      // not a button: rows are <button> and nested buttons are invalid HTML.
-      const deletable = onDelete !== undefined && entry.id !== 'main' && !entry.system
-      if (deletable && delMode) {
-        const trash = createElement(
-          'span',
-          'ml-auto shrink-0 p-1.5 rounded-md cursor-pointer text-t3 transition-colors hover:bg-ink3/50',
-        )
-        trash.dataset.engineDelete = entry.id
-        trash.setAttribute('aria-pressed', 'false')
-        trash.setAttribute('role', 'button')
-        trash.setAttribute('aria-label', t('engineDelete'))
-        trash.appendChild(renderIcon('trash', { size: 14 }))
-        // Two-tap confirm, sidebar Artifacts clear-all pattern: first tap
-        // arms (inline red — utilities resolve by stylesheet order, inline
-        // always wins), a 5s timer disarms, the second tap in the window
-        // executes.
-        let armed = false
-        const disarm = () => {
-          armed = false
-          trash.setAttribute('aria-pressed', 'false')
-          trash.style.color = ''
-        }
-        trash.addEventListener('click', (ev) => {
-          ev.stopPropagation()
-          if (!armed) {
-            armed = true
-            trash.setAttribute('aria-pressed', 'true')
-            trash.style.color = '#f85149'
-            // The disarm timer may outlive its row (re-render removes the
-            // DOM); firing on a detached node is a harmless no-op, so no
-            // timer bookkeeping is kept.
-            setTimeout(disarm, 5000)
-            return
-          }
-          disarm()
-          onDelete(entry.id)
-          // Collapse animation bridges the optimistic removal and the
-          // server's engine_list push: concrete start height so CSS can
-          // interpolate max-height down to zero.
-          item.style.overflow = 'hidden'
-          item.style.maxHeight = item.offsetHeight + 'px'
-          void item.offsetHeight
-          item.style.transition = 'max-height .32s ease, opacity .32s ease, padding .32s ease'
-          item.style.maxHeight = '0px'
-          item.style.opacity = '0'
-          item.style.paddingTop = '0'
-          item.style.paddingBottom = '0'
-          setTimeout(() => item.remove(), 320)
-        })
-        item.appendChild(trash)
-      }
-      if (isActive) {
-        item.addEventListener('click', () => combo.close())
-      } else {
-        item.addEventListener('click', () => {
-          onSwitch(entry.id)
-          combo.close()
-        })
-      }
-      listContainer.appendChild(item)
+  // Delete affordance appears on deletable rows only, and only while
+  // delete mode is on: the main engine is the boot anchor and system
+  // engines (dream) run daemon loops — neither can be removed. A span,
+  // not a button: rows are <button> and nested buttons are invalid HTML.
+  const appendTrash = (item: HTMLElement, entry: EngineEntry) => {
+    const deletable = onDelete !== undefined && entry.id !== 'main' && !entry.system
+    if (!deletable || !delMode) return
+    const trash = createElement(
+      'span',
+      'ml-auto shrink-0 p-1.5 rounded-md cursor-pointer text-t3 transition-colors hover:bg-ink3/50',
+    )
+    trash.dataset.engineDelete = entry.id
+    trash.setAttribute('aria-pressed', 'false')
+    trash.setAttribute('role', 'button')
+    trash.setAttribute('aria-label', t('engineDelete'))
+    trash.appendChild(renderIcon('trash', { size: 14 }))
+    // Two-tap confirm, sidebar Artifacts clear-all pattern: first tap
+    // arms (inline red — utilities resolve by stylesheet order, inline
+    // always wins), a 5s timer disarms, the second tap in the window
+    // executes.
+    let armed = false
+    const disarm = () => {
+      armed = false
+      trash.setAttribute('aria-pressed', 'false')
+      trash.style.color = ''
     }
-    // Footer toolbar (prototype layout B, diagonal): bare + pinned left,
-    // bare − pinned right — icon-only, no borders, hover wash only. The −
-    // is the delete-mode switch and renders only when the host wires
-    // deletion; without it the toggle would be a dead button.
-    const footer = createElement('div', 'flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    trash.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      if (!armed) {
+        armed = true
+        trash.setAttribute('aria-pressed', 'true')
+        trash.style.color = '#f85149'
+        // The disarm timer may outlive its row (re-render removes the
+        // DOM); firing on a detached node is a harmless no-op, so no
+        // timer bookkeeping is kept.
+        setTimeout(disarm, 5000)
+        return
+      }
+      disarm()
+      onDelete(entry.id)
+      // Collapse animation bridges the optimistic removal and the
+      // server's engine_list push: concrete start height so CSS can
+      // interpolate max-height down to zero.
+      item.style.overflow = 'hidden'
+      item.style.maxHeight = item.offsetHeight + 'px'
+      void item.offsetHeight
+      item.style.transition = 'max-height .32s ease, opacity .32s ease, padding .32s ease'
+      item.style.maxHeight = '0px'
+      item.style.opacity = '0'
+      item.style.paddingTop = '0'
+      item.style.paddingBottom = '0'
+      setTimeout(() => item.remove(), 320)
+    })
+    item.appendChild(trash)
+  }
+
+  const buildEngineRow = (entry: EngineEntry): HTMLElement => {
+    const isActive = entry.id === activeID
+    const item = createElement(
+      'button',
+      cx(
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
+        'hover:bg-ink3/50',
+      ),
+    )
+    item.dataset.engineId = entry.id
+    const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
+    item.appendChild(dot)
+    // Single busy state, pulled on open: busy = breathing green (the
+    // ruled status green #3fb950/#1a7f37 via engine-busy, not the app-wide
+    // --color-green token); it outranks the active blue because a busy
+    // engine is the more urgent signal in the picker. Idle keeps current
+    // colors — sub-second streaming/tool alternation was visual noise.
+    let nameCls = isActive ? 'text-blue' : 'text-t2'
+    if (entry.busy) nameCls = 'text-engine-busy breathe'
+    const nameSpan = createElement('span', cx('text-[13px]', nameCls))
+    nameSpan.textContent = entry.name || entry.id
+    item.appendChild(nameSpan)
+    const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
+    modelSpan.textContent = entry.model
+    item.appendChild(modelSpan)
+    appendTrash(item, entry)
+    if (isActive) {
+      item.addEventListener('click', () => combo.close())
+    } else {
+      item.addEventListener('click', () => {
+        onSwitch(entry.id)
+        combo.close()
+      })
+    }
+    return item
+  }
+
+  const buildRenameRow = (entry: EngineEntry): HTMLElement => {
+    const isActive = entry.id === activeID
+    // Editing row is a div: it hosts the rename <input>, and
+    // interactive content may not nest inside the row <button>.
+    const item = createElement(
+      'div',
+      cx(
+        'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors',
+        'hover:bg-ink3/50',
+      ),
+    )
+    item.dataset.engineId = entry.id
+    const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
+    item.appendChild(dot)
+    const input = createNode('input', {
+      className:
+        'text-[13px] bg-ink3/60 border border-hairline rounded-md px-1.5 py-0.5 text-t1 outline-none',
+      props: { value: entry.name || entry.id, spellcheck: false },
+      attrs: { 'data-engine-rename': entry.id, 'aria-label': t('headerRenameEngine') },
+      style: { width: '120px' },
+    })
+    // One-shot finalizer: the first of Enter/Esc/blur/close wins; the
+    // rest (e.g. the blur trailing an Enter) see renamingID already
+    // null and no-op. Empty-after-trim is a cancel, not a send.
+    const finishRename = (submit: boolean) => {
+      if (renamingID !== entry.id) return
+      renamingID = null
+      const v = input.value.trim()
+      // Swap only this row, not the whole list: mousedown on a sibling
+      // row blurs this input first, and a whole-list rebuild would yank
+      // the very node that pending click is pressing (sidebar replaceWith
+      // precedent). The name stays un-optimistic — the receipt's
+      // engine_list lands it.
+      item.replaceWith(buildEngineRow(entry))
+      if (submit && v) onRename?.(entry.id, v)
+    }
+    input.addEventListener('keydown', (ev) => {
+      // IME guard (sidebar rename precedent): the Enter/Escape that
+      // confirm a composition candidate belong to the IME, not the
+      // dialog — finalizing here would submit the half-composed name.
+      if (isImeKeyEvent(ev)) return
+      if (ev.key === 'Enter') {
+        ev.preventDefault()
+        finishRename(true)
+      } else if (ev.key === 'Escape') {
+        finishRename(false)
+      }
+    })
+    input.addEventListener('blur', () => finishRename(true))
+    item.appendChild(input)
+    const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
+    modelSpan.textContent = entry.model
+    item.appendChild(modelSpan)
+    appendTrash(item, entry)
+    return item
+  }
+
+  // Footer toolbar (prototype layout C, right cluster): one leading flex
+  // spacer, then ＋ ✏️ − bunched at the right edge — icon-only, no borders,
+  // hover wash only. Each tool renders only when the host wires it.
+  const appendFooter = () => {
+    const footer = createElement('div', 'flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const newBtn = createIconButton({
       icon: 'plus',
       label: t('headerNewEngine'),
@@ -311,7 +377,87 @@ function createEnginePicker(
       }
       footer.appendChild(delToggle)
     }
+    if (onRename !== undefined) {
+      const renameBtn = createIconButton({
+        icon: 'pencil',
+        label: t('headerRenameEngine'),
+        variant: 'ghost',
+        size: 'auto',
+        // 14 vs the siblings' 16 is optical, not nominal: the pencil glyph
+        // fills its whole 24×24 viewBox (coords 2..22) while +/− span 5..19,
+        // so equal sizes render the pencil visibly larger.
+        iconSize: 14,
+        className: 'p-1.5 rounded-md hover:bg-ink3/50',
+        onClick: () => {
+          // No-op while already editing (prototype renameCurrent) — the
+          // second pencil tap must not reset the user's half-typed text.
+          if (!activeID || renamingID === activeID) return
+          renamingID = activeID
+          renderList()
+        },
+      })
+      footer.appendChild(renameBtn)
+    }
     listContainer.appendChild(footer)
+  }
+
+  const renderList = () => {
+    // A re-render while an edit is armed (engine_list push) must not
+    // rebuild the live edit row: rebuilding clobbers the half-typed name
+    // back to entry.name, and detaching the focused input would fire the
+    // blur finalizer in browsers that run focus fixup on removed nodes.
+    // The row therefore stays connected the whole time and is merely
+    // re-positioned. When the edited engine vanished from the fresh
+    // list, the edit is dropped AND disarmed — a detached input's late
+    // blur must not rename a dead engine.
+    const rid = renamingID
+    let liveEditRow: HTMLElement | null = null
+    if (rid !== null) {
+      if (allEngines.some((e) => e.id === rid)) {
+        for (const el of listContainer.children) {
+          if (
+            el instanceof HTMLElement &&
+            el.dataset.engineId === rid &&
+            el.querySelector('[data-engine-rename]') !== null
+          ) {
+            liveEditRow = el
+            break
+          }
+        }
+      } else {
+        renamingID = null
+      }
+    }
+    if (liveEditRow !== null && rid !== null) {
+      for (const el of [...listContainer.children]) {
+        if (el !== liveEditRow) el.remove()
+      }
+      const renamedIdx = allEngines.findIndex((e) => e.id === rid)
+      for (let i = 0; i < allEngines.length; i++) {
+        const entry = allEngines[i]
+        if (entry.id === rid) continue
+        const row = buildEngineRow(entry)
+        if (i < renamedIdx) listContainer.insertBefore(row, liveEditRow)
+        else listContainer.appendChild(row)
+      }
+      appendFooter()
+      return
+    }
+    listContainer.innerHTML = ''
+    for (const entry of allEngines) {
+      const item = entry.id === renamingID ? buildRenameRow(entry) : buildEngineRow(entry)
+      listContainer.appendChild(item)
+      // Focus only after the row is in the document: focus() on a detached
+      // node is a no-op. The panel is attached whenever the popover is open
+      // (the host appends it before onOpen runs), so this lands on the very
+      // render that arms the edit.
+      if (entry.id === renamingID) {
+        const input = item.querySelector('[data-engine-rename]') as HTMLInputElement
+        input.focus()
+        input.select()
+      }
+    }
+    appendFooter()
   }
 
   let panelSetup = false
@@ -338,6 +484,10 @@ function createEnginePicker(
     onClose: () => {
       open = false
       delMode = false
+      // Close cancels a half-typed rename: clearing renamingID makes the
+      // input's blur finalizer (browsers fire one when the panel hides) a
+      // no-op, so nothing half-done is submitted.
+      renamingID = null
     },
   })
 
@@ -808,6 +958,7 @@ export function createHeader(opts: {
   onModelSelect: (provider: string, model: string) => void
   onEngineSwitch: (engineID: string) => void
   onEngineNew: () => void
+  onEngineRename?: (engineID: string, name: string) => void
   onEngineDelete?: (engineID: string) => void
   onEngineListRequest?: () => void
   onContextRequest?: () => void
@@ -964,7 +1115,7 @@ export function createHeader(opts: {
   }
 
   const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
-  const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew, opts.onEngineDelete, opts.onEngineListRequest)
+  const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew, opts.onEngineRename, opts.onEngineDelete, opts.onEngineListRequest)
   // Same touch-target trick for the picker combos (text is small).
   for (const w of [enginePicker.wrap, modelPicker.wrap]) {
     w.style.padding = '8px'

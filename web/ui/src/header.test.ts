@@ -1206,14 +1206,15 @@ describe('Header engine picker list', () => {
     expect(panel.classList.contains('hidden')).toBe(true)
   })
 
-  it('the footer is a diagonal toolbar: bare 16px + on the left, no − without delete wiring', () => {
+  it('the footer is the right-cluster toolbar: bare 16px +, no − without delete wiring', () => {
     setTwo()
     const panel = openPanel()
     const footer = list(panel).children[2] as HTMLElement
-    expect(footer.className).toBe('flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    // Layout C container: right cluster via justify-end + gap, no spacers.
+    expect(footer.className).toBe('flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const btns = footer.querySelectorAll('button')
     // onEngineDelete is not wired in this mount — the − toggle stays hidden
-    // and the + sits alone at the left end.
+    // and the + sits alone at the right edge.
     expect(btns.length).toBe(1)
     const plus = btns[0] as HTMLButtonElement
     expect(plus.getAttribute('aria-label')).toBe('New engine')
@@ -2282,14 +2283,19 @@ describe('Header engine picker delete', () => {
     delToggle(panel).dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
 
-  it('the footer carries bare + and − at opposite ends', () => {
+  it('the footer carries bare + and − bunched at the right edge', () => {
     const panel = openPanel()
     const footer = panel.children[0].lastElementChild as HTMLElement
-    expect(footer.className).toBe('flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    // Layout C container: right cluster via justify-end + gap, no spacers.
+    expect(footer.className).toBe('flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const btns = footer.querySelectorAll('button')
     expect(btns.length).toBe(2)
     expect((btns[0] as HTMLElement).getAttribute('aria-label')).toBe('New engine')
     expect((btns[1] as HTMLElement).getAttribute('aria-label')).toBe('Delete engines')
+    const spacers = [...footer.children].filter(
+      (c) => (c as HTMLElement).classList.contains('flex-1'),
+    )
+    expect(spacers.length).toBe(0)
     for (const b of btns) {
       expect(b.querySelector('svg')!.getAttribute('width')).toBe('16')
       expect(b.className).not.toContain('w-full')

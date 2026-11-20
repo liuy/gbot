@@ -333,6 +333,64 @@ func TestEngineManager_Remove_UnknownIDError(t *testing.T) {
 	}
 }
 
+func TestEngineManager_Rename(t *testing.T) {
+	m := NewEngineManager()
+	m.Add(newTestView("main", "main"))
+	m.Add(newTestView("e2", "engine-2"))
+	if err := m.Rename("e2", "drafts"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if got := m.Get("e2").Name; got != "drafts" {
+		t.Errorf("e2 Name = %q, want drafts", got)
+	}
+	if got := m.Get("main").Name; got != "main" {
+		t.Errorf("main Name = %q, want untouched", got)
+	}
+	// Snapshot must carry the new name: buildEngineList renders from it.
+	views, _ := m.Snapshot()
+	if views[1].Name != "drafts" {
+		t.Errorf("Snapshot[1].Name = %q, want drafts", views[1].Name)
+	}
+	err := m.Rename("nope", "x")
+	if err == nil {
+		t.Fatal("expected error for unknown id")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %q, want substring 'not found'", err.Error())
+	}
+}
+
+// Rename racing readers must stay inside the mu guard: buildEngineList
+// renders from Snapshot while a rename is in flight (the wui receipt path).
+// Under -race this pins the lock scope — the defer is load-bearing, not
+// decoration.
+func TestEngineManager_Concurrent_RenameAndGet(t *testing.T) {
+	t.Parallel()
+	m := NewEngineManager()
+	m.Add(newTestView("main", "main"))
+	m.Add(newTestView("e2", "engine-2"))
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(2 * n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			// Same value every iteration: the final Name assert below must
+			// stay deterministic.
+			_ = m.Rename("e2", "engine-2")
+		}()
+		go func() {
+			defer wg.Done()
+			m.Get("e2")
+			_, _ = m.Snapshot()
+		}()
+	}
+	wg.Wait()
+	if got := m.Get("e2").Name; got != "engine-2" {
+		t.Errorf("e2 Name = %q, want engine-2", got)
+	}
+}
+
 func TestEngineManager_Remove_ActiveEngine_ReassignsToMostRecentRemaining(t *testing.T) {
 	// Add 3 engines; active is "e3" (last added). Remove it; the fallback
 	// is the most recently added remaining engine, which is "e2".

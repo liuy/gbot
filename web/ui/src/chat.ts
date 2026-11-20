@@ -714,6 +714,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       conn.send({ type: 'engine_switch', engineID })
     },
     onEngineNew: () => conn.send({ type: 'engine_new' }),
+    onEngineRename: (engineID, name) => conn.send({ type: 'engine_rename', engineID, name }),
     onEngineDelete: (engineID) => conn.send({ type: 'engine_delete', engineID }),
     onEngineListRequest: () => conn.send({ type: 'engine_list_request' }),
     onContextRequest: () => conn.send({ type: 'context_request' }),
@@ -3038,6 +3039,13 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         if (msg.scope === 'engine_delete') {
           notifyCapsule(t('engineDeleteFailed') + msg.message, { durationMs: 4000 })
           if (lastEngines) header.setEngines(lastEngines.engines, lastEngines.activeID)
+          return
+        }
+        // Rename is not applied optimistically (the row keeps the old name
+        // until the receipt's engine_list lands), so a rejection only needs
+        // the toast — no picker restore.
+        if (msg.scope === 'engine_rename') {
+          notifyCapsule(t('engineRenameFailed') + msg.message, { durationMs: 4000 })
           return
         }
         // A failed switch must not strand the bar at the asymptote: the
