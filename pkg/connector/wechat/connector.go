@@ -175,9 +175,6 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 
 	switch event.Type {
 
-	case types.EventConnectorUserMessage:
-		return
-
 	case types.EventQueryStart:
 		c.lastFlush = time.Now()
 		c.resetStatCounters()

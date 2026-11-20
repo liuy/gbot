@@ -5,10 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
-	"strings"
 	"time"
-
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // processLoop is the serial message processing loop.
@@ -28,10 +25,9 @@ func (c *WeChatConnector) processLoop(ctx context.Context) {
 }
 
 // handleInbound processes a single inbound message through the engine.
-// Sets activeUserID, dispatches EventConnectorUserMessage (so the TUI renders
-// the user message via the shared Hub), calls the async engine query, then
-// blocks on queryDone until Handle's EventQueryEnd closes it — preserving
-// one-query-at-a-time semantics despite the async engine query.
+// Sets activeUserID, calls the async engine query, then blocks on queryDone
+// until Handle's EventQueryEnd closes it — preserving one-query-at-a-time
+// semantics despite the async engine query.
 func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage) {
 	slog.Info("wechat: process inbound", "user", safeID(msg.userID))
 
@@ -40,49 +36,6 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	done := c.queryDone
 	c.lastFlush = time.Now()
 	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
-
-	// Build display text from attachment headers. Multiple documents get a
-	// combined "[Documents: a, b]" header instead of per-file "[Document: ...]".
-	var docNames []string
-	var otherParts []string
-	for _, cb := range msg.content {
-		switch cb.Type {
-		case types.ContentTypeImage:
-			otherParts = append(otherParts, "[image]")
-		case types.ContentTypeText:
-			firstLine := cb.Text
-			if idx := strings.IndexByte(cb.Text, '\n'); idx > 0 {
-				firstLine = cb.Text[:idx]
-			}
-			if name, ok := extractDocName(firstLine); ok {
-				docNames = append(docNames, name)
-			} else {
-				otherParts = append(otherParts, firstLine)
-			}
-		}
-	}
-	var displayText string
-	if len(docNames) == 1 {
-		displayText = "[Document: " + docNames[0] + "]"
-	} else if len(docNames) > 1 {
-		displayText = "[Documents: " + strings.Join(docNames, ", ") + "]"
-	}
-	if len(otherParts) > 0 {
-		if displayText != "" {
-			displayText += " "
-		}
-		displayText += strings.Join(otherParts, " ")
-	}
-	if displayText == "" {
-		displayText = msg.text
-	}
-	c.hub.Dispatch(types.QueryEvent{
-		Type: types.EventConnectorUserMessage,
-		Message: &types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(displayText)},
-		},
-	})
 
 	// Async — returns immediately. Results arrive via Handle() events.
 	// engine may be nil in unit tests (queryFn is stubbed); guard the
@@ -140,19 +93,6 @@ func (c *WeChatConnector) sendToUser(ctx context.Context, userID, text string) e
 		}
 	}
 	return lastErr
-}
-
-// extractDocName parses "[Document: filename saved at /path]" → "filename".
-func extractDocName(header string) (string, bool) {
-	const prefix = "[Document: "
-	if !strings.HasPrefix(header, prefix) {
-		return "", false
-	}
-	rest := header[len(prefix):]
-	if idx := strings.Index(rest, " saved at "); idx > 0 {
-		return rest[:idx], true
-	}
-	return "", false
 }
 
 // isRetriable returns true for transient errors worth retrying: network

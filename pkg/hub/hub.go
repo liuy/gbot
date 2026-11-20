@@ -186,11 +186,6 @@ func logEngineEvent(event Event) {
 			slog.Info("engine:permission_ask", "tool", event.Ask.ToolName)
 		}
 
-	case types.EventConnectorUserMessage:
-		if event.Message != nil {
-			slog.Info("engine:connector_user_message")
-		}
-
 	case types.EventJobStarted, types.EventJobStatus, types.EventJobTerminated:
 		if event.Job != nil {
 			slog.Info("engine:"+string(event.Type), "id", event.Job.ID, "status", event.Job.Status)

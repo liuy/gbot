@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,127 +11,6 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
 )
-
-// pinRunInbound drives handleInbound with a query stub that closes queryDone,
-// and returns the events dispatched on the hub plus the recorded query args.
-func pinRunInbound(t *testing.T, c *WeChatConnector, msg inboundMessage) ([]types.QueryEvent, []context.Context) {
-	t.Helper()
-	h := hub.NewHub()
-	spy := &hubSpy{}
-	h.Subscribe(spy)
-	c.hub = h
-	var ctxs []context.Context
-	var mu sync.Mutex
-	c.queryFn = func(ctx context.Context, _, _ string) {
-		mu.Lock()
-		ctxs = append(ctxs, ctx)
-		mu.Unlock()
-		close(c.queryDone)
-	}
-	c.queryWithContentFn = func(ctx context.Context, _ []types.ContentBlock, _ string) {
-		mu.Lock()
-		ctxs = append(ctxs, ctx)
-		mu.Unlock()
-		close(c.queryDone)
-	}
-	c.handleInbound(context.Background(), msg)
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	return append([]types.QueryEvent(nil), spy.events...), ctxs
-}
-
-// pinDisplayText extracts the single text block of the EventConnectorUserMessage.
-func pinDisplayText(t *testing.T, events []types.QueryEvent) types.Message {
-	t.Helper()
-	for _, e := range events {
-		if e.Type == types.EventConnectorUserMessage && e.Message != nil {
-			return *e.Message
-		}
-	}
-	t.Fatalf("no EventConnectorUserMessage dispatched in %d events", len(events))
-	return types.Message{}
-}
-
-// The rendered user-message header is built from the content blocks: first
-// line only, document names collapsed into one header, images as placeholders,
-// and the caption as a last-resort fallback.
-func TestPinHandleInboundDisplayText(t *testing.T) {
-	doc := func(name string) types.ContentBlock {
-		return types.NewTextBlock("[Document: " + name + " saved at /tmp/" + name + "]")
-	}
-	img := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
-	cases := []struct {
-		name string
-		msg  inboundMessage
-		want string
-	}{
-		{
-			name: "plain text block",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{types.NewTextBlock("hello")}},
-			want: "hello",
-		},
-		{
-			name: "leading newline keeps the block text",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{types.NewTextBlock("\nabc")}},
-			want: "\nabc",
-		},
-		{
-			name: "multi-line block shows first line only",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{types.NewTextBlock("a\nbc")}},
-			want: "a",
-		},
-		{
-			name: "single document",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{doc("f.pdf")}},
-			want: "[Document: f.pdf]",
-		},
-		{
-			name: "two documents",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{doc("a.pdf"), doc("b.pdf")}},
-			want: "[Documents: a.pdf, b.pdf]",
-		},
-		{
-			name: "document plus image",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{doc("a.pdf"), img}},
-			want: "[Document: a.pdf] [image]",
-		},
-		{
-			name: "image plus text",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{img, types.NewTextBlock("hi")}},
-			want: "[image] hi",
-		},
-		{
-			name: "empty block falls back to caption",
-			msg:  inboundMessage{userID: "u1", text: "caption", content: []types.ContentBlock{types.NewTextBlock("")}},
-			want: "caption",
-		},
-		{
-			name: "no content blocks uses caption",
-			msg:  inboundMessage{userID: "u1", text: "caption"},
-			want: "caption",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c := &WeChatConnector{typingCache: newTypingTicketCache(typingTTL)}
-			events, _ := pinRunInbound(t, c, tc.msg)
-			m := pinDisplayText(t, events)
-			if m.Role != types.RoleUser {
-				t.Errorf("Message.Role = %v, want %v", m.Role, types.RoleUser)
-			}
-			if len(m.Content) != 1 {
-				t.Fatalf("len(Message.Content) = %d, want 1: %+v", len(m.Content), m.Content)
-			}
-			cb := m.Content[0]
-			if cb.Type != types.ContentTypeText {
-				t.Errorf("Content[0].Type = %v, want %v", cb.Type, types.ContentTypeText)
-			}
-			if cb.Text != tc.want {
-				t.Errorf("displayText = %q, want %q", cb.Text, tc.want)
-			}
-		})
-	}
-}
 
 // The caller's context must reach startTyping and the engine query, and the
 // engine's system prompt must be handed to the query.
@@ -252,28 +130,5 @@ func TestPinSendToUserThreadsContext(t *testing.T) {
 	}
 	if got == nil {
 		t.Error("sendMsgFn ctx = nil, want the caller's ctx")
-	}
-}
-
-// extractDocName needs the marker strictly inside the header: at index 0 there
-// is no name, and a missing marker must not slice with a negative index.
-func TestPinExtractDocName(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantName string
-		wantOK   bool
-	}{
-		{"[Document: f.pdf saved at /tmp/f.pdf]", "f.pdf", true},
-		{"[Document: x saved at y", "x", true},
-		{"[Document:  saved at y", "", false},
-		{"[Document: no marker here]", "", false},
-		{"[Document: ", "", false},
-		{"plain text", "", false},
-	}
-	for _, tc := range cases {
-		name, ok := extractDocName(tc.in)
-		if ok != tc.wantOK || name != tc.wantName {
-			t.Errorf("extractDocName(%q) = (%q, %v), want (%q, %v)", tc.in, name, ok, tc.wantName, tc.wantOK)
-		}
 	}
 }

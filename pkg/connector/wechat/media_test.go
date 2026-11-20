@@ -672,50 +672,6 @@ func TestHandleInbound_WithContentCallsQueryWithContent(t *testing.T) {
 	}
 }
 
-func TestHandleInbound_ContentImagePlaceholderInDispatch(t *testing.T) {
-	// The EventConnectorUserMessage dispatched for an image-only message must
-	// carry an [image] placeholder so the TUI does not render blank.
-	spy := &hubSpy{}
-	h := hub.NewHub()
-	h.Subscribe(spy)
-	c := &WeChatConnector{
-		hub:       h,
-		inboundCh: make(chan inboundMessage, 10),
-		queryFn:   func(context.Context, string, string) {},
-	}
-	c.queryWithContentFn = func(_ context.Context, _ []types.ContentBlock, _ string) {
-		if c.queryDone != nil {
-			close(c.queryDone)
-			c.queryDone = nil
-		}
-	}
-
-	imgBlock := types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	c.handleInbound(ctx, inboundMessage{
-		userID:  "u1",
-		text:    "",
-		content: []types.ContentBlock{imgBlock},
-	})
-
-	found := false
-	spy.mu.Lock()
-	for _, evt := range spy.events {
-		if evt.Type == types.EventConnectorUserMessage && evt.Message != nil {
-			for _, cb := range evt.Message.Content {
-				if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "[image]") {
-					found = true
-				}
-			}
-		}
-	}
-	spy.mu.Unlock()
-	if !found {
-		t.Error("EventConnectorUserMessage did not carry an [image] placeholder")
-	}
-}
-
 // TestProcessBatch_MultipleMediaMerged verifies that multiple media messages
 // arriving in one GetUpdates batch are merged into a single inboundMessage
 // with all content blocks combined — not enqueued as separate messages.
@@ -776,58 +732,6 @@ func TestProcessBatch_MultipleMediaMerged(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("processBatch did not enqueue within 2s")
-	}
-}
-
-// display text for a document with a caption does not repeat the caption.
-// content has [document block, caption block] — displayText starts with
-// msg.text (caption), then the loop must NOT append the caption block's
-// first line again.
-func TestHandleInbound_DocumentDisplayTextNoDuplicate(t *testing.T) {
-	spy := &hubSpy{}
-	h := hub.NewHub()
-	h.Subscribe(spy)
-	c := &WeChatConnector{
-		hub:       h,
-		inboundCh: make(chan inboundMessage, 10),
-		queryFn:   func(context.Context, string, string) {},
-	}
-	c.queryWithContentFn = func(_ context.Context, _ []types.ContentBlock, _ string) {
-		if c.queryDone != nil {
-			close(c.queryDone)
-			c.queryDone = nil
-		}
-	}
-
-	caption := "Summarize this document."
-	docBlock := types.NewTextBlock("[Document: report.pdf saved at /tmp/report.pdf]\nPDF content here")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	c.handleInbound(ctx, inboundMessage{
-		userID:  "u1",
-		text:    caption,
-		content: []types.ContentBlock{docBlock, types.NewTextBlock(caption)},
-	})
-
-	var displayText string
-	spy.mu.Lock()
-	for _, evt := range spy.events {
-		if evt.Type == types.EventConnectorUserMessage && evt.Message != nil {
-			for _, cb := range evt.Message.Content {
-				if cb.Type == types.ContentTypeText {
-					displayText = cb.Text
-				}
-			}
-		}
-	}
-	spy.mu.Unlock()
-
-	// Document header must be present with extracted name.
-	if !strings.Contains(displayText, "[Document:") {
-		t.Errorf("displayText %q missing '[Document:' header", displayText)
-	}
-	if !strings.Contains(displayText, "report.pdf") {
-		t.Errorf("displayText %q missing filename 'report.pdf'", displayText)
 	}
 }
 

@@ -1447,11 +1447,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.status.SetInfo(string(m))
 		return true, nil
 
-	case userMessageMsg:
-		a.markViewportDirty()
-		a.repl.AddUserMessage(m.Text)
-		return true, a.readEvents()
-
 	case submitMsg:
 		return true, a.handleSubmitRepl(m.Text)
 

@@ -325,19 +325,6 @@ func TestHandle_NoActiveUser_DoesNotSend(t *testing.T) {
 	}
 }
 
-func TestHandle_ConnectorUserMessage_NoOp(t *testing.T) {
-	c, sent := newStatConnector()
-	// This event is connector-emitted; Handle must ignore it (no send).
-	c.Handle(types.QueryEvent{
-		Type:    types.EventConnectorUserMessage,
-		Message: &types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
-	})
-
-	if len(*sent) != 0 {
-		t.Fatalf("sent count = %d, want 0 (connector user message is a no-op in Handle)", len(*sent))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // sendWeChatReply: empty formatted text does not send
 // ---------------------------------------------------------------------------

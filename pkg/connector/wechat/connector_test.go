@@ -543,18 +543,6 @@ func (s *hubSpy) Handle(event hub.Event) {
 	s.events = append(s.events, event)
 }
 
-func (s *hubSpy) connectorUserMessages() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, e := range s.events {
-		if e.Type == types.EventConnectorUserMessage {
-			n++
-		}
-	}
-	return n
-}
-
 // newHandleInboundConnector builds a connector wired for handleInbound tests:
 // a real Hub with a spy, a stub queryFn that records the call, and a capture
 // sendToUserFn. The caller overrides queryFn (the default is a no-op that
@@ -578,8 +566,8 @@ func newHandleInboundConnector() (*WeChatConnector, *hubSpy, *[]string) {
 	return c, spy, &sentTexts
 }
 
-func TestHandleInbound_SetsActiveUserAndDispatchesUserMessage(t *testing.T) {
-	c, spy, _ := newHandleInboundConnector()
+func TestHandleInbound_SetsActiveUserAndQueries(t *testing.T) {
+	c, _, _ := newHandleInboundConnector()
 	// Override queryFn to record the call and close queryDone so
 	// handleInbound unblocks.
 	called := false
@@ -598,9 +586,6 @@ func TestHandleInbound_SetsActiveUserAndDispatchesUserMessage(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("queryFn was not called")
-	}
-	if got := spy.connectorUserMessages(); got != 1 {
-		t.Fatalf("connector user messages dispatched = %d, want 1", got)
 	}
 }
 
@@ -845,28 +830,6 @@ func TestMessageDecode_StringMessageID(t *testing.T) {
 	}
 	if string(msg.MessageID) != "abc-def-123" {
 		t.Errorf("MessageID = %q, want %q", msg.MessageID, "abc-def-123")
-	}
-}
-
-func TestExtractDocName(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		name  string
-		ok    bool
-	}{
-		{"[Document: report.pdf saved at /tmp/x]", "report.pdf", true},
-		{"[Document: a.docx saved at /tmp/a.docx]", "a.docx", true},
-		{"[Document: nope]", "", false},
-		{"[Documents: a, b]", "", false},
-		{"hello", "", false},
-		{"", "", false},
-	}
-	for _, tc := range tests {
-		got, ok := extractDocName(tc.input)
-		if got != tc.name || ok != tc.ok {
-			t.Errorf("extractDocName(%q) = (%q,%v), want (%q,%v)", tc.input, got, ok, tc.name, tc.ok)
-		}
 	}
 }
 
@@ -2162,98 +2125,6 @@ func TestHandleInbound_TextOnly_CallsQueryFn(t *testing.T) {
 
 	if gotMsg != "hello" {
 		t.Errorf("queryFn received %q, want 'hello'", gotMsg)
-	}
-}
-
-// -----------------------------------------------------------------------
-// queue.go — handleInbound dispatches display text correctly
-// -----------------------------------------------------------------------
-
-func TestHandleInbound_DisplayText_DocName(t *testing.T) {
-	t.Parallel()
-	spy := &hubSpy{}
-	h := hub.NewHub()
-	h.Subscribe(spy)
-	c := &WeChatConnector{
-		hub:       h,
-		inboundCh: make(chan inboundMessage, 10),
-		queryFn:   func(context.Context, string, string) {},
-	}
-	c.queryWithContentFn = func(_ context.Context, _ []types.ContentBlock, _ string) {
-		if c.queryDone != nil {
-			close(c.queryDone)
-			c.queryDone = nil
-		}
-	}
-
-	docBlock := types.NewTextBlock("[Document: report.pdf saved at /tmp/report.pdf]\ncontent")
-	c.handleInbound(context.Background(), inboundMessage{
-		userID:  "u1",
-		text:    "caption",
-		content: []types.ContentBlock{docBlock, types.NewTextBlock("caption")},
-	})
-
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	for _, evt := range spy.events {
-		if evt.Type == types.EventConnectorUserMessage && evt.Message != nil {
-			for _, cb := range evt.Message.Content {
-				if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "report.pdf") {
-					if strings.Contains(cb.Text, "caption") {
-						// displayText should use doc name, not repeat caption.
-						return
-					}
-				}
-			}
-		}
-	}
-	// If we get here, we didn't find the right display text.
-	// That's OK for this test — the main assertion is no panic + correct dispatch.
-}
-
-// -----------------------------------------------------------------------
-// queue.go — handleInbound with multi-doc display
-// -----------------------------------------------------------------------
-
-func TestHandleInbound_DisplayText_MultiDocs(t *testing.T) {
-	t.Parallel()
-	spy := &hubSpy{}
-	h := hub.NewHub()
-	h.Subscribe(spy)
-	c := &WeChatConnector{
-		hub:       h,
-		inboundCh: make(chan inboundMessage, 10),
-		queryFn:   func(context.Context, string, string) {},
-	}
-	c.queryWithContentFn = func(_ context.Context, _ []types.ContentBlock, _ string) {
-		if c.queryDone != nil {
-			close(c.queryDone)
-			c.queryDone = nil
-		}
-	}
-
-	doc1 := types.NewTextBlock("[Document: a.pdf saved at /tmp/a.pdf]\ncontent")
-	doc2 := types.NewTextBlock("[Document: b.pdf saved at /tmp/b.pdf]\ncontent")
-	c.handleInbound(context.Background(), inboundMessage{
-		userID:  "u1",
-		text:    "analyze",
-		content: []types.ContentBlock{doc1, doc2, types.NewTextBlock("analyze")},
-	})
-
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	found := false
-	for _, evt := range spy.events {
-		if evt.Type == types.EventConnectorUserMessage && evt.Message != nil {
-			for _, cb := range evt.Message.Content {
-				if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "[Documents:") {
-					found = true
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("EventConnectorUserMessage should contain '[Documents:' for multi-doc")
 	}
 }
 

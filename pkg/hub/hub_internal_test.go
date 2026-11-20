@@ -302,16 +302,6 @@ func TestLogEngineEvent_ExactRecords(t *testing.T) {
 			want:  []logRecord{info("engine:permission_ask", "tool", "Bash")},
 		},
 		{
-			name:  "connector_user_message_nil_emits_nothing",
-			event: Event{Type: types.EventConnectorUserMessage},
-			want:  nil,
-		},
-		{
-			name:  "connector_user_message",
-			event: Event{Type: types.EventConnectorUserMessage, Message: &types.Message{Role: types.RoleUser}},
-			want:  []logRecord{info("engine:connector_user_message")},
-		},
-		{
 			name:  "job_started_nil_emits_nothing",
 			event: Event{Type: types.EventJobStarted},
 			want:  nil,
