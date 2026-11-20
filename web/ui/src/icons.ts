@@ -7,6 +7,7 @@ export type IconName =
   | 'maximize'
   | 'one-to-one'
   | 'plus'
+  | 'minus'
   | 'send'
   | 'camera'
   | 'image'
@@ -87,6 +88,13 @@ const ICONS: Record<IconName, IconDef> = {
   },
   plus: {
     path: '<path d="M12 5v14M5 12h14"/>',
+    variant: 'outline',
+    defaultStrokeWidth: 2.5,
+  },
+  minus: {
+    // Horizontal half of plus so the engine picker's + / − toolbar pair
+    // carries identical stroke weight.
+    path: '<path d="M5 12h14"/>',
     variant: 'outline',
     defaultStrokeWidth: 2.5,
   },

@@ -173,6 +173,12 @@ function createEnginePicker(
 
   let allEngines: EngineEntry[] = []
   let activeID = ''
+  // Delete mode is popover-scoped and off by default: trash affordances
+  // only exist while it is on, so the resting picker shows zero ways to
+  // delete an engine. Reset on close (not on re-render) so a snapshot
+  // re-pull mid-mode keeps the mode without resurrecting armed state —
+  // rows are rebuilt un-armed either way.
+  let delMode = false
 
   const renderList = () => {
     listContainer.innerHTML = ''
@@ -201,12 +207,12 @@ function createEnginePicker(
       const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
       modelSpan.textContent = entry.model
       item.appendChild(modelSpan)
-      // Delete affordance on deletable rows only: the main engine is the
-      // boot anchor and system engines (dream) run daemon loops — neither
-      // can be removed. A span, not a button: rows are <button> and nested
-      // buttons are invalid HTML.
+      // Delete affordance appears on deletable rows only, and only while
+      // delete mode is on: the main engine is the boot anchor and system
+      // engines (dream) run daemon loops — neither can be removed. A span,
+      // not a button: rows are <button> and nested buttons are invalid HTML.
       const deletable = onDelete !== undefined && entry.id !== 'main' && !entry.system
-      if (deletable) {
+      if (deletable && delMode) {
         const trash = createElement(
           'span',
           'ml-auto shrink-0 p-1.5 rounded-md cursor-pointer text-t3 transition-colors hover:bg-ink3/50',
@@ -265,18 +271,46 @@ function createEnginePicker(
       }
       listContainer.appendChild(item)
     }
-    const footer = createIconButton({
+    // Footer toolbar (prototype layout B, diagonal): bare + pinned left,
+    // bare − pinned right — icon-only, no borders, hover wash only. The −
+    // is the delete-mode switch and renders only when the host wires
+    // deletion; without it the toggle would be a dead button.
+    const footer = createElement('div', 'flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    const newBtn = createIconButton({
       icon: 'plus',
       label: t('headerNewEngine'),
-      variant: 'default',
-      size: 'md',
-      iconSize: 18,
-      className: 'w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1 hover:bg-ink3/50',
+      variant: 'ghost',
+      size: 'auto',
+      iconSize: 16,
+      className: 'p-1.5 rounded-md hover:bg-ink3/50',
       onClick: () => {
         onNew()
         combo.close()
       },
     })
+    footer.appendChild(newBtn)
+    if (onDelete !== undefined) {
+      const delToggle = createIconButton({
+        icon: 'minus',
+        label: t('headerDeleteEngines'),
+        variant: 'ghost',
+        size: 'auto',
+        iconSize: 16,
+        className: 'p-1.5 rounded-md hover:bg-ink3/50',
+        onClick: () => {
+          delMode = !delMode
+          renderList()
+        },
+      })
+      delToggle.setAttribute('aria-pressed', String(delMode))
+      if (delMode) {
+        // Inline always wins the cascade (same trick as the armed trash):
+        // red + light wash mark the mode-active toggle.
+        delToggle.style.color = '#f85149'
+        delToggle.style.backgroundColor = 'var(--color-ink3)'
+      }
+      footer.appendChild(delToggle)
+    }
     listContainer.appendChild(footer)
   }
 
@@ -303,6 +337,7 @@ function createEnginePicker(
     },
     onClose: () => {
       open = false
+      delMode = false
     },
   })
 

@@ -6905,7 +6905,9 @@ describe('chat mutation kills: header and input wiring', () => {
     const trigger = headerComboTriggers().find((b) => b.textContent === 'agent-1')!
     trigger.click()
     const panel = document.querySelector('[data-testid="engine-picker-panel"]') as HTMLElement
-    const footer = panel.querySelectorAll('button')[panel.querySelectorAll('button').length - 1] as HTMLButtonElement
+    // The footer is a +/− toolbar now: address the + by its aria-label, not
+    // by DOM position (the − toggle is the last button in the panel).
+    const footer = panel.querySelector('button[aria-label="New engine"]') as HTMLButtonElement
     footer.click()
     expect(sent).toContainEqual({ type: 'engine_new' })
   })

@@ -75,6 +75,14 @@ describe('renderIcon — outline variant', () => {
     expect(renderIcon('plus').getAttribute('stroke-width')).toBe('2.5')
   })
 
+  it('minus mirrors plus: one horizontal path at strokeWidth 2.5', () => {
+    const el = renderIcon('minus')
+    expect(el.children.length).toBe(1)
+    expect(el.children[0].tagName).toBe('path')
+    expect(el.getAttribute('stroke-width')).toBe('2.5')
+    expect(el.getAttribute('fill')).toBe('none')
+  })
+
   it('camera strokeWidth defaults to 2', () => {
     expect(renderIcon('camera').getAttribute('stroke-width')).toBe('2')
   })

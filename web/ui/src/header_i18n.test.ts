@@ -64,13 +64,22 @@ describe('header i18n', () => {
     expect(header.root.querySelector('button[aria-label="菜单"]')).not.toBeNull()
   })
 
-  it('engine picker footer resolves 新建引擎 at render time', () => {
+  it('engine picker footer resolves 新建引擎 and 删除引擎 at render time', () => {
     localStorage.setItem('gbot-language', 'zh')
     initLocale()
-    const header = mountHeader()
+    // The − toggle renders only with delete wiring, so this mount carries
+    // onEngineDelete (chat always provides it in production).
+    const header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onEngineDelete: () => {},
+    })
+    document.body.appendChild(header.root)
     clickEngineTrigger(header)
     const panel = document.body.querySelector('[data-testid="engine-picker-panel"]') as HTMLElement
     expect(panel.querySelector('button[aria-label="新建引擎"]')).not.toBeNull()
+    expect(panel.querySelector('button[aria-label="删除引擎"]')).not.toBeNull()
   })
 
   it('a language switch retranslates the boot-resident placeholder in place', () => {

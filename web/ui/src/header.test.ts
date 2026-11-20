@@ -1206,13 +1206,29 @@ describe('Header engine picker list', () => {
     expect(panel.classList.contains('hidden')).toBe(true)
   })
 
-  it('the footer starts a new engine and closes the panel', () => {
+  it('the footer is a diagonal toolbar: bare 16px + on the left, no − without delete wiring', () => {
     setTwo()
     const panel = openPanel()
-    const footer = list(panel).children[2] as HTMLButtonElement
-    expect(footer.getAttribute('aria-label')).toBe('New engine')
-    expect(footer.className).toContain('w-full justify-center px-3 py-2 rounded-lg border-t border-hairline mt-1 hover:bg-ink3/50')
-    footer.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const footer = list(panel).children[2] as HTMLElement
+    expect(footer.className).toBe('flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    const btns = footer.querySelectorAll('button')
+    // onEngineDelete is not wired in this mount — the − toggle stays hidden
+    // and the + sits alone at the left end.
+    expect(btns.length).toBe(1)
+    const plus = btns[0] as HTMLButtonElement
+    expect(plus.getAttribute('aria-label')).toBe('New engine')
+    expect(plus.querySelector('svg')!.getAttribute('width')).toBe('16')
+    expect(plus.className).not.toContain('w-full')
+    expect(plus.textContent).toBe('')
+  })
+
+  it('the + button starts a new engine and closes the panel', () => {
+    setTwo()
+    const panel = openPanel()
+    const plus = (list(panel).children[2] as HTMLElement).querySelector(
+      'button[aria-label="New engine"]',
+    ) as HTMLButtonElement
+    plus.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(newed).toBe(true)
     expect(panel.classList.contains('hidden')).toBe(true)
   })
@@ -2257,9 +2273,45 @@ describe('Header engine picker delete', () => {
   function clickTrash(panel: HTMLElement, engineID: string): void {
     trashFor(panel, engineID)!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
+  function delToggle(panel: HTMLElement): HTMLButtonElement {
+    const btn = panel.querySelector('button[aria-label="Delete engines"]') as HTMLButtonElement
+    if (!btn) throw new Error('delete-mode toggle not found')
+    return btn
+  }
+  function enableDelMode(panel: HTMLElement): void {
+    delToggle(panel).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
 
-  it('main and system rows carry no trash; other rows do', () => {
+  it('the footer carries bare + and − at opposite ends', () => {
     const panel = openPanel()
+    const footer = panel.children[0].lastElementChild as HTMLElement
+    expect(footer.className).toBe('flex items-center justify-between border-t border-hairline mt-1 px-1 pt-1')
+    const btns = footer.querySelectorAll('button')
+    expect(btns.length).toBe(2)
+    expect((btns[0] as HTMLElement).getAttribute('aria-label')).toBe('New engine')
+    expect((btns[1] as HTMLElement).getAttribute('aria-label')).toBe('Delete engines')
+    for (const b of btns) {
+      expect(b.querySelector('svg')!.getAttribute('width')).toBe('16')
+      expect(b.className).not.toContain('w-full')
+      // Bare icon button spec: pad + round + hover wash, shared by + and −.
+      expect(b.className).toContain('p-1.5 rounded-md hover:bg-ink3/50')
+    }
+  })
+
+  it('mode off by default: zero delete affordances anywhere', () => {
+    const panel = openPanel()
+    expect(panel.querySelector('[data-engine-delete]')).toBeNull()
+    expect(delToggle(panel).getAttribute('aria-pressed')).toBe('false')
+    expect(delToggle(panel).style.color).toBe('')
+  })
+
+  it('mode on: trash appears on non-main, non-system rows only', () => {
+    const panel = openPanel()
+    enableDelMode(panel)
+    const toggle = delToggle(panel)
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.style.color).toBe('rgb(248, 81, 73)')
+    expect(toggle.style.backgroundColor).not.toBe('')
     expect(trashFor(panel, 'main')).toBeNull()
     expect(trashFor(panel, 'dream')).toBeNull()
     const trash = trashFor(panel, 'e2')
@@ -2272,8 +2324,54 @@ describe('Header engine picker delete', () => {
     expect(trash!.querySelector('svg')!.getAttribute('width')).toBe('14')
   })
 
+  it('toggling the mode off again hides every trash', () => {
+    const panel = openPanel()
+    enableDelMode(panel)
+    expect(panel.querySelector('[data-engine-delete="e2"]')).not.toBeNull()
+    delToggle(panel).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(panel.querySelector('[data-engine-delete]')).toBeNull()
+    expect(delToggle(panel).getAttribute('aria-pressed')).toBe('false')
+    expect(delToggle(panel).style.color).toBe('')
+  })
+
+  it('closing the popover resets the mode; a reopen starts unarmed', () => {
+    const panel = openPanel()
+    enableDelMode(panel)
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    const reopened = openPanel()
+    expect(reopened.querySelector('[data-engine-delete]')).toBeNull()
+    expect(delToggle(reopened).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('setEngines re-render while open keeps the mode and drops armed state', () => {
+    vi.useFakeTimers()
+    try {
+      const panel = openPanel()
+      enableDelMode(panel)
+      clickTrash(panel, 'e2')
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('true')
+      header.setEngines([
+        { id: 'main', name: 'Main', model: 'm1' },
+        { id: 'e2', name: 'Second', model: 'm2' },
+        { id: 'dream', name: 'Dream', model: 'm3', system: true },
+      ], 'main')
+      // The snapshot re-render must not exit delete mode...
+      expect(delToggle(panel).getAttribute('aria-pressed')).toBe('true')
+      expect(trashFor(panel, 'e2')).not.toBeNull()
+      // ...and must not carry the armed intermediate state into the new rows:
+      // the rebuilt trash is fresh, so one click arms instead of executing.
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('false')
+      clickTrash(panel, 'e2')
+      expect(deleted).toEqual([])
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('first click arms red, does not delete, does not switch', () => {
     const panel = openPanel()
+    enableDelMode(panel)
     clickTrash(panel, 'e2')
     const trash = trashFor(panel, 'e2')!
     expect(trash.getAttribute('aria-pressed')).toBe('true')
@@ -2286,6 +2384,7 @@ describe('Header engine picker delete', () => {
     vi.useFakeTimers()
     try {
       const panel = openPanel()
+      enableDelMode(panel)
       clickTrash(panel, 'e2')
       vi.advanceTimersByTime(5000)
       expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('false')
@@ -2303,6 +2402,7 @@ describe('Header engine picker delete', () => {
     vi.useFakeTimers()
     try {
       const panel = openPanel()
+      enableDelMode(panel)
       clickTrash(panel, 'e2')
       clickTrash(panel, 'e2')
       expect(deleted).toEqual(['e2'])
@@ -2327,9 +2427,12 @@ describe('Header engine picker delete', () => {
 
   it('closing and reopening resets the armed state', () => {
     const panel = openPanel()
+    enableDelMode(panel)
     clickTrash(panel, 'e2')
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     const reopened = openPanel()
+    expect(reopened.querySelector('[data-engine-delete]')).toBeNull()
+    enableDelMode(reopened)
     expect(trashFor(reopened, 'e2')!.getAttribute('aria-pressed')).toBe('false')
     // A click on the fresh row arms again, not executes.
     clickTrash(reopened, 'e2')

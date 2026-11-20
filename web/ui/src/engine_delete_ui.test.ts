@@ -65,10 +65,29 @@ function openPanel(): HTMLElement {
   throw new Error('engine picker panel not open')
 }
 
+function enableDelMode(panel: HTMLElement): void {
+  const btn = panel.querySelector('button[aria-label="Delete engines"]') as HTMLButtonElement
+  if (!btn) throw new Error('delete-mode toggle not found')
+  btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+}
+
 describe('engine delete chat wiring', () => {
   beforeEach(() => {
     listeners.clear()
     sent.length = 0
+  })
+
+  it('no delete affordances until the − toggle arms delete mode', () => {
+    mount()
+    const panel = openPanel()
+    expect(panel.querySelector('[data-engine-delete]')).toBeNull()
+    enableDelMode(panel)
+    expect(panel.querySelector('[data-engine-delete="e2"]')).not.toBeNull()
+    // The main engine never carries a trash, even in delete mode.
+    expect(panel.querySelector('[data-engine-delete="main"]')).toBeNull()
+    const toggle = panel.querySelector('button[aria-label="Delete engines"]') as HTMLButtonElement
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(panel.querySelector('[data-engine-delete]')).toBeNull()
   })
 
   it('two-tap delete sends engine_delete for the row engine', () => {
@@ -76,6 +95,7 @@ describe('engine delete chat wiring', () => {
     try {
       mount()
       const panel = openPanel()
+      enableDelMode(panel)
       const trash = panel.querySelector('[data-engine-delete="e2"]') as HTMLElement
       expect(trash).not.toBeNull()
       trash.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -92,6 +112,7 @@ describe('engine delete chat wiring', () => {
     try {
       mount()
       const panel = openPanel()
+      enableDelMode(panel)
       const trash = panel.querySelector('[data-engine-delete="e2"]') as HTMLElement
       trash.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       trash.dispatchEvent(new MouseEvent('click', { bubbles: true }))
