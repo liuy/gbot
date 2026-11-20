@@ -9412,7 +9412,7 @@ describe('agent brief fold bar + quote integration', () => {
       { type: 'tool_run', tool_use: { id: 'ag-1', name: 'Agent', input: AGENT_INPUT } },
     ])
     const box = briefBox()
-    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(briefQuote().textContent).toContain(BRIEF_PROMPT)
     expect(box.classList.contains('hidden')).toBe(true)
     // Background-style end: tool_end right after tool_run (launch语, no sub
     // events). The settle must keep the brief hidden but preserve its text.
@@ -9421,7 +9421,7 @@ describe('agent brief fold bar + quote integration', () => {
     ])
     const root = toolRootByName('Agent')
     expect(box.classList.contains('hidden')).toBe(true)
-    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(briefQuote().textContent).toContain(BRIEF_PROMPT)
     // User expands via the header chevron: the fold bar reveals, positioned
     // before the output body; the quote stays collapsed until its bar is
     // clicked.
@@ -9440,10 +9440,26 @@ describe('agent brief fold bar + quote integration', () => {
     dispatchEvents([{ type: 'query_end' }])
     const boxAfter = briefBox()
     expect(boxAfter).toBe(box)
-    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(briefQuote().textContent).toContain(BRIEF_PROMPT)
     ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
     ;(root.querySelector('[data-tool-header]') as HTMLElement).click()
     expect(boxAfter.classList.contains('hidden')).toBe(false)
+  })
+
+  it('live path renders the brief through markdown: fenced code becomes a highlighted pre block', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    setTextarea('q')
+    pressEnter()
+    dispatchEvents([
+      { type: 'query_start' },
+      { type: 'tool_start', tool_use: { id: 'ag-md', name: 'Agent', input: {} } },
+      { type: 'tool_run', tool_use: { id: 'ag-md', name: 'Agent', input: { description: 'd', prompt: '步骤:\n\n```js\nconsole.log("hi")\n```\n', subagent_type: 'Executor' } } },
+    ])
+    const code = briefQuote().querySelector('pre code') as HTMLElement
+    expect(code).toBeTruthy()
+    expect(code.textContent).toContain('console.log("hi")')
+    expect((code.querySelector('.hljs-string') as HTMLElement).textContent).toBe('"hi"')
   })
 
   it('a Bash tool_run in the live path never produces a box', () => {
@@ -9498,7 +9514,7 @@ describe('agent brief fold bar + quote integration', () => {
     const snapQuote = snapBox.querySelector('[data-tool-brief-quote]') as HTMLElement
     expect(snapQuote).toBeTruthy()
     expect(snapQuote.textContent).toBe(liveQuote.textContent)
-    expect(snapQuote.textContent).toBe(BRIEF_PROMPT)
+    expect(snapQuote.textContent).toContain(BRIEF_PROMPT)
     const snapRoot = parent.querySelector('[data-tool-root]') as HTMLElement
     expect(Array.from(snapRoot.children).indexOf(snapBox)).toBe(1)
     expect(Array.from(snapRoot.children)[0].hasAttribute('data-tool-header')).toBe(true)
@@ -9535,7 +9551,7 @@ describe('agent brief fold bar + quote integration', () => {
       nextCursor: '',
       hasMore: false,
     })
-    expect(briefQuote().textContent).toBe(BRIEF_PROMPT)
+    expect(briefQuote().textContent).toContain(BRIEF_PROMPT)
     expect(briefBox().classList.contains('hidden')).toBe(true)
     const root = toolRootByName('Agent')
     ;(root.querySelector('[data-tool-header]') as HTMLElement).click()

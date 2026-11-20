@@ -711,13 +711,52 @@ describe('appendToolBrief', () => {
     expect(bar.tabIndex).toBe(0)
     const svg = bar.querySelector('svg')!
     expect(svg.getAttribute('class')).not.toContain('rotate-90')
-    // Quote body: verbatim prompt, collapsed by default; the wrapper itself is
-    // hidden until the tool block expands.
+    // Quote body: the prompt rendered as markdown (block output carries a
+    // trailing newline), collapsed by default; the wrapper itself is hidden
+    // until the tool block expands.
     const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
-    expect(quote.textContent).toBe('全文任务书\n第二行')
+    expect(quote.textContent).toContain('全文任务书\n第二行')
     expect(quote.classList.contains('hidden')).toBe(true)
     expect(brief.classList.contains('hidden')).toBe(true)
     expect(h.briefEl).toBe(brief)
+  })
+
+  it('renders the brief through the markdown pipeline: lists, inline code and fenced highlighted code', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, '任务:\n- 读 `stream_dom.ts`\n\n```go\nfmt.Println("hi")\n```\n')
+    const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
+    // md-body carries the prose styles for lists/code/tables (same hook as
+    // toolBody and textBlock).
+    expect(quote.className).toContain('md-body')
+    const li = quote.querySelector('ul li') as HTMLElement
+    expect(li.textContent).toContain('读')
+    expect((li.querySelector('code') as HTMLElement).textContent).toBe('stream_dom.ts')
+    const pre = quote.querySelector('pre code') as HTMLElement
+    expect(pre.textContent).toContain('fmt.Println("hi")')
+    expect((pre.querySelector('.hljs-string') as HTMLElement).textContent).toBe('"hi"')
+  })
+
+  it('same-brief re-calls keep the rendered subtree; a changed brief re-renders it', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, 'v1 `x`')
+    const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
+    const p1 = quote.querySelector('p') as HTMLElement
+    appendToolBrief(h, 'v1 `x`')
+    expect(quote.querySelector('p')).toBe(p1)
+    appendToolBrief(h, 'v2 `y`')
+    expect(quote.querySelector('p')).not.toBe(p1)
+    expect((quote.querySelector('code') as HTMLElement).textContent).toBe('y')
+  })
+
+  it('raw HTML in the brief renders as text — the model-generated prompt is untrusted input', () => {
+    const parent = newParent()
+    const h = appendToolBlock(parent, 'Agent')
+    appendToolBrief(h, '<img src=x onerror=alert(1)> 计划')
+    const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
+    expect(quote.querySelector('img')).toBeNull()
+    expect(quote.textContent).toContain('<img src=x onerror=alert(1)>')
   })
 
   it('clicking the fold bar toggles the quote body and syncs the chevron rotation', () => {
@@ -737,7 +776,7 @@ describe('appendToolBrief', () => {
     bar.click()
     expect(quote.classList.contains('hidden')).toBe(true)
     expect(svg.getAttribute('class')).not.toContain('rotate-90')
-    expect(quote.textContent).toBe('点开看全文')
+    expect(quote.textContent).toContain('点开看全文')
     expect(brief.classList.contains('hidden')).toBe(false)
   })
 
@@ -751,7 +790,7 @@ describe('appendToolBrief', () => {
     expect(h.root.querySelectorAll('[data-tool-brief]').length).toBe(1)
     expect(h.root.querySelectorAll('[data-tool-brief-bar]').length).toBe(1)
     const quote = h.root.querySelector('[data-tool-brief-quote]') as HTMLElement
-    expect(quote.textContent).toBe('second')
+    expect(quote.textContent).toContain('second')
   })
 
   it('toggleToolExpanded mirrors the brief: expand reveals, fold hides with quote text kept', () => {
@@ -763,7 +802,7 @@ describe('appendToolBrief', () => {
     toggleToolExpanded(h)
     expect(h.briefEl!.classList.contains('hidden')).toBe(true)
     const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
-    expect(quote.textContent).toBe('keep me')
+    expect(quote.textContent).toContain('keep me')
   })
 
   it('setToolBodyVisible mirrors the brief visibility', () => {
@@ -785,7 +824,7 @@ describe('appendToolBrief', () => {
     collapseToolChildrenOnDone(h)
     expect(h.briefEl!.classList.contains('hidden')).toBe(true)
     const quote = h.briefEl!.querySelector('[data-tool-brief-quote]') as HTMLElement
-    expect(quote.textContent).toBe('survive settle')
+    expect(quote.textContent).toContain('survive settle')
   })
 
   it('a plain tool without a brief toggles fine — null briefEl never throws', () => {

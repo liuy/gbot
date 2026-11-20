@@ -72,8 +72,11 @@ export const toolBriefBar = tv({
 // same wrapper margin) so both verticals sit at the same x; the bar carries
 // ml-[-5.5px] to center the rotated chevron on that line's 0.5px-inset
 // center.
+// md-body styles the markdown-rendered prompt (same hook as toolBody);
+// whitespace-pre-wrap would show the newlines between markdown block tags
+// as visible blank lines, so wrapping falls to the block elements.
 export const toolBriefQuote = tv({
-  base: 'mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap break-words border-l border-t3/30 pl-2 text-[13px] leading-relaxed text-t2 hidden',
+  base: 'md-body mt-1 max-h-60 overflow-y-auto break-words border-l border-t3/30 pl-2 text-[13px] leading-relaxed text-t2 hidden',
 })
 
 export const groupSummary = tv({ base: 'font-mono text-sm text-blue' })

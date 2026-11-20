@@ -552,12 +552,19 @@ export function appendToolChildrenContainer(handles: ToolDomHandles): HTMLDivEle
 // fold bar ("Prompt" + chevron) plus a quoted prompt body; clicking the bar
 // toggles the quote with the same chevron-rotation idiom as the tool header.
 // Idempotent — patchTool and repeated tool_run frames call this every delta —
-// so an existing node is reused and only the quote text is updated.
+// so an existing node is reused and the quote re-renders markdown only when
+// the source prompt actually changed (a 16k-rune brief re-rendered per frame
+// would burn the stream loop).
 export function appendToolBrief(handles: ToolDomHandles, brief: string): void {
   if (handles.briefEl) {
     // quote was created by this function on first render and never removed.
-    const quote = handles.briefEl.querySelector('[data-tool-brief-quote]')!
-    if (quote.textContent !== brief) quote.textContent = brief
+    const quote = handles.briefEl.querySelector('[data-tool-brief-quote]') as HTMLElement
+    if (quote.dataset.briefSrc !== brief) {
+      // Stamp the guard only after the render succeeded: a throw from
+      // renderMarkdown must leave the guard stale so the next frame retries.
+      quote.innerHTML = renderMarkdown(brief)
+      quote.dataset.briefSrc = brief
+    }
     return
   }
   const el = createElement('div', toolBrief())
@@ -577,7 +584,8 @@ export function appendToolBrief(handles: ToolDomHandles, brief: string): void {
 
   const quote = createElement('div', toolBriefQuote())
   quote.dataset.toolBriefQuote = '1'
-  quote.textContent = brief
+  quote.dataset.briefSrc = brief
+  quote.innerHTML = renderMarkdown(brief)
   el.appendChild(quote)
 
   bar.addEventListener('click', () => {

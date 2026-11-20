@@ -1427,7 +1427,7 @@ describe('jobs section — agent brief box in feed', () => {
     const brief = feed.querySelector('[data-tool-brief]') as HTMLElement
     expect(brief).not.toBeNull()
     const quote = brief.querySelector('[data-tool-brief-quote]') as HTMLElement
-    expect(quote.textContent).toBe('喂内任务书\n两行')
+    expect(quote.textContent).toContain('喂内任务书\n两行')
     // Brief sits inside the tool card, after the header.
     const root = feed.querySelector('[data-tool-root]') as HTMLElement
     const kids = Array.from(root.children)
