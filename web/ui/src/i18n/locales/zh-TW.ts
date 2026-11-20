@@ -130,6 +130,8 @@ export const dict: Dict = {
   headerSearch: '搜尋…',
   headerNoModels: '找不到模型',
   headerNewEngine: '新增引擎',
+  engineDelete: '刪除引擎',
+  engineDeleteFailed: '刪除失敗 — ',
   headerMenu: '選單',
   ctxTitle: '上下文用量',
   ctxCompact: '壓縮',

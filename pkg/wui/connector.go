@@ -639,6 +639,11 @@ type WUIConnector struct {
 	// subscribes this connector to its hub. Set by main.go via
 	// SetCreateEngineFn. nil when engine_new is not supported.
 	createEngine func(name string) (string, error)
+	// deleteSessions removes every persisted session bound to one engine.
+	// Set by main.go via SetDeleteSessionsFn; the store lives outside the
+	// connector, exactly like createEngine's engine factory. nil skips the
+	// session cleanup (tests without a store).
+	deleteSessions func(engineID string) error
 
 	// mediaCache saves files uploaded via the HTTP upload route and backs the
 	// content-addressed attachment ids the commit frame resolves. nil until
@@ -2858,6 +2863,25 @@ func buildError(err error) []byte {
 	return out
 }
 
+// engineDeleteScope marks error frames produced by the engine_delete
+// handler. The client routes scoped errors to a transient notice instead of
+// the chat error box — a rejected delete must not tear down streaming state.
+const engineDeleteScope = "engine_delete"
+
+// buildScopedError is buildError plus the originating handler's scope.
+func buildScopedError(scope string, err error) []byte {
+	msg := "unknown error"
+	if err != nil {
+		msg = llm.FormatLLMError(err)
+	}
+	out, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Scope   string `json:"scope,omitempty"`
+	}{Type: "error", Message: msg, Scope: scope})
+	return out
+}
+
 // askOutbound is the wire shape for an Ask event. It exists because
 // *types.AskEvent fields have no json tags — marshalling it directly would
 // emit PascalCase keys. The React client expects snake_case (Phase 0).
@@ -3201,9 +3225,11 @@ func (c *WUIConnector) buildSessionList() []byte {
 // buildEngineListMessage returns an engine_list payload with all engines from
 // the manager and the active engine ID. Reads mgr.Snapshot() (lock-safe).
 type engineListItem struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Model string `json:"model"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Model  string `json:"model"`
+	Busy   bool   `json:"busy"`
+	System bool   `json:"system,omitempty"`
 }
 
 func (c *WUIConnector) buildEngineList() []byte {
@@ -3214,11 +3240,27 @@ func (c *WUIConnector) buildEngineList() []byte {
 	}
 	items := make([]engineListItem, 0, len(views))
 	for _, v := range views {
-		items = append(items, engineListItem{
-			ID:    v.ID,
-			Name:  v.Name,
-			Model: v.Model,
-		})
+		item := engineListItem{
+			ID:     v.ID,
+			Name:   v.Name,
+			Model:  v.Model,
+			System: v.System,
+		}
+		// busy is computed at pull time from the engine's own in-query state
+		// (IsBusy: a query, attachment-processing turn, or manual compact in
+		// flight — the "turn in flight" judgment), never from event
+		// bookkeeping: the picker pulls (engine_list_request on open), so the
+		// value must reflect the engine as it is NOW, including a query that
+		// ended moments ago. Every Engine-backed view state is registered
+		// into slots by New/RegisterEngine; slot-less entries are unspawned
+		// lazy states and read idle.
+		c.slotsMu.RLock()
+		slot := c.slots[v.ID]
+		c.slotsMu.RUnlock()
+		if slot != nil && slot.engine != nil {
+			item.Busy = slot.engine.IsBusy()
+		}
+		items = append(items, item)
 	}
 	payload, _ := json.Marshal(struct {
 		Type     string           `json:"type"`
@@ -3428,6 +3470,12 @@ func (c *WUIConnector) handleThinkingSwitch(effort string) {
 // connector.
 func (c *WUIConnector) SetCreateEngineFn(fn func(name string) (string, error)) {
 	c.createEngine = fn
+}
+
+// SetDeleteSessionsFn injects the session-deletion closure used by
+// engine_delete (the caller owns the store and project directory).
+func (c *WUIConnector) SetDeleteSessionsFn(fn func(engineID string) error) {
+	c.deleteSessions = fn
 }
 
 // SetMediaCache injects the media store backing the HTTP upload route and the
@@ -3823,4 +3871,115 @@ func (c *WUIConnector) handleEngineNew(name string) {
 	// deterministically (same ordering handleSessionNew uses).
 	c.switchEngine(engineID)
 	c.sendWS(c.buildEngineList())
+}
+
+// handleEngineDelete removes a non-primary engine end to end: abort it if a
+// turn is in flight, close it, tear down the slot, drop it from the manager
+// (falling back to the newest remaining engine when it was the active one),
+// persist the shrunken meta.json, delete its persisted sessions, and push a
+// fresh engine list. Rejections answer with a scoped error frame so the
+// client can toast without disturbing the chat stream.
+func (c *WUIConnector) handleEngineDelete(engineID string) {
+	if c.mgr == nil {
+		c.sendWS(buildScopedError(engineDeleteScope, errors.New("engine manager unavailable")))
+		return
+	}
+	vs := c.mgr.Get(engineID)
+	if vs == nil {
+		c.sendWS(buildScopedError(engineDeleteScope, fmt.Errorf("unknown engine: %s", engineID)))
+		return
+	}
+	if engineID == "main" {
+		c.sendWS(buildScopedError(engineDeleteScope, errors.New("the main engine cannot be deleted")))
+		return
+	}
+	if vs.System {
+		c.sendWS(buildScopedError(engineDeleteScope, fmt.Errorf("system engine %q cannot be deleted", vs.Name)))
+		return
+	}
+	if vs.ReadOnly {
+		c.sendWS(buildScopedError(engineDeleteScope, fmt.Errorf("engine %q is driven by an external connector and cannot be deleted", vs.Name)))
+		return
+	}
+	if c.mgr.Count() <= 1 {
+		c.sendWS(buildScopedError(engineDeleteScope, errors.New("must keep at least one engine")))
+		return
+	}
+
+	c.slotsMu.RLock()
+	slot := c.slots[engineID]
+	c.slotsMu.RUnlock()
+	// Abort BEFORE Close: the abort log line lands in the engine's own log
+	// context, making an in-flight delete diagnosable after the fact.
+	if slot != nil && slot.engine != nil && slot.engine.IsBusy() {
+		slot.engine.Abort()
+	}
+	if vs.Engine != nil {
+		vs.Engine.Close()
+	}
+	if slot != nil {
+		c.slotsMu.Lock()
+		delete(c.slots, engineID)
+		c.slotsMu.Unlock()
+		if slot.unsubscribe != nil {
+			slot.unsubscribe()
+		}
+	}
+
+	wasActive := engineID == c.ActiveID()
+	if err := c.mgr.Remove(engineID); err != nil {
+		c.sendWS(buildScopedError(engineDeleteScope, err))
+		return
+	}
+	// Persist the shrunken meta BEFORE deleting sessions: a crash between
+	// the two leaves orphan session rows — meta already omits the engine,
+	// so nothing adopts them and CleanupOldSessions reaps them by age. The
+	// reverse order would resurrect the engine on restart while its session
+	// ids are already gone — the ghost-id shape the boot restore has to
+	// defend against.
+	dir := ""
+	if slot != nil && slot.engine != nil {
+		dir = slot.engine.ProjectDir()
+	} else if vs.Engine != nil {
+		dir = vs.Engine.ProjectDir()
+	}
+	if err := c.mgr.PersistMeta(dir); err != nil {
+		slog.Warn("wui:engine_delete:PersistMeta failed", "error", err)
+	}
+	var cleanupErr error
+	if c.deleteSessions != nil {
+		cleanupErr = c.deleteSessions(engineID)
+		if cleanupErr != nil {
+			slog.Warn("wui:engine_delete:session cleanup failed", "engine", engineID, "error", cleanupErr)
+		}
+	}
+	// The cleanup receipt rides AFTER the fresh list/metadata push: the
+	// client's scoped-error handler re-renders the picker from the last
+	// engine_list it saw, so an error-first order would flash the deleted
+	// row back before the fresh list removes it again.
+	notifyCleanup := func() {
+		if cleanupErr != nil {
+			// %v, not %w: the frame is terminal text over the wire — no
+			// consumer past the WS boundary can ever unwrap the chain.
+			c.sendWS(buildScopedError(engineDeleteScope, fmt.Errorf("session cleanup failed: %v", cleanupErr)))
+		}
+	}
+
+	if wasActive {
+		// Remove already fell back to the newest remaining engine; the
+		// switch pushes metadata (embedding the fresh engine list) and the
+		// client follows the new active engine. Slots built directly by
+		// tests can lack the fallback, so degrade to the bare list push.
+		fallback := c.mgr.ActiveID()
+		c.slotsMu.RLock()
+		fallbackSlot := c.slots[fallback]
+		c.slotsMu.RUnlock()
+		if fallbackSlot != nil {
+			c.switchEngine(fallback)
+			notifyCleanup()
+			return
+		}
+	}
+	c.sendWS(c.buildEngineList())
+	notifyCleanup()
 }

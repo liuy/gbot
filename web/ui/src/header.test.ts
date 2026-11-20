@@ -2113,3 +2113,243 @@ describe('Header target switch (multi-endpoint WUI)', () => {
     expect(markText(header).className).toContain('text-t3')
   })
 })
+
+describe('Header engine picker row status', () => {
+  let header: ReturnType<typeof createHeader>
+  let pulled: number
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    pulled = 0
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: () => {},
+      onEngineNew: () => {},
+      onEngineListRequest: () => { pulled++ },
+    })
+    document.body.appendChild(header.root)
+  })
+  function openPanel(): HTMLElement {
+    const trigger = header.root.querySelector('button.text-\\[15px\\]:not(.hidden)') as HTMLButtonElement
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panels = document.body.querySelectorAll('[data-testid="engine-picker-panel"]')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLElement
+    }
+    throw new Error('engine picker panel not open')
+  }
+  function rows(panel: HTMLElement): HTMLElement[] {
+    return Array.from(panel.children[0].children).slice(0, -1) as HTMLElement[]
+  }
+  function nameSpan(row: HTMLElement): HTMLElement {
+    return row.children[1] as HTMLElement
+  }
+
+  it('opening the picker requests a fresh engine list (pull on open)', () => {
+    expect(pulled).toBe(0)
+    openPanel()
+    expect(pulled).toBe(1)
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    openPanel()
+    expect(pulled).toBe(2)
+  })
+
+  it('busy engine: green name with breathe animation', () => {
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2', busy: true },
+    ], 'main')
+    const panel = openPanel()
+    const cls = nameSpan(rows(panel)[1]).className
+    expect(cls).toBe('text-[13px] text-engine-busy breathe')
+  })
+
+  it('idle engines keep current colors', () => {
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2' },
+    ], 'main')
+    const panel = openPanel()
+    expect(nameSpan(rows(panel)[0]).className).toBe('text-[13px] text-blue')
+    expect(nameSpan(rows(panel)[1]).className).toBe('text-[13px] text-t2')
+  })
+
+  it('busy green wins over the active blue', () => {
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2', busy: true },
+    ], 'e2')
+    const panel = openPanel()
+    const cls = nameSpan(rows(panel)[1]).className
+    expect(cls).toBe('text-[13px] text-engine-busy breathe')
+    expect(cls).not.toContain('text-blue')
+  })
+
+  it('an open panel re-renders on setEngines (re-pull refresh)', () => {
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2' },
+    ], 'main')
+    const panel = openPanel()
+    expect(nameSpan(rows(panel)[1]).className).toBe('text-[13px] text-t2')
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2', busy: true },
+    ], 'main')
+    expect(nameSpan(rows(panel)[1]).className).toBe('text-[13px] text-engine-busy breathe')
+  })
+
+  it('closing and reopening drops stale animation state', () => {
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2', busy: true },
+    ], 'main')
+    let panel = openPanel()
+    expect(nameSpan(rows(panel)[1]).className).toContain('breathe')
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2' },
+    ], 'main')
+    panel = openPanel()
+    expect(nameSpan(rows(panel)[1]).className).not.toContain('breathe')
+  })
+})
+
+describe('Header engine picker delete', () => {
+  let header: ReturnType<typeof createHeader>
+  let deleted: string[]
+  let switched: string | null
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    setLocale('en')
+    deleted = []
+    switched = null
+    header = createHeader({
+      onModelSelect: () => {},
+      onEngineSwitch: (id) => { switched = id },
+      onEngineNew: () => {},
+      onEngineDelete: (id) => { deleted.push(id) },
+    })
+    document.body.appendChild(header.root)
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e2', name: 'Second', model: 'm2' },
+      { id: 'dream', name: 'Dream', model: 'm3', system: true },
+    ], 'main')
+  })
+  function openPanel(): HTMLElement {
+    const trigger = header.root.querySelector('button.text-\\[15px\\]:not(.hidden)') as HTMLButtonElement
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const panels = document.body.querySelectorAll('[data-testid="engine-picker-panel"]')
+    for (const p of panels) {
+      if (!p.classList.contains('hidden')) return p as HTMLElement
+    }
+    throw new Error('engine picker panel not open')
+  }
+  function trashFor(panel: HTMLElement, engineID: string): HTMLElement | null {
+    return panel.querySelector(`[data-engine-delete="${engineID}"]`)
+  }
+  function rowFor(panel: HTMLElement, engineID: string): HTMLElement {
+    const row = panel.querySelector(`[data-engine-id="${engineID}"]`)
+    if (!row) throw new Error(`row for ${engineID} not found`)
+    return row as HTMLElement
+  }
+  function clickTrash(panel: HTMLElement, engineID: string): void {
+    trashFor(panel, engineID)!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  it('main and system rows carry no trash; other rows do', () => {
+    const panel = openPanel()
+    expect(trashFor(panel, 'main')).toBeNull()
+    expect(trashFor(panel, 'dream')).toBeNull()
+    const trash = trashFor(panel, 'e2')
+    expect(trash).not.toBeNull()
+    expect(trash!.getAttribute('aria-pressed')).toBe('false')
+    expect(trash!.getAttribute('aria-label')).toBe('Delete engine')
+    expect(trash!.getAttribute('role')).toBe('button')
+    expect(trash!.className).toContain('ml-auto')
+    expect(trash!.className).toContain('cursor-pointer')
+    expect(trash!.querySelector('svg')!.getAttribute('width')).toBe('14')
+  })
+
+  it('first click arms red, does not delete, does not switch', () => {
+    const panel = openPanel()
+    clickTrash(panel, 'e2')
+    const trash = trashFor(panel, 'e2')!
+    expect(trash.getAttribute('aria-pressed')).toBe('true')
+    expect(trash.style.color).toBe('rgb(248, 81, 73)')
+    expect(deleted).toEqual([])
+    expect(switched).toBeNull()
+  })
+
+  it('arm auto-expires after 5s', () => {
+    vi.useFakeTimers()
+    try {
+      const panel = openPanel()
+      clickTrash(panel, 'e2')
+      vi.advanceTimersByTime(5000)
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('false')
+      expect(trashFor(panel, 'e2')!.style.color).toBe('')
+      // Post-expiry click re-arms rather than executing.
+      clickTrash(panel, 'e2')
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('true')
+      expect(deleted).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('second click inside the window executes: delete sent, row collapses away', () => {
+    vi.useFakeTimers()
+    try {
+      const panel = openPanel()
+      clickTrash(panel, 'e2')
+      clickTrash(panel, 'e2')
+      expect(deleted).toEqual(['e2'])
+      expect(switched).toBeNull()
+      // Execute disarms immediately — the dying row must not linger armed.
+      expect(trashFor(panel, 'e2')!.getAttribute('aria-pressed')).toBe('false')
+      expect(trashFor(panel, 'e2')!.style.color).toBe('')
+      const row = rowFor(panel, 'e2')
+      expect(row.style.overflow).toBe('hidden')
+      expect(row.style.maxHeight).toBe('0px')
+      expect(row.style.transition).toContain('max-height')
+      expect(row.style.transition).toContain('opacity')
+      expect(row.style.paddingTop).toBe('0px')
+      expect(row.style.paddingBottom).toBe('0px')
+      expect(row.style.opacity).toBe('0')
+      vi.advanceTimersByTime(400)
+      expect(panel.querySelector('[data-engine-id="e2"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('closing and reopening resets the armed state', () => {
+    const panel = openPanel()
+    clickTrash(panel, 'e2')
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    const reopened = openPanel()
+    expect(trashFor(reopened, 'e2')!.getAttribute('aria-pressed')).toBe('false')
+    // A click on the fresh row arms again, not executes.
+    clickTrash(reopened, 'e2')
+    expect(deleted).toEqual([])
+  })
+
+  it('setEngines while closed leaves the hidden list untouched; reopen rebuilds', () => {
+    let panel = openPanel()
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(panel.classList.contains('hidden')).toBe(true)
+    header.setEngines([
+      { id: 'main', name: 'Main', model: 'm1' },
+      { id: 'e9', name: 'Ninth', model: 'm9' },
+    ], 'main')
+    // Stale content must persist in the hidden panel — re-render happens on
+    // open, not on push.
+    expect(panel.textContent).toContain('Second')
+    expect(panel.textContent).not.toContain('Ninth')
+    panel = openPanel()
+    expect(panel.textContent).not.toContain('Second')
+    expect(panel.textContent).toContain('Ninth')
+  })
+})

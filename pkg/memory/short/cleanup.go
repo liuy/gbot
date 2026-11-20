@@ -6,6 +6,65 @@ import (
 	"time"
 )
 
+// DeleteSessionsByEngine deletes every session bound to engineID within
+// projectDir, cascading to messages and FTS entries in one transaction
+// (same shape as CleanupOldSessions). Engine deletion goes through this
+// path — not per-session DELETEs — so a crash mid-delete can never orphan
+// messages or FTS rows behind a vanished session id.
+func (s *Store) DeleteSessionsByEngine(projectDir, engineID string) (int, error) {
+	rows, err := s.db.Query(
+		"SELECT session_id FROM sessions WHERE project_dir = ? AND engine_id = ?",
+		projectDir, engineID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query engine sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessionIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("scan session id: %w", err)
+		}
+		sessionIDs = append(sessionIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if len(sessionIDs) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, id := range sessionIDs {
+		if _, err := tx.Exec(
+			"DELETE FROM messages_fts_map WHERE seq IN "+
+				"(SELECT seq FROM messages WHERE session_id = ?)",
+			id,
+		); err != nil {
+			return 0, fmt.Errorf("delete FTS for session %s: %w", id[:8], err)
+		}
+		if _, err := tx.Exec("DELETE FROM messages WHERE session_id = ?", id); err != nil {
+			return 0, fmt.Errorf("delete messages for session %s: %w", id[:8], err)
+		}
+		if _, err := tx.Exec("DELETE FROM sessions WHERE session_id = ?", id); err != nil {
+			return 0, fmt.Errorf("delete session %s: %w", id[:8], err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return len(sessionIDs), nil
+}
+
 // CleanupOldSessions deletes sessions (and their messages/FTS entries) older than maxAge.
 // Equivalent to TS cleanupOldSessionFiles (cleanup.ts:155) which deletes entire old
 // session JSONL files by timestamp cutoff.

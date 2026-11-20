@@ -1195,3 +1195,24 @@ func TestEngineManager_WritePathsStaySerializedWithEachOther(t *testing.T) {
 		t.Errorf("Count = %d, want %d", got, seeds)
 	}
 }
+
+func TestSnapshot_PreservesSystemFlag(t *testing.T) {
+	m := NewEngineManager()
+	m.Add(&EngineViewState{ID: "main", Name: "main", Repl: fakeRepl{}})
+	m.Add(&EngineViewState{ID: "dream", Name: "Dream", System: true, Repl: fakeRepl{}})
+	views, active := m.Snapshot()
+	if active != "main" {
+		t.Fatalf("active = %q, want main", active)
+	}
+	if len(views) != 2 {
+		t.Fatalf("views = %d, want 2", len(views))
+	}
+	for _, v := range views {
+		if v.ID == "dream" && !v.System {
+			t.Fatal("snapshot lost the System flag for dream")
+		}
+		if v.ID == "main" && v.System {
+			t.Fatal("main must not be marked System")
+		}
+	}
+}

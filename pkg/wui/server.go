@@ -353,6 +353,17 @@ func (c *WUIConnector) readLoop(ws *websocket.Conn, sink *channelSink) {
 			if json.Unmarshal(data, &msg) == nil {
 				c.handleEngineNew(msg.Name)
 			}
+		case "engine_delete":
+			var msg struct {
+				EngineID string `json:"engineID"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.EngineID != "" {
+				c.handleEngineDelete(msg.EngineID)
+			}
+		case "engine_list_request":
+			// Picker pull: busy is computed at answer time from the engines'
+			// live in-query state (see buildEngineList) — no status pushes.
+			c.sendWS(c.buildEngineList())
 		case "job_stop":
 			var msg struct {
 				JobID string `json:"jobID"`

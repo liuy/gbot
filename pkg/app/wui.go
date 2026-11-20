@@ -12,6 +12,17 @@ import (
 	"github.com/liuy/gbot/pkg/wui"
 )
 
+// deleteSessionsFor backs engine_delete's session cleanup (injected via
+// SetDeleteSessionsFn in start.go): one engine's sessions, messages and FTS
+// rows, transactionally. Named so the error forwarding is unit-testable —
+// the wiring closure in start.go stays a one-liner.
+func deleteSessionsFor(store *short.Store, projectDir string) func(engineID string) error {
+	return func(engineID string) error {
+		_, err := store.DeleteSessionsByEngine(projectDir, engineID)
+		return err
+	}
+}
+
 // createEngineForWUI builds a new engine via engineFactory, registers it
 // in the manager, subscribes the wui connector to its hub, and wires
 // OnStreamDone. Returns the new engine ID. Called by the connector's

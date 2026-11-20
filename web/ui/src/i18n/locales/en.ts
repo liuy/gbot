@@ -155,6 +155,8 @@ export const dict = {
   headerSearch: 'Search...',
   headerNoModels: 'No models found',
   headerNewEngine: 'New engine',
+  engineDelete: 'Delete engine',
+  engineDeleteFailed: 'Delete failed — ',
   headerMenu: 'Menu',
   ctxTitle: 'Context Usage',
   ctxCompact: 'Compact',

@@ -1,4 +1,4 @@
-import type { ServerMessage, QueryEvent, HistoryChatMsg } from './types'
+import type { ServerMessage, QueryEvent, HistoryChatMsg, EngineListItem } from './types'
 import {
   type Block,
   type ChatMessage,
@@ -572,6 +572,10 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
   // natural accumulation, no pruning needed.
   const tokenRates = new Map<string, TokenRate>()
   let activeEngineID = ''
+  // Last engine_list payload (from metadata or a standalone engine_list
+  // push). A rejected engine_delete must restore the picker from it — the
+  // optimistic collapse already removed the row from the DOM.
+  let lastEngines: { engines: EngineListItem[]; activeID: string } | null = null
   const tokenRate = (): TokenRate => {
     let m = tokenRates.get(activeEngineID)
     if (m === undefined) {
@@ -710,6 +714,8 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
       conn.send({ type: 'engine_switch', engineID })
     },
     onEngineNew: () => conn.send({ type: 'engine_new' }),
+    onEngineDelete: (engineID) => conn.send({ type: 'engine_delete', engineID }),
+    onEngineListRequest: () => conn.send({ type: 'engine_list_request' }),
     onContextRequest: () => conn.send({ type: 'context_request' }),
     onContextCompact: () => {
       header.hideContextBreakdown()
@@ -2752,6 +2758,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         conn.send({ type: 'session_list_request' })
 
         header.setModels(msg.config.models, msg.config.current.provider, msg.config.current.model)
+        lastEngines = { engines: msg.engines.engines, activeID: msg.engines.activeID }
         header.setEngines(msg.engines.engines, msg.engines.activeID)
         inputBar.setThinking(msg.config.thinking ?? 'auto')
         inputBar.setSttAvailable(!!msg.config.stt)
@@ -3024,6 +3031,15 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         return
       }
       case 'error':
+        // Scoped errors belong to a specific handler (engine_delete), not
+        // the chat stream: they must not tear down streaming state — only
+        // toast the refusal and re-render the picker from the last known
+        // list (a rejected delete collapsed its row optimistically).
+        if (msg.scope === 'engine_delete') {
+          notifyCapsule(t('engineDeleteFailed') + msg.message, { durationMs: 4000 })
+          if (lastEngines) header.setEngines(lastEngines.engines, lastEngines.activeID)
+          return
+        }
         // A failed switch must not strand the bar at the asymptote: the
         // server answers e.g. an unknown engine with an error frame
         // instead of metadata. Idle-guarded, so unrelated errors no-op.
@@ -3075,6 +3091,7 @@ export function createChat(initial: { connected: boolean }): ChatHandles {
         taskPanel.jobsStore.applyOutput(msg.jobID, msg.tail)
         return
       case 'engine_list':
+        lastEngines = { engines: msg.engines, activeID: msg.activeID }
         header.setEngines(msg.engines, msg.activeID)
         return
       case 'session_list':

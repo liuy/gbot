@@ -32,6 +32,8 @@ interface EngineEntry {
   id: string
   name: string
   model: string
+  busy?: boolean
+  system?: boolean
 }
 
 function createModelPicker(
@@ -164,6 +166,8 @@ function createModelPicker(
 function createEnginePicker(
   onSwitch: (engineID: string) => void,
   onNew: () => void,
+  onDelete?: (engineID: string) => void,
+  onRequestEngines?: () => void,
 ): { wrap: HTMLElement; setEngines: (engines: EngineEntry[], activeID: string) => void } {
   const listContainer = createElement('div', 'max-h-[50dvh] overflow-y-auto p-1')
 
@@ -181,14 +185,76 @@ function createEnginePicker(
           'hover:bg-ink3/50',
         ),
       )
+      item.dataset.engineId = entry.id
       const dot = createElement('span', cx('h-2 w-2 rounded-full shrink-0', isActive ? 'bg-blue' : 'bg-t3/30'))
       item.appendChild(dot)
-      const nameSpan = createElement('span', cx('text-[13px]', isActive ? 'text-blue' : 'text-t2'))
+      // Single busy state, pulled on open: busy = breathing green (the
+      // ruled status green #3fb950/#1a7f37 via engine-busy, not the app-wide
+      // --color-green token); it outranks the active blue because a busy
+      // engine is the more urgent signal in the picker. Idle keeps current
+      // colors — sub-second streaming/tool alternation was visual noise.
+      let nameCls = isActive ? 'text-blue' : 'text-t2'
+      if (entry.busy) nameCls = 'text-engine-busy breathe'
+      const nameSpan = createElement('span', cx('text-[13px]', nameCls))
       nameSpan.textContent = entry.name || entry.id
       item.appendChild(nameSpan)
       const modelSpan = createElement('span', 'text-[13px] text-t3 ml-2')
       modelSpan.textContent = entry.model
       item.appendChild(modelSpan)
+      // Delete affordance on deletable rows only: the main engine is the
+      // boot anchor and system engines (dream) run daemon loops — neither
+      // can be removed. A span, not a button: rows are <button> and nested
+      // buttons are invalid HTML.
+      const deletable = onDelete !== undefined && entry.id !== 'main' && !entry.system
+      if (deletable) {
+        const trash = createElement(
+          'span',
+          'ml-auto shrink-0 p-1.5 rounded-md cursor-pointer text-t3 transition-colors hover:bg-ink3/50',
+        )
+        trash.dataset.engineDelete = entry.id
+        trash.setAttribute('aria-pressed', 'false')
+        trash.setAttribute('role', 'button')
+        trash.setAttribute('aria-label', t('engineDelete'))
+        trash.appendChild(renderIcon('trash', { size: 14 }))
+        // Two-tap confirm, sidebar Artifacts clear-all pattern: first tap
+        // arms (inline red — utilities resolve by stylesheet order, inline
+        // always wins), a 5s timer disarms, the second tap in the window
+        // executes.
+        let armed = false
+        const disarm = () => {
+          armed = false
+          trash.setAttribute('aria-pressed', 'false')
+          trash.style.color = ''
+        }
+        trash.addEventListener('click', (ev) => {
+          ev.stopPropagation()
+          if (!armed) {
+            armed = true
+            trash.setAttribute('aria-pressed', 'true')
+            trash.style.color = '#f85149'
+            // The disarm timer may outlive its row (re-render removes the
+            // DOM); firing on a detached node is a harmless no-op, so no
+            // timer bookkeeping is kept.
+            setTimeout(disarm, 5000)
+            return
+          }
+          disarm()
+          onDelete(entry.id)
+          // Collapse animation bridges the optimistic removal and the
+          // server's engine_list push: concrete start height so CSS can
+          // interpolate max-height down to zero.
+          item.style.overflow = 'hidden'
+          item.style.maxHeight = item.offsetHeight + 'px'
+          void item.offsetHeight
+          item.style.transition = 'max-height .32s ease, opacity .32s ease, padding .32s ease'
+          item.style.maxHeight = '0px'
+          item.style.opacity = '0'
+          item.style.paddingTop = '0'
+          item.style.paddingBottom = '0'
+          setTimeout(() => item.remove(), 320)
+        })
+        item.appendChild(trash)
+      }
       if (isActive) {
         item.addEventListener('click', () => combo.close())
       } else {
@@ -215,6 +281,11 @@ function createEnginePicker(
   }
 
   let panelSetup = false
+  // Caller-tracked open flag (same shape as the model picker): setEngines
+  // re-renders the list only while the popup is open, so a fresh pull's
+  // frame (picker open, action receipts) updates the visible rows without a
+  // close/reopen.
+  let open = false
   const combo = createComboButton({
     label: '',
     className: 'text-[15px]',
@@ -224,9 +295,15 @@ function createEnginePicker(
         panel.appendChild(listContainer)
         panelSetup = true
       }
+      open = true
+      // Pull model: the list shown is whatever the answer frame carries,
+      // with busy computed server-side at this moment.
+      onRequestEngines?.()
       renderList()
     },
-    onClose: () => {},
+    onClose: () => {
+      open = false
+    },
   })
 
   const setEngines = (engines: EngineEntry[], active: string) => {
@@ -234,6 +311,7 @@ function createEnginePicker(
     activeID = active
     const cur = engines.find((e) => e.id === active)
     if (cur) combo.setLabel(cur.name || cur.id)
+    if (open) renderList()
   }
 
   return { wrap: combo.wrap, setEngines }
@@ -695,6 +773,8 @@ export function createHeader(opts: {
   onModelSelect: (provider: string, model: string) => void
   onEngineSwitch: (engineID: string) => void
   onEngineNew: () => void
+  onEngineDelete?: (engineID: string) => void
+  onEngineListRequest?: () => void
   onContextRequest?: () => void
   onContextCompact?: () => void
   onRequestQuota?: () => void
@@ -849,7 +929,7 @@ export function createHeader(opts: {
   }
 
   const modelPicker = createModelPicker(opts.onModelSelect, opts.onRequestQuota)
-  const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew)
+  const enginePicker = createEnginePicker(opts.onEngineSwitch, opts.onEngineNew, opts.onEngineDelete, opts.onEngineListRequest)
   // Same touch-target trick for the picker combos (text is small).
   for (const w of [enginePicker.wrap, modelPicker.wrap]) {
     w.style.padding = '8px'

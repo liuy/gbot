@@ -64,6 +64,9 @@ type EngineViewSnapshot struct {
 	Model           string
 	IsStreaming     bool
 	CurrentToolName string
+	// System marks dream-like engines; consumers withhold destructive
+	// affordances (wui engine_delete) and lifecycle displays from them.
+	System bool
 }
 
 // EngineManager owns the set of engines in one TUI process.
@@ -381,6 +384,7 @@ func (m *EngineManager) Snapshot() ([]EngineViewSnapshot, string) {
 			Name:            vs.Name,
 			ActiveSessionID: vs.ActiveSessionID,
 			Model:           vs.Model,
+			System:          vs.System,
 		}
 		if vs.Repl != nil {
 			s.IsStreaming = vs.Repl.IsStreaming()

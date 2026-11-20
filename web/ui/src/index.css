@@ -20,6 +20,11 @@
   --color-t2: #8A93A6;
   --color-t3: #4A5266;
   --color-green: #3DD68C;
+  /* Engine picker status green (user ruling 2026-11-18, visual authority
+     engine-picker-upgrade.html): #3fb950 dark / #1a7f37 light. Distinct from
+     --color-green so the picker's two-state status (streaming/tool) never
+     shifts when the app-wide green gets retuned. */
+  --color-engine-busy: #3fb950;
   --color-red: #FF5C5C;
   --color-blue: #00B4FF;
   --color-amber: #FFB547;
@@ -110,6 +115,15 @@ body {
 
 .pulse {
   animation: pulse 2.4s ease-in-out infinite;
+}
+/* Engine picker streaming name: opacity breathe, 1.8s — the visual authority
+   is engine-picker-upgrade.html (st-stream). */
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.breathe {
+  animation: breathe 1.8s ease-in-out infinite;
 }
 
 @keyframes heartbeat {
@@ -300,6 +314,7 @@ body {
   --color-white: #333333;
   --color-blue: #333333;
   --color-green: #3CAD72;
+  --color-engine-busy: #1a7f37;
   --color-red: #D54F4F;
   --color-amber: #C89345;
   --color-violet: #8A4ADB;

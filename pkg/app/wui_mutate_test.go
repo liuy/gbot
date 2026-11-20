@@ -421,3 +421,56 @@ func TestCreateEngineForWUI_PersistMetaFailureIsWarned(t *testing.T) {
 		t.Error("the engine must stay registered despite the meta write failure")
 	}
 }
+
+func TestDeleteSessionsFor_DeletesOnlyThatEngine(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateSessionWithEngine(projectDir, "m", "e2"); err != nil {
+		t.Fatalf("CreateSessionWithEngine: %v", err)
+	}
+	main, err := store.CreateSessionWithEngine(projectDir, "m", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine: %v", err)
+	}
+	fn := deleteSessionsFor(store, projectDir)
+	if err := fn("e2"); err != nil {
+		t.Fatalf("deleteSessionsFor: %v", err)
+	}
+	left, err := store.ListSessionsByEngine(projectDir, "e2", 10)
+	if err != nil {
+		t.Fatalf("ListSessionsByEngine: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("e2 sessions left = %d, want 0", len(left))
+	}
+	mainLeft, err := store.ListSessionsByEngine(projectDir, "main", 10)
+	if err != nil {
+		t.Fatalf("ListSessionsByEngine: %v", err)
+	}
+	if len(mainLeft) != 1 || mainLeft[0].SessionID != main.SessionID {
+		t.Fatalf("main sessions = %+v, want the one seeded session", mainLeft)
+	}
+}
+
+func TestDeleteSessionsFor_PropagatesStoreErrors(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fn := deleteSessionsFor(store, projectDir)
+	err = fn("e2")
+	if err == nil {
+		t.Fatal("deleteSessionsFor must forward the store error, got nil")
+	}
+	if err.Error() != "query engine sessions: sql: database is closed" {
+		t.Fatalf("err = %q", err.Error())
+	}
+}

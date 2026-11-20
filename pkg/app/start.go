@@ -755,6 +755,10 @@ func Start(opts Options) (*Instance, error) {
 			}
 			return createEngineForWUI(name, engineMgr, engineFactory, store, projectDir, wc, currentProvider, currentModel)
 		})
+		// engine_delete's session cleanup: same store + projectDir the
+		// create path uses, going through the transactional engine-scoped
+		// delete (messages and FTS entries cascade with the sessions).
+		wc.SetDeleteSessionsFn(deleteSessionsFor(store, projectDir))
 		// Dedicated media cache for HTTP attachment uploads — do NOT reuse the
 		// wechat cache (it is only constructed when wechat is enabled). The
 		// cleanup goroutine is stopped via the shared mediaStores slice at

@@ -6873,6 +6873,27 @@ describe('chat mutation kills: header and input wiring', () => {
     expect(body).toContain('1/9')
   })
 
+  it('engine picker open pulls a fresh engine list', () => {
+    mount()
+    dispatch({ type: 'connect_status', connected: true })
+    dispatch({
+      type: 'engine_list',
+      engines: [
+        { id: 'main', name: 'Main', model: 'm1' },
+        { id: 'e2', name: 'Second', model: 'm2', busy: true },
+      ],
+      activeID: 'main',
+    })
+    const trigger = headerComboTriggers().find((b) => b.textContent === 'Main')!
+    trigger.click()
+    expect(sent).toContainEqual({ type: 'engine_list_request' })
+    // The pulled frame renders: busy row breathes green, idle row keeps its color.
+    const panel = document.querySelector('[data-testid="engine-picker-panel"]') as HTMLElement
+    const names = Array.from(panel.querySelectorAll('[data-engine-id] > span:nth-child(2)')) as HTMLElement[]
+    expect(names[0].className).toBe('text-[13px] text-blue')
+    expect(names[1].className).toBe('text-[13px] text-engine-busy breathe')
+  })
+
   it('engine picker footer starts a new engine', () => {
     mount()
     dispatch({ type: 'connect_status', connected: true })

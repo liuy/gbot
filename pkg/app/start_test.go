@@ -2991,3 +2991,118 @@ func TestPinBootSessionStartCtx_NilREPLOutReturnsCtx(t *testing.T) {
 		t.Error("ctx carries a js runner for a nil-REPL engine, want bare")
 	}
 }
+
+// frameEngineIDs extracts engine ids from either an engine_list frame or a
+// metadata frame's embedded engines object. Empty means "no list here".
+func frameEngineIDs(data []byte) []string {
+	type listShape struct {
+		Engines []struct {
+			ID string `json:"id"`
+		} `json:"engines"`
+	}
+	var outer struct {
+		Engines json.RawMessage `json:"engines"`
+	}
+	if err := json.Unmarshal(data, &outer); err != nil {
+		return nil
+	}
+	for _, raw := range []json.RawMessage{data, outer.Engines} {
+		var l listShape
+		if err := json.Unmarshal(raw, &l); err == nil && len(l.Engines) > 0 {
+			ids := make([]string, 0, len(l.Engines))
+			for _, e := range l.Engines {
+				ids = append(ids, e.ID)
+			}
+			return ids
+		}
+	}
+	return nil
+}
+
+// engine_delete's session cleanup must be wired through the boot store: the
+// end-to-end chain (engine_new → engine_delete) leaves no session rows for
+// the deleted engine in memory/memory.db.
+func TestPinStart_EngineDeleteRemovesSessions(t *testing.T) {
+	inst, err := pinBoot(t, pinSettings, Options{NoTUI: true})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	shutdownInstance(t, inst)
+	base := "http://" + os.Getenv("GBOT_WS_ADDR")
+	ws, _, err := websocket.DefaultDialer.Dial("ws://"+base[len("http://"):]+"/ws/chat", nil)
+	if err != nil {
+		t.Fatalf("dial /ws/chat: %v", err)
+	}
+	defer ws.Close()
+	if err := ws.WriteMessage(1, []byte(`{"type":"engine_new","name":"pindel"}`)); err != nil {
+		t.Fatalf("send engine_new: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second) // REAL-TIME
+	newID := ""
+	for newID == "" {
+		_ = ws.SetReadDeadline(deadline)
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("read after engine_new: %v", err)
+		}
+		var list struct {
+			Engines []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"engines"`
+		}
+		if err := json.Unmarshal(data, &list); err != nil || len(list.Engines) == 0 {
+			continue
+		}
+		for _, e := range list.Engines {
+			if e.Name == "pindel" {
+				newID = e.ID
+			}
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projDir := project.Dir(cwd)
+	store, err := short.NewStore(filepath.Join(projDir, "memory", "memory.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if seeds, err := store.ListSessionsByEngine(projDir, newID, 10); err != nil {
+		t.Fatalf("list sessions before delete: %v", err)
+	} else if len(seeds) == 0 {
+		t.Fatal("engine_new seeded no session for the new engine")
+	}
+	if err := ws.WriteMessage(1, []byte(`{"type":"engine_delete","engineID":"`+newID+`"}`)); err != nil {
+		t.Fatalf("send engine_delete: %v", err)
+	}
+	for {
+		_ = ws.SetReadDeadline(deadline)
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("read after engine_delete: %v", err)
+		}
+		if strings.Contains(string(data), `"scope":"engine_delete"`) {
+			t.Fatalf("engine_delete rejected: %s", data)
+		}
+		// The list rides either a top-level engine_list or the metadata
+		// frame's embedded engines object (active-engine delete).
+		ids := frameEngineIDs(data)
+		if len(ids) == 0 {
+			continue
+		}
+		if slices.Contains(ids, newID) {
+			continue
+		}
+		break
+	}
+	left, err := store.ListSessionsByEngine(projDir, newID, 10)
+	if err != nil {
+		t.Fatalf("list sessions after delete: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("deleted engine session rows = %d, want 0", len(left))
+	}
+}
