@@ -145,7 +145,9 @@ ch.onMessage(function(m) {
 
 func TestHostFetchTimesOutOnHangingServer(t *testing.T) {
 	// The handler accepts the request then never answers — a hung discovery
-	// endpoint. The fetch must reject, not pin the promise forever.
+	// endpoint. The fetch must reject, not pin the goroutine forever. The
+	// test drives fetchWith with its own tight client; the shared production
+	// default (10s) would make this the slowest test in the suite.
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
@@ -153,27 +155,37 @@ func TestHostFetchTimesOutOnHangingServer(t *testing.T) {
 	defer srv.Close()
 	defer close(release) // LIFO: release the handler before srv.Close waits on it
 
-	// Tighten the client timeout so the test rejects in milliseconds; the
-	// 10s production default would make this the slowest test in the suite.
-	old := fetchClient
-	fetchClient = &http.Client{Timeout: 250 * time.Millisecond}
-	defer func() { fetchClient = old }()
-
-	e := loadWith(t, `
-var ch = host.channel('plug')
-ch.onMessage(function(m) {
-  host.fetch(m).then(function(r) { ch.send('status:' + r.status) },
-                     function(e) { ch.send('reject:' + e) })
-})
-`)
-	e.send(srv.URL + "/hang")
-	frames := e.sink.waitFrames(1, 2*time.Second)
-	if len(frames) != 1 {
-		t.Fatalf("frames = %q, want the fetch to reject on timeout", frames)
+	client := &http.Client{Timeout: 250 * time.Millisecond}
+	status, body, err := fetchWith(client, srv.URL+"/hang")
+	if err == nil {
+		t.Fatal("hanging server fetch must time out")
 	}
-	msg := frames[0][1:]
-	if !strings.Contains(msg, "reject:") || !strings.Contains(msg, "Client.Timeout") {
-		t.Fatalf("rejection = %q, want the client timeout error", msg)
+	if !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Fatalf("error = %v, want the client timeout error", err)
+	}
+	if status != 0 || body != "" {
+		t.Fatalf("error return = (%d, %q), want zero values", status, body)
+	}
+}
+
+// A body read failure after a successful Get (server promises more bytes
+// than it writes) must surface as an error, never a truncated 200.
+func TestHostFetchBodyReadErrorReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("short")) // 5 of 100 promised bytes
+	}))
+	defer srv.Close()
+
+	status, body, err := fetchWith(&http.Client{}, srv.URL+"/short")
+	if err == nil {
+		t.Fatal("short body must fail the read, not resolve truncated")
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("error = %v, want the unexpected EOF from the short body", err)
+	}
+	if status != 0 || body != "" {
+		t.Fatalf("error return = (%d, %q), want zero values", status, body)
 	}
 }
 

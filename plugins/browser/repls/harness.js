@@ -275,10 +275,12 @@ globalThis.browser = {
   },
 
   // Filename guard: screenshot names become path segments under the
-  // --output-dir root; anything outside [A-Za-z0-9._-] is flattened so a
-  // name can never escape that root.
+  // --output-dir root; anything outside unicode letters/digits/._- is
+  // flattened so a name can never escape that root. Unicode letters pass —
+  // the goal is path-injection safety, not ASCII-only (CJK names must not
+  // collapse into colliding underscores).
   _safeName(name) {
-    return String(name).replace(/[^A-Za-z0-9._-]/g, "_");
+    return String(name).replace(/[^\p{L}\p{N}._-]/gu, "_");
   },
 
   // Screenshot resolves under the MCP --output-dir root

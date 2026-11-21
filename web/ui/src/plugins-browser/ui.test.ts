@@ -361,7 +361,7 @@ describe('browser card ui', () => {
       expect(m.status.textContent).toBe('attach failed: Error: cdp error')
     })
 
-    it('startScreencast uses the default 15s request timeout', async () => {
+    it('startScreencast times out at the default 15s and the failed attach re-arms the 1.5s probe (self-heal)', async () => {
       const m = await mountCard()
       await feed(m, { id: 1, result: { targetInfos: [{ type: 'page', targetId: 'p1' }] } })
       await feed(m, { id: 3, result: { sessionId: 's1' } })
@@ -371,6 +371,16 @@ describe('browser card ui', () => {
       await vi.advanceTimersByTimeAsync(1)
       await tick()
       expect(m.status.textContent).toBe('attach failed: Error: cdp timeout: Page.startScreencast')
+      // THE SELF-HEAL PIN: a transient attach failure (chromium is up, the
+      // screencast start just timed out) must re-enter the probe loop instead
+      // of stranding the card until the next bridge redial.
+      expect(sentOfMethod(m, 'Target.getTargets')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1499)
+      await tick()
+      expect(sentOfMethod(m, 'Target.getTargets')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await tick()
+      expect(sentOfMethod(m, 'Target.getTargets')).toHaveLength(2)
     })
   })
 

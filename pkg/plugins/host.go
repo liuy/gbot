@@ -136,9 +136,24 @@ func (r *ProtocolRunner) closeConns() {
 
 // fetchClient bounds host.fetch: a discovery endpoint that accepts the
 // connection but never answers must reject the module's promise instead of
-// pinning the goroutine forever. Package-level so tests can tighten the
-// timeout.
+// pinning the goroutine forever. Package-level and never mutated — http.Client
+// is safe for concurrent use.
 var fetchClient = &http.Client{Timeout: 10 * time.Second}
+
+// fetchWith is the fetch body with the client injected so tests can exercise
+// their own timeout without touching the package-level default.
+func fetchWith(c *http.Client, url string) (int, string, error) {
+	resp, err := c.Get(url)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, "", err
+	}
+	return resp.StatusCode, string(b), nil
+}
 
 // registerGlobals builds the host API on the VM.
 func (r *ProtocolRunner) registerGlobals(vm *goja.Runtime) error {
@@ -183,27 +198,17 @@ func (r *ProtocolRunner) registerGlobals(vm *goja.Runtime) error {
 		url := call.Argument(0).String()
 		promise, resolve, reject := vm.NewPromise()
 		go func() {
-			resp, err := fetchClient.Get(url)
+			status, body, err := fetchWith(fetchClient, url)
 			if err != nil {
 				r.loop.RunOnLoop(func(vm *goja.Runtime) {
 					_ = reject(vm.NewTypeError(err.Error()))
 				})
 				return
 			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			if err != nil {
-				r.loop.RunOnLoop(func(vm *goja.Runtime) {
-					_ = reject(vm.NewTypeError(err.Error()))
-				})
-				return
-			}
-			status := resp.StatusCode
-			text := string(body)
 			r.loop.RunOnLoop(func(vm *goja.Runtime) {
 				obj := vm.NewObject()
 				_ = obj.Set("status", status)
-				_ = obj.Set("body", text)
+				_ = obj.Set("body", body)
 				_ = resolve(obj)
 			})
 		}()

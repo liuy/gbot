@@ -819,6 +819,18 @@ describe('browser harness', () => {
       expect(shot).toHaveBeenLastCalledWith({ filename: '.playwright-mcp/.._.._etc_passwd', type: 'png' })
       expect(b._safeName('ok-name.1_2')).toBe('ok-name.1_2')
     })
+
+    it('keeps unicode letters and digits instead of flattening them to underscores', async () => {
+      const b = await loadHarness()
+      const shot = given('browser_take_screenshot').mockResolvedValue('saved')
+      await b.shot('小红书二维码')
+      expect(shot).toHaveBeenCalledWith({ filename: '.playwright-mcp/小红书二维码', type: 'png' })
+      // Mixed script: CJK survives, separators still flatten; distinct CJK
+      // names must not collide into the same underscore soup.
+      expect(b._safeName('小红书 二维码')).toBe('小红书_二维码')
+      expect(b._safeName('Grüße-2')).toBe('Grüße-2')
+      expect(b._safeName('страница')).toBe('страница')
+    })
   })
 
   describe('_parseEval', () => {

@@ -223,29 +223,6 @@ export function mount(container, ctx) {
     session = null
   }
 
-  const attachTo = async (targetId) => {
-    if (!cdp || disposed) return
-    stopSession()
-    followTarget = targetId
-    try {
-      const res = await cdp.request('Target.attachToTarget', { targetId, flatten: true })
-      if (disposed || followTarget !== targetId) {
-        cdp.send('Target.detachFromTarget', { sessionId: res.sessionId })
-        return
-      }
-      session = res.sessionId
-      await cdp.request('Page.startScreencast', {
-        format: 'jpeg',
-        maxWidth: 1920,
-        quality: 88,
-        everyNthFrame: 2, // cap the frame rate; animation pages would otherwise flood the pipe
-      }, session)
-      setStatus('live')
-    } catch (e) {
-      setStatus(`attach failed: ${String(e)}`)
-    }
-  }
-
   const pickTarget = (infos) => {
     const pages = infos.filter((ti) => ti.type === 'page')
     return pages.length ? pages[pages.length - 1].targetId : null
@@ -384,6 +361,34 @@ export function mount(container, ctx) {
       session = null
       setStatus('disconnected — reopen the card')
     })
+
+    // attachTo lives inside start() so its failure path can re-enter the
+    // probe loop via enterIdle.
+    const attachTo = async (targetId) => {
+      if (!cdp || disposed) return
+      stopSession()
+      followTarget = targetId
+      try {
+        const res = await cdp.request('Target.attachToTarget', { targetId, flatten: true })
+        if (disposed || followTarget !== targetId) {
+          cdp.send('Target.detachFromTarget', { sessionId: res.sessionId })
+          return
+        }
+        session = res.sessionId
+        await cdp.request('Page.startScreencast', {
+          format: 'jpeg',
+          maxWidth: 1920,
+          quality: 88,
+          everyNthFrame: 2, // cap the frame rate; animation pages would otherwise flood the pipe
+        }, session)
+        setStatus('live')
+      } catch (e) {
+        // A transient failure here (chromium up but startScreencast timed
+        // out) must re-arm the probe like every other dead end, or the card
+        // strands on this label until the next bridge redial.
+        enterIdle(`attach failed: ${String(e)}`)
+      }
+    }
 
     // Probe model: chromium is launched lazily by playwright-mcp on its
     // first tool call. While it is down the bridge replies "browser idle";
