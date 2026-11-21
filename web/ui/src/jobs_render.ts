@@ -34,6 +34,12 @@ export interface JobsSectionHandles {
   ): void
   // rAF-coalesced refresh of every live feed's content (blocks / tail).
   scheduleRender(): void
+  // Terminal teardown: unsubscribe the store, cancel the pending rAF, and
+  // dispose every live feed sink (stopping its duration ticker). The
+  // collapse/removal paths already dispose views individually; this is the
+  // all-at-once exit for a whole section going away (tests; the panel owns
+  // the section for the page lifetime in production).
+  dispose(): void
 }
 
 // Feed element trio per expanded job: the wrap is the positioning context
@@ -238,6 +244,24 @@ export function createJobsSection(): JobsSectionHandles {
       rafId = 0
       flush()
     })
+  }
+
+  // Idempotent by construction: every resource is nulled/cleared on the way
+  // out, so a second dispose (e.g. afterEach after an explicit in-test call)
+  // is a no-op.
+  const dispose = () => {
+    unsub?.()
+    feedUnsub?.()
+    unsub = null
+    feedUnsub = null
+    if (rafId) {
+      cancelAnimationFrame(rafId)
+      rafId = 0
+    }
+    for (const view of feedEls.values()) view.sink?.dispose()
+    feedEls.clear()
+    dirty.clear()
+    curStore = null
   }
 
   // Stop affordance per design spec: bare 28px red icon button, solid
@@ -492,5 +516,6 @@ export function createJobsSection(): JobsSectionHandles {
   return {
     rebuild,
     scheduleRender,
+    dispose,
   }
 }

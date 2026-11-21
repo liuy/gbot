@@ -19,6 +19,12 @@ export interface TaskPanelHandles {
   setTasks: (tasks: TaskWireItem[]) => void
   setJobs: (jobs: JobWireItem[], hydrated?: Map<string, { blocks?: Block[]; tail?: string }>) => void
   jobsStore: JobsStoreHandle
+  // Terminal teardown: close the popover, unsubscribe the store, and dispose
+  // the jobs section (every feed sink's duration ticker included). The chat
+  // page holds the panel for the page lifetime, so production never calls
+  // this — embedders that tear down mid-session (and tests) must, or a
+  // running-tool feed keeps its interval past the environment's death.
+  dispose(): void
 }
 
 export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHandles {
@@ -211,7 +217,7 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     jobsStore.setJobs(jobs, hydrated)
   }
 
-  jobsStore.onChange(() => {
+  const unsubJobs = jobsStore.onChange(() => {
     updateChrome()
     if (!host.isOpen()) return
     if (jobsSig() !== lastJobsSig) {
@@ -220,6 +226,14 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
       jobsSection.scheduleRender()
     }
   })
+
+  // Idempotent: host.close() on an already-closed host and jobsStore/section
+  // disposal on an already-disposed section are both no-ops.
+  const dispose = () => {
+    unsubJobs()
+    host.close()
+    jobsSection.dispose()
+  }
 
   // Cleanup popover if root is removed from DOM.
   new MutationObserver((_mutations, observer) => {
@@ -230,5 +244,5 @@ export function createTaskPanel(opts?: Partial<TaskPanelOptions>): TaskPanelHand
     }
   }).observe(root.parentElement ?? document.body, { childList: true })
 
-  return { root, setTasks, setJobs, jobsStore }
+  return { root, setTasks, setJobs, jobsStore, dispose }
 }

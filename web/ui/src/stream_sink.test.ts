@@ -1401,3 +1401,45 @@ describe('feed sink — hydrate reset and snapshot isolation', () => {
     }
   })
 })
+
+describe('feed sink — real-timer disposal', () => {
+  it('dispose clears the native interval that window.setInterval created', () => {
+    // Deliberately NO fake timers: in vitest's jsdom environment
+    // window.setInterval IS Node's native timer — jsdom does not track it,
+    // and environment teardown deletes the `window` global without
+    // cancelling it. A leaked ticker then throws ReferenceError on the next
+    // tick (the make-check flake). Capturing the handles startTicker creates
+    // and asserting dispose clears them pins the cleanup in the exact timer
+    // configuration that leaks.
+    const created: number[] = []
+    const cleared: number[] = []
+    const origSet = window.setInterval.bind(window)
+    const origClear = window.clearInterval.bind(window)
+    const setSpy = (cb: TimerHandler, ms?: number): number => {
+      const id = origSet(cb, ms)
+      created.push(id)
+      return id
+    }
+    const clearSpy = (id?: number): void => {
+      if (id !== undefined) cleared.push(id)
+      origClear(id)
+    }
+    ;(window as unknown as { setInterval: typeof setSpy }).setInterval = setSpy
+    ;(window as unknown as { clearInterval: typeof clearSpy }).clearInterval = clearSpy
+    const { sink, feedEl } = makeSink([toolBlock('t1', 'Bash', { startedAt: Date.now() })])
+    try {
+      sink.hydrate()
+      // One running tool → exactly one live ticker interval, and it rendered.
+      expect(created).toHaveLength(1)
+      expect(feedEl.querySelectorAll('[data-tool-root]')).toHaveLength(1)
+    } finally {
+      // finally: a failing assertion above must not leak a live 200ms timer.
+      sink.dispose()
+      ;(window as unknown as { setInterval: typeof setSpy }).setInterval = origSet
+      ;(window as unknown as { clearInterval: typeof clearSpy }).clearInterval = origClear
+    }
+    // The exact native handle was cleared — the sink holds nothing that
+    // can fire past its owner's teardown.
+    expect(cleared).toEqual(created)
+  })
+})

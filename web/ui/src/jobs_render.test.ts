@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createJobsSection, nearBottom } from './jobs_render'
 import { createJobsStore } from './jobs_store'
 import { setLocale } from './i18n'
@@ -57,10 +57,21 @@ function toolBlock(id: string, name: string, over: Partial<Extract<Block, { kind
   }
 }
 
+// Sections are disposed per test: an expanded running-agent feed keeps the
+// sink's native live-duration interval alive past the test file's teardown —
+// the make-check "ReferenceError: window is not defined" flake family.
+const liveSections: ReturnType<typeof createJobsSection>[] = []
+
+afterEach(() => {
+  for (const s of liveSections) s.dispose()
+  liveSections.length = 0
+})
+
 function mount() {
   document.body.innerHTML = ''
   const store = createJobsStore()
   const section = createJobsSection()
+  liveSections.push(section)
   const host = document.createElement('div')
   document.body.appendChild(host)
   const expanded = new Set<string>()
@@ -1399,6 +1410,50 @@ describe('jobs section — incremental DOM sink', () => {
     vi.advanceTimersByTime(16 * 60)
     expect(feed.scrollTop).toBe(0)
     vi.useRealTimers()
+  })
+})
+
+describe('jobs section — dispose', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('dispose stops every live feed sink ticker and detaches the store subscription', async () => {
+    // Full fake-timer set (the sink's own tests' pattern): the running tool's
+    // duration ticker is a fake interval, so vi.getTimerCount() observes the
+    // section-level dispose cascading into the sink.
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout', 'clearTimeout',
+        'setInterval', 'clearInterval',
+        'requestAnimationFrame', 'cancelAnimationFrame',
+        'performance', 'Date',
+      ],
+    })
+    try {
+      const ctx = mount()
+      ctx.store.setJobs(
+        [agentJob('agent-1', 'running')],
+        new Map([
+          ['agent-1', { blocks: [toolBlock('t1', 'Bash', { state: 'running', startedAt: Date.now() })] }],
+        ]),
+      )
+      ctx.rerender()
+      rowFor(ctx.host, 'agent-1').click()
+      // Settle the hydrate-onDone flush rAF; only the duration ticker remains.
+      vi.advanceTimersByTime(64)
+      expect(vi.getTimerCount()).toBe(1)
+      const feed = expFor(ctx.host, 'agent-1')?.querySelector('.jobs-feed') as HTMLElement
+      ctx.section.dispose()
+      expect(vi.getTimerCount()).toBe(0)
+      // Subscriptions are gone: post-dispose events never reach the feed,
+      // even with the flush loop pumped.
+      ctx.store.applyEvent(agentEvent('text_delta', { text: 'post-dispose delta' }))
+      await vi.advanceTimersByTimeAsync(64)
+      expect(feed.textContent).not.toContain('post-dispose delta')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

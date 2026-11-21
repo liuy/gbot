@@ -1,11 +1,23 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createTaskPanel } from './task_panel'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createTaskPanel, type TaskPanelOptions } from './task_panel'
 import { initLocale } from './i18n'
 import type { TaskWireItem, JobWireItem } from './types'
 
-function mount() {
+// Panels are disposed per test: an expanded running-agent feed starts the
+// sink's live duration ticker (a native interval vitest's jsdom environment
+// neither proxies nor cancels at teardown) — leaking it past the file's end
+// is the make-check "ReferenceError: window is not defined" flake.
+const livePanels: ReturnType<typeof createTaskPanel>[] = []
+
+afterEach(() => {
+  for (const p of livePanels) p.dispose()
+  livePanels.length = 0
+})
+
+function mount(opts?: Partial<TaskPanelOptions>) {
   document.body.innerHTML = ''
-  const panel = createTaskPanel()
+  const panel = createTaskPanel(opts)
+  livePanels.push(panel)
   document.body.appendChild(panel.root)
   return panel
 }
@@ -219,8 +231,7 @@ describe('taskPanel — background jobs section', () => {
   }
 
   it('renders no jobs section when there are no jobs', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
     const popover = openPopover(panel)
     expect(popover.querySelector('.jobs-section')).toBeNull()
@@ -229,8 +240,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('renders the section and one row per job', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
@@ -246,8 +256,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('shows root with running count label when only jobs exist (no tasks)', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'go build' }),
@@ -263,8 +272,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('hides root when only terminal jobs remain (no tasks)', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'failed', command: 'make lint', exitCode: 2 }),
@@ -273,8 +281,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('running job keeps the root; all-terminal hides it', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     expect(panel.root.style.display).toBe('')
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'x' })])
@@ -283,8 +290,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('bash row shows the command in mono, agent row shows type · description', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' }),
       jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: '修 wui 分页 bug', parentToolUseID: 'p1' }),
@@ -299,8 +305,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('fork agent row uses the fork kind label', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'fork', description: 'long task', parentToolUseID: 'p1' }),
     ])
@@ -309,8 +314,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('terminal chips: Running / Done / Exit code / Stopped', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-0', kind: 'bash', status: 'running', command: 'z' }),
       jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'a' }),
@@ -329,8 +333,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('terminal rows carry the dimmed opacity class, running rows do not', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'a' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'completed', command: 'b' }),
@@ -343,8 +346,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('setJobs keeps an open popover open and refreshes row content', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
     const popover = openPopover(panel)
     expect(popover.querySelector('.jobs-row')?.textContent).toContain('Running')
@@ -359,8 +361,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('setTasks still unconditionally closes an open popover (jobs present)', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     openPopover(panel)
     panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
@@ -368,8 +369,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('all jobs terminal keeps an open panel readable; closing packs up the trigger', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     const popover = openPopover(panel)
 
@@ -404,8 +404,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('a fresh open with only terminal jobs renders no jobs section', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setTasks([{ id: '1', subject: 'A', status: 'in_progress' }])
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'completed', command: 'go build' })])
     const popover = openPopover(panel)
@@ -415,8 +414,7 @@ describe('taskPanel — background jobs section', () => {
   })
 
   it('popover title aggregates background jobs only while they run', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([
       jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'a' }),
       jw({ id: 'bg-2', kind: 'bash', status: 'running', command: 'b' }),
@@ -454,8 +452,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
   }
 
   it('expansion survives status-change rebuilds and hides the terminal stop button', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
     const popover = openPopover(panel)
     expandFirstRow(popover)
@@ -473,8 +470,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
   })
 
   it('expansion and the carried feed element persist across close/reopen while the job runs', () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
     const popover = openPopover(panel)
     expandFirstRow(popover)
@@ -487,8 +483,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
   })
 
   it('tail-only updates refresh the feed in place without rebuilding rows', async () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'make check' })])
     const popover = openPopover(panel)
     expandFirstRow(popover)
@@ -507,8 +502,7 @@ describe('taskPanel — job expansion (Phase 3)', () => {
 
   it('stop button routes to the onStopJob option', () => {
     const onStopJob = vi.fn()
-    const panel = createTaskPanel({ onStopJob })
-    document.body.appendChild(panel.root)
+    const panel = mount({ onStopJob })
     panel.setJobs([jw({ id: 'bg-1', kind: 'bash', status: 'running', command: 'x' })])
     const popover = openPopover(panel)
     expandFirstRow(popover)
@@ -531,8 +525,7 @@ describe('taskPanel — job feed catch-up (DOM sink)', () => {
   }
 
   it('events streamed while the popover is closed appear when it reopens', async () => {
-    const panel = createTaskPanel()
-    document.body.appendChild(panel.root)
+    const panel = mount()
     panel.setJobs([jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: 'work', parentToolUseID: 'p1' })])
     const popover = openPopover(panel)
     ;(popover.querySelector('.jobs-row') as HTMLElement).click()
@@ -558,6 +551,73 @@ describe('taskPanel — job feed catch-up (DOM sink)', () => {
     const feed2 = reopened.querySelector('.jobs-feed') as HTMLElement
     expect(feed2.textContent).toContain('ran while closed')
     expect(feed2.querySelectorAll('[data-tool-root]')).toHaveLength(1)
+  })
+})
+
+describe('taskPanel — dispose', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('dispose stops the expanded feed sink live duration ticker', () => {
+    // Full fake-timer set (stream_sink.test.ts pattern) so the ticker is a
+    // fake interval and vi.getTimerCount() observes dispose clearing it.
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout', 'clearTimeout',
+        'setInterval', 'clearInterval',
+        'requestAnimationFrame', 'cancelAnimationFrame',
+        'performance', 'Date',
+      ],
+    })
+    try {
+      const panel = mount()
+      panel.setJobs(
+        [jw({ id: 'agent-1', kind: 'agent', status: 'running', agentType: 'Executor', description: 'work', parentToolUseID: 'p1' })],
+        new Map([
+          [
+            'agent-1',
+            {
+              blocks: [
+                {
+                  kind: 'tool',
+                  id: 't-1',
+                  name: 'Bash',
+                  summary: '',
+                  isSearch: false,
+                  isRead: false,
+                  isList: false,
+                  isLsp: false,
+                  isWeb: false,
+                  isTask: false,
+                  state: 'running',
+                  timingNs: 0,
+                  displayOutput: '',
+                  startedAt: Date.now(),
+                  children: [],
+                },
+              ],
+            },
+          ],
+        ]),
+      )
+      ;(panel.root as HTMLButtonElement).click()
+      const popover = document.getElementById('task-popover') as HTMLElement
+      ;(popover.querySelector('.jobs-row') as HTMLElement).click()
+      // Settle the chrome rAF and the hydrate-onDone flush rAF; the only
+      // timer left standing is the feed sink's duration ticker.
+      vi.advanceTimersByTime(64)
+      expect(vi.getTimerCount()).toBe(1)
+      panel.dispose()
+      // host.close() re-runs updateChrome, which schedules one chrome rAF —
+      // fire it; if the feed ticker had survived dispose it would still be
+      // standing here.
+      vi.advanceTimersByTime(16)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(document.getElementById('task-popover')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
