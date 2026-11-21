@@ -198,6 +198,12 @@ func (h *Hub) binding(id uint8) *binding {
 // dropBindingLocked removes a plugin's binding and notifies its sink. The
 // provider side needs no lifecycle message in v1: it holds one persistent
 // connection and simply sees no traffic while unbound.
+//
+// The removal is Info, not Debug: every reason here previously produced no
+// production-visible trace, and a silently vanished binding renders as a
+// black-screen "live" card whose screencast frames all fall into deliver's
+// "no client bound" warn — undiagnosable after the fact. The id is captured
+// before the maps are touched so the log names exactly what died.
 func (h *Hub) dropBindingLocked(plugin, reason string) {
 	id, ok := h.byName[plugin]
 	if !ok {
@@ -209,7 +215,7 @@ func (h *Hub) dropBindingLocked(plugin, reason string) {
 		notify := fmt.Sprintf(`{"type":"channel_close","channelId":%d}`, id)
 		b.sink.SendJSON([]byte(notify))
 	}
-	slog.Debug("transport: pipe dropped", "plugin", plugin, "reason", reason)
+	slog.Info("transport: binding dropped", "plugin", plugin, "channelId", id, "reason", reason)
 }
 
 // Connected reports whether a provider for the plugin is currently attached —
@@ -303,13 +309,45 @@ func (h *Hub) CloseChannelByName(plugin string) {
 
 // UnbindClient tears down every pipe bound to sink — the WS connection
 // behind it died or was taken over. Providers survive.
-func (h *Hub) UnbindClient(sink ClientSink) {
+//
+// No notification is sent, deliberately: every server→client message rides
+// the CURRENT era queue (channelSink SendJSON resolves c.outQ.Load() at send
+// time), so after a takeover a superseded sink's notification would land in
+// the NEW client's queue and pollute it — a name-keyed channel_error would
+// tear down the new client's healthy channel. Channel ids are monotonic and
+// never reused within a hub's lifetime, so stale-notice id collisions are
+// impossible: the reason notifications are forbidden is era pollution, not
+// id reuse. Liveness detection therefore belongs to the client (it pings on
+// its own socket; the server answers only the current connection).
+func (h *Hub) UnbindClient(sink ClientSink, reason string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	n := 0
 	for id, b := range h.bindings {
 		if b.sink == sink {
 			delete(h.bindings, id)
 			delete(h.byName, b.plugin)
+			n++
 		}
 	}
+	// n==0 stays silent: both production call sites fire on every disconnect
+	// and every takeover, mostly with nothing bound.
+	if n > 0 {
+		slog.Info("transport: client unbound", "channels", n, "reason", reason)
+	}
+}
+
+// BoundBySink reports whether the named plugin's binding belongs to sink.
+// Pure query with no wire semantics — the hub routes, callers decide what an
+// answer means. The wui ping handler uses it to refuse answering a
+// superseded connection with someone else's binding.
+func (h *Hub) BoundBySink(sink ClientSink, plugin string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	id, ok := h.byName[plugin]
+	if !ok {
+		return false
+	}
+	b := h.bindings[id]
+	return b != nil && b.sink == sink
 }

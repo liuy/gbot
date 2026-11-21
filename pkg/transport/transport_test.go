@@ -263,6 +263,92 @@ func TestChannelSendMissingProviderUnbinds(t *testing.T) {
 	}
 }
 
+// TestBoundBySink pins the ping handler's hub query: the answer must be
+// sink-exact, plugin-exact, false for unknown plugins, false after the
+// binding drops, the lock must be released between queries, and a binding
+// that exists only under id 0 (never allocated) must never answer a
+// name-query that missed.
+func TestBoundBySink(t *testing.T) {
+	hub := New()
+	defer hub.Close()
+	startProvider(t, hub, "plugA")
+	startProvider(t, hub, "plugB")
+	sinkA := &mockSink{}
+	sinkB := &mockSink{}
+	if _, err := hub.OpenChannel(sinkA, "plugA"); err != nil {
+		t.Fatal(err)
+	}
+	if !hub.BoundBySink(sinkA, "plugA") {
+		t.Fatal("binding owner must be reported bound")
+	}
+	if hub.BoundBySink(sinkB, "plugA") {
+		t.Fatal("a different sink must not be reported bound")
+	}
+	if hub.BoundBySink(sinkA, "no.such") {
+		t.Fatal("unknown plugin must not be reported bound")
+	}
+	// White-box: id 0 is never allocated (0x00 reserved). A mutant that
+	// skips the byName-miss return would fall through to bindings[0] and
+	// could answer from a ghost entry.
+	hub.mu.Lock()
+	hub.bindings[0] = &binding{id: 0, plugin: "ghost", sink: sinkB}
+	hub.mu.Unlock()
+	if hub.BoundBySink(sinkB, "ghost") {
+		t.Fatal("a name-query miss must never answer from an unallocated id")
+	}
+	hub.mu.Lock()
+	delete(hub.bindings, 0)
+	// Dangling name: byName present, binding already gone. The nil-binding
+	// leg must return false, not dereference.
+	hub.byName["ghost2"] = 7
+	hub.mu.Unlock()
+	if hub.BoundBySink(sinkB, "ghost2") {
+		t.Fatal("a dangling name entry must not be reported bound")
+	}
+	hub.mu.Lock()
+	delete(hub.byName, "ghost2")
+	hub.mu.Unlock()
+
+	// Concurrent open/close churn while querying: the remove-Lock mutant
+	// crashes on concurrent map access, the defer-remove mutant deadlocks
+	// the very next query. Churn is bounded at 200 cycles — hub ids never
+	// reuse, so an unbounded loop would exhaust the id space.
+	sinkC := &mockSink{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			if !hub.BoundBySink(sinkA, "plugA") {
+				t.Error("churn must not disturb the plugA binding query")
+				return
+			}
+			id, err := hub.OpenChannel(sinkC, "plugB")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			hub.CloseChannel(id)
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			if !hub.BoundBySink(sinkA, "plugA") {
+				t.Fatal("bound query must hold true across churn")
+			}
+			hub.CloseChannel(1)
+			if hub.BoundBySink(sinkA, "plugA") {
+				t.Fatal("after the binding drops, the sink must not be reported bound")
+			}
+			return
+		default:
+			if !hub.BoundBySink(sinkA, "plugA") {
+				t.Fatal("bound query must hold true across churn")
+			}
+		}
+	}
+}
+
 func TestUnbindClientOnlyOwnSink(t *testing.T) {
 	hub := New()
 	startProvider(t, hub, "plugA")
@@ -275,7 +361,7 @@ func TestUnbindClientOnlyOwnSink(t *testing.T) {
 	if _, err := hub.OpenChannel(sinkB, "plugB"); err != nil {
 		t.Fatal(err)
 	}
-	hub.UnbindClient(sinkA)
+	hub.UnbindClient(sinkA, "takeover")
 	hub.mu.Lock()
 	_, aBound := hub.byName["plugA"]
 	_, bBound := hub.byName["plugB"]
@@ -285,6 +371,50 @@ func TestUnbindClientOnlyOwnSink(t *testing.T) {
 	}
 	if !bBound {
 		t.Fatal("sinkB pipes must survive")
+	}
+}
+
+// TestBindingDropObservability pins the incident-2026-11-22 observability
+// contract: binding removals were Debug-level (invisible in production), so
+// a silently dropped binding forced log archaeology with zero evidence. The
+// drop itself and the client unbind must each leave one Info line carrying
+// the reason; an n==0 unbind must stay silent (every disconnect/takeover
+// calls it — an unconditional log would flood production).
+func TestBindingDropObservability(t *testing.T) {
+	hub := New()
+	defer hub.Close()
+	startProvider(t, hub, "plugA")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	sink := &mockSink{}
+	id, err := hub.OpenChannel(sink, "plugA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.CloseChannel(id)
+	logs := buf.String()
+	if !strings.Contains(logs, "transport: binding dropped") || !strings.Contains(logs, `reason="client closed"`) || !strings.Contains(logs, "plugin=plugA") {
+		t.Fatalf("binding drop must log Info with plugin+reason, got: %s", logs)
+	}
+
+	buf.Reset()
+	if _, err := hub.OpenChannel(sink, "plugA"); err != nil {
+		t.Fatal(err)
+	}
+	hub.UnbindClient(sink, "takeover")
+	logs = buf.String()
+	if !strings.Contains(logs, "transport: client unbound") || !strings.Contains(logs, "reason=takeover") || !strings.Contains(logs, "channels=1") {
+		t.Fatalf("unbind with bindings must log Info once with reason+count, got: %s", logs)
+	}
+
+	buf.Reset()
+	hub.UnbindClient(sink, "takeover")
+	if logs := buf.String(); strings.Contains(logs, "client unbound") {
+		t.Fatalf("n==0 unbind must stay silent, got: %s", logs)
 	}
 }
 

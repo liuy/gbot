@@ -126,7 +126,7 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	sink := newChannelSink(c)
 	if c.transport != nil {
 		if old := c.activeSink.Swap(sink); old != nil {
-			c.transport.UnbindClient(old)
+			c.transport.UnbindClient(old, "takeover")
 		}
 	}
 	c.switchEngine(c.ActiveID())
@@ -161,7 +161,7 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	// reconnects. UnbindClient only touches bindings whose sink is exactly
 	// this one, so the new client's channels are never affected.
 	if c.transport != nil {
-		c.transport.UnbindClient(sink)
+		c.transport.UnbindClient(sink, "connection closed")
 	}
 	c.activeWS.CompareAndSwap(ws, nil)
 	c.abortPendingAsksOnDisconnect()
