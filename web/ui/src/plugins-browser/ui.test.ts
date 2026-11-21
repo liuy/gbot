@@ -189,7 +189,11 @@ describe('browser card ui', () => {
       // clear would otherwise stay invisible.
       expect(m.container.childNodes).toHaveLength(3)
       expect(m.canvas.tagName).toBe('CANVAS')
-      expect(m.canvas.className).toBe('w-full block bg-black')
+      // h-auto + 412:839 attrs: the idle placeholder keeps the phone aspect
+      // instead of the default 300x150 landscape strip (reads as desktop).
+      expect(m.canvas.className).toBe('w-full h-auto block bg-black')
+      expect(m.canvas.width).toBe(412)
+      expect(m.canvas.height).toBe(839)
       expect(m.canvas.style.touchAction).toBe('none')
       expect(m.hidden.tagName).toBe('INPUT')
       expect(m.hidden.className).toBe('absolute opacity-0 w-px h-px p-0 border-0')

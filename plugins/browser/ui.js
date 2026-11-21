@@ -142,7 +142,13 @@ function renderIcon(name, { size = 15 } = {}) {
 
 export function mount(container, ctx) {
   container.innerHTML = ''
-  const canvas = el('canvas', 'w-full block bg-black')
+  // Idle placeholder shaped like the phone (412:839); the first screencast
+  // frame resizes the backing store 1:1 to the real bitmap anyway. Without
+  // this the default 300x150 canvas renders as a landscape strip that reads
+  // as a desktop viewport.
+  const canvas = el('canvas', 'w-full h-auto block bg-black')
+  canvas.width = 412
+  canvas.height = 839
   // The canvas owns every touch: browser panning/zoom must not steal them.
   canvas.style.touchAction = 'none'
   // Invisible input carrying soft-keyboard/physical-key text into CDP.
