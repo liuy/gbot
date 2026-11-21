@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -588,5 +590,38 @@ func TestProviderGoneFiresOnHubClose(t *testing.T) {
 	case <-tp.gone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("hub close must fire the provider gone callback")
+	}
+}
+
+// TestDeliverWithoutBindingWarns pins the observability contract: a reply
+// delivered with no client pipe open must leave a WARN carrying the plugin
+// name — a silent drop reads downstream as a wedged card ("connecting…" /
+// timeout) with zero evidence tying the loss to the missing binding.
+func TestDeliverWithoutBindingWarns(t *testing.T) {
+	hub := New()
+	defer hub.Close()
+	tp := startProvider(t, hub, "plugA")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	tp.deliver(`{"orphan":1}`) // no OpenChannel: the deliver must drop AND warn
+	logs := buf.String()
+	if !strings.Contains(logs, "no client bound") || !strings.Contains(logs, "plugA") {
+		t.Fatalf("unbound deliver must WARN with the plugin name, got: %s", logs)
+	}
+
+	// The healthy path stays silent: a bound deliver must not warn.
+	buf.Reset()
+	sink := &mockSink{}
+	if _, err := hub.OpenChannel(sink, "plugA"); err != nil {
+		t.Fatal(err)
+	}
+	tp.deliver(`{"bound":1}`)
+	waitReal(t, time.Second, func() bool { return len(sink.frames()) == 1 }, "bound frame")
+	if logs := buf.String(); strings.Contains(logs, "no client bound") {
+		t.Fatalf("bound deliver must not warn, got: %s", logs)
 	}
 }

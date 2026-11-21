@@ -7,12 +7,13 @@
   "checkers": ["typescript"],
   "coverageAnalysis": "perTest",
   "ignoreStatic": true,
-  "reporters": ["clear-text", "progress", "html"],
+  "reporters": ["clear-text", "progress", "html", "json"],
   "htmlReporter": {
     "fileName": "reports/mutation/mutation.html"
   },
-  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/vitest-setup.ts"],
+  "mutate": ["src/**/*.ts", "!src/**/*.test.ts", "!src/vitest-setup.ts", "plugins-browser/*.js"],
   "ignorePatterns": ["node_modules", "dist", ".stryker-tmp", "reports"],
   "tempDirName": ".stryker-tmp",
-  "allowConsoleColors": true
+  "allowConsoleColors": true,
+  "concurrency": 8
 }

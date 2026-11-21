@@ -10,6 +10,14 @@ const root = new URL('../../..', import.meta.url).pathname; // scripts/ -> web/u
 const prefix = 'web/ui/';
 const maxLines = Number(process.env.WEB_MUTATE_MAX_LINES ?? 500);
 
+// Vendored plugin sources live outside web/ui; stryker only mutates files
+// under its cwd, where the per-file symlinks in plugins-browser/ mirror them.
+const pluginMap = {
+  'plugins/browser/ui.js': 'plugins-browser/ui.js',
+  'plugins/browser/protocol.js': 'plugins-browser/protocol.js',
+  'plugins/browser/repls/harness.js': 'plugins-browser/harness.js',
+};
+
 const git = (...args) => {
   try {
     return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
@@ -23,20 +31,23 @@ if (!git('rev-parse', '--verify', '-q', base).trim()) {
   process.exit(0);
 }
 
-const out = git('diff', '-U0', '--diff-filter=ACMR', base, '--', `${prefix}src`);
+const out = git('diff', '-U0', '--diff-filter=ACMR', base, '--', `${prefix}src`, 'plugins/browser');
 
 const hunks = new Map(); // file -> [start-end, ...]
 let file = null;
 for (const line of out.split('\n')) {
   if (line.startsWith('+++ b/')) {
     const p = line.slice(6);
-    file =
-      p.startsWith(prefix) &&
-      p.endsWith('.ts') &&
-      !p.endsWith('.test.ts') &&
-      !p.endsWith('vitest-setup.ts')
-        ? p.slice(prefix.length)
-        : null;
+    if (p.startsWith(prefix)) {
+      file =
+        p.endsWith('.ts') &&
+        !p.endsWith('.test.ts') &&
+        !p.endsWith('vitest-setup.ts')
+          ? p.slice(prefix.length)
+          : null;
+    } else {
+      file = pluginMap[p] ?? null;
+    }
     continue;
   }
   const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
@@ -48,7 +59,7 @@ for (const line of out.split('\n')) {
 }
 
 if (hunks.size === 0) {
-  console.log(`no changed non-test .ts files vs ${base}`);
+  console.log(`no changed non-test .ts/.js files vs ${base}`);
   process.exit(0);
 }
 

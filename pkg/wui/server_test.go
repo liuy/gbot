@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/transport"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -2318,5 +2319,117 @@ func TestCommitClearsRewindStash(t *testing.T) {
 	c.restoreMu.Unlock()
 	if stash != nil {
 		t.Fatal("rewindStash survived a new commit — a later restore would resurrect the aborted prompt's chips")
+	}
+}
+
+// drainEraQueue drains one outbound queue into payload strings; the leading
+// channel id byte stays embedded (frames are [id][payload]), so assertions
+// match content with strings.Contains and the id with frames[i][0].
+func drainEraQueue(q *outQueue) []string {
+	var out []string
+	for _, m := range q.take() {
+		out = append(out, string(m.data))
+	}
+	return out
+}
+
+// TestChannelSinkFollowsCurrentEra pins the engine/model-switch era bug that
+// a sink which captured its queue at creation keeps pushing into it after
+// sendMetadata flips the era (closes the old queue, installs a new one), so
+// plugin replies silently vanish and the card dies at "connect failed: cdp
+// timeout" until a page refresh. The sink must resolve the CURRENT era queue
+// at send time: an era flip inside the same WS connection keeps channel
+// replies flowing, and only a takeover (new WS → new sink pointer →
+// UnbindClient) unbinds.
+func TestChannelSinkFollowsCurrentEra(t *testing.T) {
+	c := newTestConnectorWithHub(t, hub.NewHub())
+	// Park the wsWriter so queued frames stay inspectable: Stop closes done,
+	// and the writer exits at its first select once it sees this fresh,
+	// still-empty queue (its notify arm is blocked, done is closed). Stop is
+	// idempotent via stopOnce, so t.Cleanup's later call is a no-op.
+	c.Stop()
+	_ = c.outQ.Swap(newOutQueue(outQueueCapacity)) // reopen the era Stop closed
+	waitFor(50*time.Millisecond, func() bool { return false })
+
+	tr := transport.New()
+	t.Cleanup(tr.Close)
+	var upMu sync.Mutex
+	var upstream []string
+	handle := tr.RegisterInproc("browser", func(p []byte) {
+		upMu.Lock()
+		defer upMu.Unlock()
+		upstream = append(upstream, string(p))
+	}, nil)
+	t.Cleanup(func() { handle.Close() })
+
+	sink := newChannelSink(c)
+	id, err := tr.OpenChannel(sink, "browser")
+	if err != nil {
+		t.Fatalf("open channel: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("channel id = %d, want 1", id)
+	}
+
+	// Inbound before any flip: the client probe reaches the provider.
+	probe := `{"method":"Target.getTargets","id":1}`
+	tr.ChannelSend(id, []byte(probe))
+	upMu.Lock()
+	n, relayed := len(upstream), upstream[0]
+	upMu.Unlock()
+	if n != 1 || relayed != probe {
+		t.Fatalf("inbound relay = %d frames (%q), want exactly %q", n, upstream, probe)
+	}
+
+	// Provider reply lands in the CURRENT era queue as [id][payload].
+	reply := []byte(`{"id":1,"error":{"message":"connection refused"},"__status":"idle"}`)
+	handle.Deliver(reply)
+	frames := drainEraQueue(c.outQ.Load())
+	if len(frames) != 1 {
+		t.Fatalf("current era queue holds %d frames (%q), want exactly the reply", len(frames), frames)
+	}
+	if !strings.Contains(frames[0], `"__status":"idle"`) || frames[0][0] != byte(id) {
+		t.Fatalf("reply frame wrong (want id %d + __status): %q", id, frames[0])
+	}
+
+	// Engine/model switch: sendMetadata flips the era — close old, install new.
+	oldQ := c.outQ.Swap(newOutQueue(outQueueCapacity))
+	oldQ.close()
+
+	// Inbound still relays after the flip (the binding survives an era flip).
+	probe2 := `{"method":"Target.getTargets","id":2}`
+	tr.ChannelSend(id, []byte(probe2))
+	upMu.Lock()
+	n, relayed = len(upstream), upstream[1]
+	upMu.Unlock()
+	if n != 2 || relayed != probe2 {
+		t.Fatalf("post-flip inbound relay = %d frames (%q), want %q appended", n, upstream, probe2)
+	}
+
+	// The reply must land in the NEW era queue. With the captured-queue bug
+	// this push lands in the CLOSED old queue and silently vanishes.
+	handle.Deliver(reply)
+	newFrames := drainEraQueue(c.outQ.Load())
+	if len(newFrames) != 1 {
+		t.Fatalf("post-flip reply must land in the CURRENT era queue, got %d frames (%q) — era-flip dropped it", len(newFrames), newFrames)
+	}
+	if !strings.Contains(newFrames[0], `"__status":"idle"`) || newFrames[0][0] != byte(id) {
+		t.Fatalf("post-flip reply frame wrong (want id %d + __status): %q", id, newFrames[0])
+	}
+	// done wiring: a full queue plus closed done must release the parked
+	// push (shutdown must not deadlock on channel frames) — pins the sink's
+	// done field against being dropped.
+	for i := 0; i < outQueueCapacity; i++ {
+		sink.SendBinary([]byte("filler"))
+	}
+	released := make(chan struct{})
+	go func() {
+		sink.SendBinary([]byte("overflow"))
+		close(released)
+	}()
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second): // REAL-TIME
+		t.Fatal("sink push parked forever on a full queue despite closed done")
 	}
 }

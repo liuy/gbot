@@ -175,6 +175,10 @@ func (h *Hub) deliver(plugin string, payload []byte) {
 	id, ok := h.byName[plugin]
 	h.mu.Unlock()
 	if !ok {
+		// Warn, not silent: a dropped reply here reads downstream as a
+		// wedged card ("connecting…"/timeout) with zero evidence — this log
+		// is the only trace tying the loss to "no client bound".
+		slog.Warn("transport: deliver dropped, no client bound", "plugin", plugin)
 		return
 	}
 	frame := make([]byte, 1+len(payload))

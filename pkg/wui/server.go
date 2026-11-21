@@ -50,21 +50,36 @@ func RegisterChatWS(mux *http.ServeMux, c *WUIConnector) {
 	})
 }
 
-// channelSink adapts one wui WS connection era to transport.ClientSink. It
-// captures the era's outbound queue at creation: after a takeover the old
-// queue is closed and later pushes drop there — stale-era channel frames can
-// never leak into the new client's stream.
+// channelSink adapts one wui WS connection to transport.ClientSink. The sink
+// OBJECT is still one per WS connection: a takeover swaps in a fresh sink
+// pointer (serveChatWS) and UnbindClient frees the old bindings — the new
+// page remounts and reopens its channels, so takeover semantics are intact.
+// But the outbound QUEUE is resolved at send time via c.outQ.Load() (same
+// pattern as sendWS): an engine/model switch flips the era inside the SAME
+// connection (sendMetadata closes the old queue and installs a new one) and
+// must NOT unbind — channel replies follow the new era instead of dropping
+// silently into the closed queue (the card then died at "cdp timeout" until
+// a page refresh). Ordering needs no extra locking: wsWriter's per-frame era
+// check (connector.go) already keeps a reply enqueued here from preceding
+// the new era's metadata on the wire.
 type channelSink struct {
-	q    *outQueue
+	c    *WUIConnector
 	done <-chan struct{}
 }
 
 func (s channelSink) SendBinary(frame []byte) {
-	s.q.push(wsMsg{data: frame, isBinary: true}, s.done)
+	s.c.outQ.Load().push(wsMsg{data: frame, isBinary: true}, s.done)
 }
 
 func (s channelSink) SendJSON(payload []byte) {
-	s.q.push(wsMsg{data: payload, isBinary: false}, s.done)
+	s.c.outQ.Load().push(wsMsg{data: payload, isBinary: false}, s.done)
+}
+
+// newChannelSink builds the transport sink for one WS connection. Tests use
+// the same constructor so a sink-shape change cannot pass production while
+// breaking tests.
+func newChannelSink(c *WUIConnector) *channelSink {
+	return &channelSink{c: c, done: c.done}
 }
 
 // serveChatWS drives one WS connection to completion with a unified
@@ -108,7 +123,7 @@ func serveChatWS(ws *websocket.Conn, c *WUIConnector) {
 	// unbind (providers keep running headless). Without a hub there is
 	// nothing to bind, so no sink is stored (channel_open degrades to an
 	// error) — storing one would be a dead write nothing reads.
-	sink := &channelSink{q: c.outQ.Load(), done: c.done}
+	sink := newChannelSink(c)
 	if c.transport != nil {
 		if old := c.activeSink.Swap(sink); old != nil {
 			c.transport.UnbindClient(old)

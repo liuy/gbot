@@ -58,6 +58,35 @@ describe('plugin host', () => {
     expect(sheet!.textContent).toContain('browser')
   })
 
+  it('ctx.headerSlot hands one stable element leading the bar', async () => {
+    let slotA: HTMLElement | null = null
+    let slotB: HTMLElement | null = null
+    const card = { name: 'browser', ui: '/x.js', running: true }
+    await openPluginCard(card, {
+      loader: async () => ({
+        mount: (_c, ctx) => {
+          slotA = ctx.headerSlot()
+          slotB = ctx.headerSlot()
+        },
+      }),
+    })
+    expect(slotA).not.toBeNull()
+    expect(slotB).toBe(slotA)
+    const bar = document.querySelector('.vnc-sheet')!.firstElementChild as HTMLElement
+    expect(bar.className).toBe('flex items-center gap-[7px] px-3.5 pb-2 pt-2 text-[11px] text-t2')
+    const close = bar.lastElementChild as HTMLElement
+    expect(close.textContent).toBe('✕')
+    // Slot sits right after the separator dot: name · dot · slot · ✕.
+    const dot = slotA!.previousElementSibling as HTMLElement
+    expect(dot.className).toBe('h-[4px] w-[4px] shrink-0 rounded-full bg-t3')
+    expect(dot.previousElementSibling!.textContent).toBe('browser')
+    // Host ships a bare flex+items-center default so a plain append lines up
+    // with the title; the module may override its interior layout.
+    expect(slotA!.className).toBe('flex items-center')
+    expect(slotA!.nextElementSibling!.className).toBe('flex-1')
+    expect(slotA!.nextElementSibling!.nextElementSibling).toBe(close)
+  })
+
   it('closing runs the module cleanup and removes the sheet', async () => {
     const cleanup = vi.fn()
     const card = { name: 'browser', ui: '/x.js', running: true }

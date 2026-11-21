@@ -1,0 +1,13 @@
+{
+  "name": "gbot-browser-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "gbot browser plugin: CDP bridge service (transport channel <-> chromium) + renderer source build",
+  "scripts": {
+    "test": "node --test ."
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

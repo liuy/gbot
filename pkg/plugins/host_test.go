@@ -143,6 +143,48 @@ ch.onMessage(function(m) {
 	e.want(t, `200|{"ws":"ws://x"}`)
 }
 
+func TestHostFetchTimesOutOnHangingServer(t *testing.T) {
+	// The handler accepts the request then never answers — a hung discovery
+	// endpoint. The fetch must reject, not pin the promise forever.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release) // LIFO: release the handler before srv.Close waits on it
+
+	// Tighten the client timeout so the test rejects in milliseconds; the
+	// 10s production default would make this the slowest test in the suite.
+	old := fetchClient
+	fetchClient = &http.Client{Timeout: 250 * time.Millisecond}
+	defer func() { fetchClient = old }()
+
+	e := loadWith(t, `
+var ch = host.channel('plug')
+ch.onMessage(function(m) {
+  host.fetch(m).then(function(r) { ch.send('status:' + r.status) },
+                     function(e) { ch.send('reject:' + e) })
+})
+`)
+	e.send(srv.URL + "/hang")
+	frames := e.sink.waitFrames(1, 2*time.Second)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %q, want the fetch to reject on timeout", frames)
+	}
+	msg := frames[0][1:]
+	if !strings.Contains(msg, "reject:") || !strings.Contains(msg, "Client.Timeout") {
+		t.Fatalf("rejection = %q, want the client timeout error", msg)
+	}
+}
+
+// The default bound is part of the contract: dial paths use 10s, fetch must
+// not silently regress to unbounded (or a knee-jerk 0s).
+func TestFetchClientDefaultTimeoutIsTenSeconds(t *testing.T) {
+	if got := fetchClient.Timeout; got != 10*time.Second {
+		t.Fatalf("default fetch timeout = %v, want 10s", got)
+	}
+}
+
 func TestHostFetchNon200Resolves(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

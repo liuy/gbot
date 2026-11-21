@@ -5,8 +5,9 @@
 //
 //   export function mount(container: HTMLElement, ctx: {
 //     openChannel: (plugin: string) => Channel
-//     close: () => void            // closes the sheet
-//   }): void | (() => void)        // optional cleanup fn
+//     close: () => void             // closes the sheet
+//     headerSlot: () => HTMLElement // header slot the module fills (idempotent)
+//   }): void | (() => void)         // optional cleanup fn
 //
 // Trust model: plugin UI modules run with full page access — installing a
 // plugin is VSCode-extension-grade trust (v1: first-party plugins only).
@@ -28,7 +29,11 @@ export async function fetchPluginList(): Promise<PluginCard[]> {
 
 type MountFn = (
   container: HTMLElement,
-  ctx: { openChannel: (name: string) => Channel; close: () => void },
+  ctx: {
+    openChannel: (name: string) => Channel
+    close: () => void
+    headerSlot: () => HTMLElement
+  },
 ) => void | (() => void)
 
 export type RendererLoader = (url: string) => Promise<{ mount: MountFn }>
@@ -58,13 +63,24 @@ export async function openPluginCard(
   const veil = createElement('div', 'vnc-veil')
   veil.style.display = ''
   const sheet = createElement('div', 'vnc-sheet')
-  const bar = createElement('div', 'flex items-center gap-2 px-3.5 pb-2 pt-2')
+  // Bar mirrors the VNC console toolbar's design language (vnc_console.ts):
+  // one compact row whose right side is the plugin slot, then ✕.
+  const bar = createElement('div', 'flex items-center gap-[7px] px-3.5 pb-2 pt-2 text-[11px] text-t2')
   const title = createElement('span', 'min-w-0 truncate text-[13px] font-semibold text-t1')
   title.textContent = card.name
+  const dot = createElement('span', 'h-[4px] w-[4px] shrink-0 rounded-full bg-t3')
+  // The slot leads the bar (plugin buttons render first, left-to-right via
+  // plain append). It stays bare — header ordering inside the slot and any
+  // spacing tweaks are the module's decisions, same trust boundary as the
+  // rest of the plugin UI; mount() hands the element over via
+  // ctx.headerSlot. items-center aligns the bare span's button with the
+  // title baseline.
+  const slot = createElement('span', 'flex items-center')
   const closeBtn = createElement('span', 'text-t3 cursor-pointer px-2 text-[15px]')
   closeBtn.textContent = '✕'
   closeBtn.addEventListener('click', closePluginCard)
-  bar.append(title, closeBtn)
+  const spacer = createElement('span', 'flex-1')
+  bar.append(title, dot, slot, spacer, closeBtn)
   const container = createElement('div', 'vnc-screen plugin-card-body')
   container.style.setProperty('position', 'relative')
   sheet.append(bar, container)
@@ -72,7 +88,12 @@ export async function openPluginCard(
   document.body.append(veil)
   sheetEl = veil
 
-  const ctx = { openChannel: (plugin: string) => getChannel().openChannel(plugin), close: closePluginCard }
+  const ctx = {
+    openChannel: (plugin: string) => getChannel().openChannel(plugin),
+    close: closePluginCard,
+    // Same element every call: modules keep their reference across mounts.
+    headerSlot: () => slot,
+  }
   try {
     const mod = await (opts.loader ?? defaultLoader)(card.ui)
     const maybe = mod.mount(container, ctx)

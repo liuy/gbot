@@ -1,0 +1,14 @@
+{
+  "Stop": [
+    {
+      "matcher": "mcp__plugin_browser_playwright__.*",
+      "hooks": [
+        {
+          "type": "js",
+          "timeout": 30,
+          "code": "async (input) => { const s = String(await tools.mcp__plugin_browser_playwright__browser_tabs({ action: \"list\" })); const ix = [...s.matchAll(/^\\s*-\\s*(\\d+):/gm)].map(m => +m[1]); if (ix.length < 2) return \"no task tabs\"; for (const i of ix.slice(1).reverse()) await tools.mcp__plugin_browser_playwright__browser_tabs({ action: \"close\", index: i }); return \"closed \" + (ix.length - 1) + \" task tab(s), base tab kept\"; }"
+        }
+      ]
+    }
+  ]
+}

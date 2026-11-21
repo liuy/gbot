@@ -134,6 +134,12 @@ func (r *ProtocolRunner) closeConns() {
 	}
 }
 
+// fetchClient bounds host.fetch: a discovery endpoint that accepts the
+// connection but never answers must reject the module's promise instead of
+// pinning the goroutine forever. Package-level so tests can tighten the
+// timeout.
+var fetchClient = &http.Client{Timeout: 10 * time.Second}
+
 // registerGlobals builds the host API on the VM.
 func (r *ProtocolRunner) registerGlobals(vm *goja.Runtime) error {
 	hostObj := vm.NewObject()
@@ -177,7 +183,7 @@ func (r *ProtocolRunner) registerGlobals(vm *goja.Runtime) error {
 		url := call.Argument(0).String()
 		promise, resolve, reject := vm.NewPromise()
 		go func() {
-			resp, err := http.Get(url)
+			resp, err := fetchClient.Get(url)
 			if err != nil {
 				r.loop.RunOnLoop(func(vm *goja.Runtime) {
 					_ = reject(vm.NewTypeError(err.Error()))

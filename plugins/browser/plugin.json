@@ -1,0 +1,42 @@
+{
+  "name": "browser",
+  "version": "0.4.0",
+  "description": "Structured browser control: accessibility-first snapshots, ref-based interaction, session persistence, live view",
+  "skills": "./skills/",
+  "repls": "./repls/",
+  "ui": "./ui.js",
+  "protocol": "./protocol.js",
+  "mcpServers": {
+    "playwright": {
+      "mode": "code",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.83",
+        "--config",
+        "${GBOT_PLUGIN_ROOT}/plugin.json",
+        "--caps=devtools",
+        "--console-level=info",
+        "--snapshot-mode",
+        "full",
+        "--proxy-server=http://localhost:10809",
+        "--user-data-dir=${GBOT_CACHE_DIR}/ms-playwright-mcp/profile",
+        "--headless",
+        "--idle-timeout=0",
+        "--cdp-timeout=15000",
+        "--device",
+        "Pixel 8",
+        "--output-dir",
+        "${GBOT_CACHE_DIR}/traces/browser"
+      ]
+    }
+  },
+  "browser": {
+    "launchOptions": {
+      "args": [
+        "--remote-debugging-port=9333",
+        "--force-device-scale-factor=3"
+      ]
+    }
+  }
+}

@@ -1,4 +1,4 @@
-.PHONY: web-novnc web-deps web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate flaky check clean agent-start agent-stop install app-check web-build web-test web-check web-lint web-weak package package-windows package-android
+.PHONY: web-novnc web-deps web-mv all build build-debug build-android build-all build-windows build-windows-gui wails-build debug test lint mutate flaky check clean agent-start agent-stop install install-plugin app-check web-build web-test web-check web-lint web-weak package package-windows package-android
 
 BINARY := gbot
 ifeq ($(OS),Windows_NT)
@@ -236,7 +236,12 @@ agent-start: build
 agent-stop:
 	./gbot-agent stop
 
-install: build
+install-plugin:
+	@mkdir -p $(GBOT_HOME)/plugins/browser
+	@cp -r plugins/browser/. $(GBOT_HOME)/plugins/browser/
+	@echo "Installed browser plugin to $(GBOT_HOME)/plugins/browser"
+
+install: build install-plugin
 	@mkdir -p $(GBOT_HOME)/bin $(GBOT_HOME)/agents $(GBOT_HOME)/skills
 	@cp $(BINARY) $(GBOT_HOME)/bin/.$(BINARY).tmp && mv $(GBOT_HOME)/bin/.$(BINARY).tmp $(GBOT_HOME)/bin/$(BINARY)
 	@echo "Installed binary to $(GBOT_HOME)/bin/$(BINARY)"
