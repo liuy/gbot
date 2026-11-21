@@ -116,10 +116,11 @@ globalThis.browser = {
   // reload (5s) → diagnostic error.
   async goto(url) {
     await this._gotoBase(url);
-    // Sticky device mode: re-apply overrides after navigation so desktop UA
-    // and viewport survive reloads (CDP emulation follows the page, but an
-    // explicit replay also covers chromium relaunches mid-session).
-    if (this._mode === "desktop") await this._applyMode(this._desktop);
+    // Sticky device mode: ALWAYS apply the active profile after navigation.
+    // Desktop needs the override to exist at all; mobile needs it because a
+    // freshly relaunched chromium's --device flag leaves the initial page at
+    // the 980px legacy layout viewport until metrics are pinned.
+    await this._applyMode(this._mode === "desktop" ? this._desktop : this._mobileBaseline);
   },
   async _gotoBase(url) {
     try {

@@ -249,6 +249,7 @@ describe('browser harness', () => {
     it('healthy page: one navigate, snapshot after exactly 600ms, no retry', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       given('browser_snapshot').mockResolvedValue(PAGE_YAML)
       const p = b.goto('http://example.com/a')
       await vi.advanceTimersByTimeAsync(599)
@@ -265,6 +266,7 @@ describe('browser harness', () => {
     it('empty settle → recheck after exactly 3000ms heals without a reload', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const snap = given('browser_snapshot')
       snap.mockResolvedValueOnce(EMPTY_YAML).mockResolvedValueOnce(PAGE_YAML)
       const p = b.goto('http://example.com/a')
@@ -284,6 +286,7 @@ describe('browser harness', () => {
     it('still empty → reload then wait exactly 5000ms before the verdict', async () => {
       const b = await loadHarness()
       const nav = given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const snap = given('browser_snapshot')
       snap.mockResolvedValueOnce(EMPTY_YAML).mockResolvedValueOnce(EMPTY_YAML).mockResolvedValueOnce(PAGE_YAML)
       const p = b.goto('http://example.com/a')
@@ -309,6 +312,7 @@ describe('browser harness', () => {
     it('empty after reload throws the diagnostic message with the URL', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       given('browser_snapshot').mockResolvedValue(EMPTY_YAML)
       const err = await settle(expectReject(b.goto('http://example.com/dead')))
       expect(err).toBeInstanceOf(Error)
@@ -325,7 +329,9 @@ describe('browser harness', () => {
       given('browser_navigate').mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED zzz'))
       const err = await settle(expectReject(b.goto('http://down.example/')))
       expect(err.message).toBe('Site unreachable (network/DNS/proxy): net::ERR_NAME_NOT_RESOLVED zzz')
-      // Only navigate was ever touched: the health check never ran.
+      // Only navigate was ever touched: the health check never ran, and the
+      // goto wrapper's mode replay (which would need browser_run_code_unsafe)
+      // is unreachable past the rejection.
       expect(Object.keys(tools)).toEqual([PREFIX + 'browser_navigate'])
     })
 
@@ -333,6 +339,7 @@ describe('browser harness', () => {
       const b = await loadHarness()
       const original = new Error('page closed mid-navigation')
       given('browser_navigate').mockRejectedValue(original)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const err = await settle(expectReject(b.goto('http://example.com/')))
       expect(err).toBe(original)
     })
@@ -340,6 +347,7 @@ describe('browser harness', () => {
     it('non-http URLs skip the health check entirely', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const snap = given('browser_snapshot').mockResolvedValue(EMPTY_YAML)
       await settle(b.goto('about:blank'))
       expect(tool('browser_navigate')).toHaveBeenCalledTimes(1)
@@ -349,6 +357,7 @@ describe('browser harness', () => {
     it('non-http schemes containing "http" still skip the health check', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const snap = given('browser_snapshot').mockResolvedValue(EMPTY_YAML)
       await settle(b.goto('not-http://x'))
       expect(tool('browser_navigate')).toHaveBeenCalledTimes(1)
@@ -358,6 +367,7 @@ describe('browser harness', () => {
     it('the http(s) health check ignores URL case', async () => {
       const b = await loadHarness()
       given('browser_navigate').mockResolvedValue(undefined)
+      given('browser_run_code_unsafe').mockResolvedValue('ok')
       const snap = given('browser_snapshot').mockResolvedValue(PAGE_YAML)
       await settle(b.goto('HTTP://example.com/a'))
       expect(snap).toHaveBeenCalledTimes(1)
@@ -376,13 +386,17 @@ describe('browser harness', () => {
       expect(runCode).toHaveBeenNthCalledWith(2, { code: DESKTOP_CODE })
     })
 
-    it('mobile mode never re-applies overrides on goto', async () => {
+    it('mobile mode re-applies the mobile baseline on goto (fresh-launch 980px fix)', async () => {
+      // A freshly relaunched chromium's --device flag leaves the initial
+      // page at the 980px legacy layout viewport; pinning metrics on every
+      // navigation is what makes the mobile default real.
       const b = await loadHarness()
       const runCode = given('browser_run_code_unsafe').mockResolvedValue('ok')
       given('browser_navigate').mockResolvedValue(undefined)
       given('browser_snapshot').mockResolvedValue(PAGE_YAML)
       await settle(b.goto('http://example.com/'))
-      expect(runCode).not.toHaveBeenCalled()
+      expect(runCode).toHaveBeenCalledTimes(1)
+      expect(runCode).toHaveBeenNthCalledWith(1, { code: MOBILE_CODE })
     })
   })
 
