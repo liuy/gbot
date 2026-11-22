@@ -305,6 +305,7 @@ func TestSanitizeFileName(t *testing.T) {
 // tools, writable by the owner); umask is pinned so the assertion sees the
 // literal mode the code passes to MkdirAll.
 func TestEnsureMemoryDir_Permissions(t *testing.T) {
+	setTempHome(t)
 	old := syscall.Umask(0)
 	defer syscall.Umask(old)
 
