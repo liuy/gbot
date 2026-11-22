@@ -370,8 +370,25 @@ export function mount(container, ctx) {
 
     // attachTo lives inside start() so its failure path can re-enter the
     // probe loop via enterIdle.
+    // Single-flight on the ATTACH (not the probe): mount, the bridge
+    // 'attached' status and targetCreated events can fire attachTo within
+    // ms — three concurrent screencast sessions on one page stall chromium's
+    // frame pump (2026-11-22: first frame delayed ~0.9s, then dropped when
+    // the user closed during the gap). One attach at a time; the probe loop
+    // stays ungated so a hung attach (bounded by the request timeout) can
+    // never starve recovery.
+    let attachToInFlight = false
+    let pendingTarget = null
     const attachTo = async (targetId) => {
       if (!cdp || disposed) return
+      if (attachToInFlight) {
+        // A newer switch request wins: remember it; the in-flight attach's
+        // completion re-runs attachTo for it (stale replies are refused by
+        // the followTarget guard inside that run).
+        pendingTarget = targetId
+        return
+      }
+      attachToInFlight = true
       stopSession()
       followTarget = targetId
       try {
@@ -385,14 +402,21 @@ export function mount(container, ctx) {
           format: 'jpeg',
           maxWidth: 1920,
           quality: 88,
-          everyNthFrame: 2, // cap the frame rate; animation pages would otherwise flood the pipe
         }, session)
-        setStatus('live')
+        // No 'live' here: the screencast being ENABLED is not the user-facing
+        // fact. The first drawn frame flips the status (see drawFrame).
       } catch (e) {
         // A transient failure here (chromium up but startScreencast timed
         // out) must re-arm the probe like every other dead end, or the card
         // strands on this label until the next bridge redial.
         enterIdle(`attach failed: ${String(e)}`)
+      } finally {
+        attachToInFlight = false
+        if (pendingTarget !== null && pendingTarget !== followTarget && !disposed) {
+          const next = pendingTarget
+          pendingTarget = null
+          attachTo(next)
+        }
       }
     }
 
@@ -446,7 +470,8 @@ export function mount(container, ctx) {
           clearTimeout(probeTimer)
           probeTimer = null
         }
-        setStatus('')
+        // The overlay stays (connecting) — only the first drawn frame ends it.
+        setStatus('connecting…')
         // Always rerun the chain: after a chromium restart the bridge
         // redials while the card may still hold a stale session (neither
         // idle nor session-less), and the fresh connection never re-sends

@@ -257,11 +257,19 @@ describe('browser card ui', () => {
       expect(all[2]).toMatchObject({ id: 3, params: { targetId: 'p1', flatten: true } })
       expect(all[3]).toMatchObject({
         id: 4,
-        params: { format: 'jpeg', maxWidth: 1920, quality: 88, everyNthFrame: 2 },
+        params: { format: 'jpeg', maxWidth: 1920, quality: 88 },
         sessionId: 's1',
       })
-      expect(m.status.textContent).toBe('live')
+      // everyNthFrame>1 starves static pages: chromium emits exactly ONE
+      // compositor frame after startScreencast on an idle page, and odd
+      // frames are skipped — the card would stream black forever.
+      expect(all[3].params).not.toHaveProperty('everyNthFrame')
+      // Honest status: the screencast being ENABLED is not live — the first
+      // drawn frame is. Until then the connecting overlay stays up.
+      expect(m.status.textContent).toBe('connecting…')
       expect(m.status.style.display).toBe('')
+      await feed(m, { method: 'Page.screencastFrame', params: { sessionId: 's1', data: 'aGVsbG8=', metadata: {} }, sessionId: 's1' })
+      expect(m.status.textContent).toBe('')
     })
 
     it('picks the LAST page target, not the first', async () => {
@@ -294,9 +302,10 @@ describe('browser card ui', () => {
       const screencasts = sentOfMethod(m, 'Page.startScreencast')
       expect(screencasts).toHaveLength(2)
       expect(screencasts[1]?.sessionId).toBe('s2')
-      // Going live again must un-hide the overlay even after it was hidden.
-      expect(m.status.textContent).toBe('live')
-      expect(m.status.style.display).toBe('')
+      // Streaming continues across a tab switch: no connecting flash, the
+      // overlay stays hidden and the next session's frames keep painting.
+      expect(m.status.textContent).toBe('')
+      expect(m.status.style.display).toBe('none')
     })
 
     it('ignores targetCreated for non-page targets', async () => {
@@ -327,8 +336,15 @@ describe('browser card ui', () => {
       await feed(m, { id: 6, result: { targetInfos: [{ type: 'page', targetId: 'p2' }] } })
       await feed(m, { id: 8, result: { sessionId: 's3' } })
       await feed(m, { id: 9, result: {} })
-      expect(m.status.textContent).toBe('live')
+      expect(m.status.textContent).toBe('connecting…')
       expect(sentOfMethod(m, 'Target.attachToTarget')[1]?.params).toEqual({ targetId: 'p2', flatten: true })
+    })
+    it('the first drawn frame flips connecting to live (overlay cleared)', async () => {
+      const m = await mountCard()
+      await attachLive(m)
+      expect(m.status.textContent).toBe('connecting…')
+      await feed(m, { method: 'Page.screencastFrame', params: { sessionId: 's1', data: 'aGVsbG8=', metadata: {} }, sessionId: 's1' })
+      expect(m.status.textContent).toBe('')
     })
 
     it('targetDestroyed for other targets or without params changes nothing', async () => {
@@ -430,13 +446,16 @@ describe('browser card ui', () => {
       await vi.advanceTimersByTimeAsync(2000)
       await tick()
       expect(sentOfMethod(m, 'Target.getTargets')).toHaveLength(2)
-      expect(m.status.style.display).toBe('none')
+      expect(m.status.style.display).toBe('')
+      expect(m.status.textContent).toBe('connecting…')
       // Complete the rerun chain to reach the live state.
       await feed(m, { id: 2, result: { targetInfos: [{ type: 'page', targetId: 'p1' }] } })
-      await feed(m, { id: 4, result: { sessionId: 's1' } })
-      await feed(m, { id: 5, result: {} })
-      expect(m.status.textContent).toBe('live')
-    })
+       await feed(m, { id: 4, result: { sessionId: 's1' } })
+       await feed(m, { id: 5, result: {} })
+       expect(m.status.textContent).toBe('connecting…')
+       await feed(m, { method: 'Page.screencastFrame', params: { sessionId: 's1', data: 'aGVsbG8=', metadata: {} }, sessionId: 's1' })
+       expect(m.status.textContent).toBe('')
+     })
 
     it('attached while live (chromium restart) tears the stale session down, re-runs the chain and returns to live', async () => {
       // THE RESTART-RECOVERY PIN: the bridge redials after a chromium restart
@@ -449,7 +468,9 @@ describe('browser card ui', () => {
       // ids: detach=7, attachToTarget=8, startScreencast=9.
       await feed(m, { id: 8, result: { sessionId: 's2' } })
       await feed(m, { id: 9, result: {} })
-      expect(m.status.textContent).toBe('live')
+      expect(m.status.textContent).toBe('connecting…')
+      await feed(m, { method: 'Page.screencastFrame', params: { sessionId: 's2', data: 'aGVsbG8=', metadata: {} }, sessionId: 's2' })
+      expect(m.status.textContent).toBe('')
       expect(sentOfMethod(m, 'Target.getTargets')).toHaveLength(2)
       // The new connection must re-arm target discovery too.
       expect(sentOfMethod(m, 'Target.setDiscoverTargets')).toHaveLength(2)
@@ -490,15 +511,29 @@ describe('browser card ui', () => {
       expect(m.status.textContent).toBe('connect failed: Error: cdp timeout: Target.getTargets')
     })
 
-    it('a target reply arriving after a switch is detached, not adopted (stale-attach race)', async () => {
+    it('a newer switch request wins: the stale attach is adopted briefly, then detached by the trailing attach', async () => {
       const m = await mountCard()
-      // Chain 1 starts for p1, then a targetCreated switches following to p9.
+      // The mount chain picks p1; the attach is in flight when the switch to
+      // p9 is announced (trailing-target single-flight records it).
       await feed(m, { id: 1, result: { targetInfos: [{ type: 'page', targetId: 'p1' }] } })
       await feed(m, { method: 'Target.targetCreated', params: { targetInfo: { type: 'page', targetId: 'p9' } } })
-      // The stale reply for the abandoned p1 attach lands last.
+      // The p1 attach reply lands with a stale session: adopted for the
+      // interim, then the trailing attach to p9 tears it down.
+      await feed(m, { id: 2, result: {} })
+      // attach reply: session=old-s → startScreencast issued; its reply
+      // settles the attach, then the trailing attach to p9 detaches it.
       await feed(m, { id: 3, result: { sessionId: 'old-s' } })
+      await feed(m, { id: 4, result: {} })
+      await tick()
+      console.log('[dbg1]', JSON.stringify(sentOfMethod(m, 'Target.attachToTarget')), JSON.stringify(sentOfMethod(m, 'Target.detachFromTarget')))
       expect(sentOfMethod(m, 'Target.detachFromTarget')[0]?.params).toEqual({ sessionId: 'old-s' })
-      expect(sentOfMethod(m, 'Page.startScreencast')).toHaveLength(0)
+      // The trailing attach to p9 completes and streams.
+      await feed(m, { id: 6, result: { sessionId: 'new-s' } })
+      await feed(m, { id: 7, result: {} })
+      const screencasts = sentOfMethod(m, 'Page.startScreencast')
+      expect(screencasts).toHaveLength(2)
+      expect(screencasts[1]?.sessionId).toBe('new-s')
+      expect(sentOfMethod(m, 'Target.attachToTarget')).toHaveLength(2)
     })
 
     it('channel close shows the disconnected state', async () => {
@@ -1031,7 +1066,7 @@ describe('browser card ui', () => {
       expect(m.channel.sendLog.length).toBe(sendsBefore) // input lane dead
       // Even a bridge attach broadcast after cleanup must not touch the card.
       await feed(m, { __status: 'attached' })
-      expect(m.status.textContent).toBe('live')
+      expect(m.status.textContent).toBe('connecting…')
       expect(m.status.style.display).toBe('')
     })
 
@@ -1057,7 +1092,7 @@ describe('browser card ui', () => {
       await attachLive(m)
       m.cleanup()
       m.channel.closeCb!()
-      expect(m.status.textContent).toBe('live')
+      expect(m.status.textContent).toBe('connecting…')
     })
 
     it('cleanup with a pending request rejects it internally without touching the card', async () => {
