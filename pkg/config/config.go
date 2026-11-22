@@ -38,10 +38,13 @@ type Config struct {
 
 	APITimeoutMS int `json:"api_timeout_ms,omitempty"` // milliseconds
 
-	Proxy string `json:"proxy,omitempty"` // HTTP/SOCKS proxy, e.g. "http://localhost:10809"
-
 	// Web search provider API keys. Key = provider name, value = API key.
 	// Empty value = anonymous mode. Omitted provider = not registered.
+	// WebProxyKey is a reserved key, not a provider name — it must never be
+	// registered as one. It holds the HTTP/SOCKS proxy URL (e.g.
+	// "http://localhost:10809") backing ProxyHTTPClient, whose client serves
+	// two consumers: the web tool (search + scraper) and the WeChat login
+	// connector.
 	Web map[string]string `json:"web,omitempty"`
 
 	// Plugins toggles discovered plugins by name. Missing key = enabled
@@ -231,13 +234,19 @@ func DefaultConfig() *Config {
 	}
 }
 
-// ProxyHTTPClient returns an *http.Client configured with the proxy from settings.
-// Returns http.DefaultClient if no proxy is set.
+// WebProxyKey is the reserved Web map key holding the HTTP/SOCKS proxy URL.
+// It is not a search provider name, so the web tool must never register it
+// as one.
+const WebProxyKey = "proxy"
+
+// ProxyHTTPClient returns an *http.Client configured with the web.proxy
+// reserved key. Returns http.DefaultClient if no proxy is set.
 func (c *Config) ProxyHTTPClient() *http.Client {
-	if c.Proxy == "" {
+	proxy := c.Web[WebProxyKey]
+	if proxy == "" {
 		return http.DefaultClient
 	}
-	proxyURL, err := url.Parse(c.Proxy)
+	proxyURL, err := url.Parse(proxy)
 	if err != nil {
 		return http.DefaultClient
 	}

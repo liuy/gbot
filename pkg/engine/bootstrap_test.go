@@ -1545,7 +1545,7 @@ func TestCreateTools_CfgWebKeysReachWebTool(t *testing.T) {
 	}
 }
 
-// The proxy from config must be the client the Web tool fetches through:
+// The web.proxy setting must be the client the Web tool fetches through:
 // a fetch of an unresolvable host can only succeed when the request rides
 // the proxy (the proxy answers on the proxy's own address, no target DNS).
 func TestCreateTools_CfgProxyReachesWebFetch(t *testing.T) {
@@ -1562,7 +1562,7 @@ func TestCreateTools_CfgProxyReachesWebFetch(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
-		Cfg:        &config.Config{Proxy: proxy.URL},
+		Cfg:        &config.Config{Web: map[string]string{"proxy": proxy.URL}},
 	}
 
 	refs := CreateTools(deps, tl)

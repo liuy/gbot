@@ -48,7 +48,7 @@ func TestProxyHTTPClient_DefaultIdentity(t *testing.T) {
 	if got := c.ProxyHTTPClient(); got != http.DefaultClient {
 		t.Error("ProxyHTTPClient with no proxy must return http.DefaultClient")
 	}
-	c2 := &Config{Proxy: "http://127.0.0.1:8080"}
+	c2 := &Config{Web: map[string]string{"proxy": "http://127.0.0.1:8080"}}
 	if got := c2.ProxyHTTPClient(); got == http.DefaultClient {
 		t.Error("ProxyHTTPClient with a proxy must return a dedicated client")
 	}

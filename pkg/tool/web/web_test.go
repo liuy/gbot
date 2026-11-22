@@ -1136,6 +1136,29 @@ func TestSearchChain_Composition(t *testing.T) {
 	}
 }
 
+// "proxy" is a reserved web-settings key (the HTTP/SOCKS proxy URL), not a
+// provider name. The chain is built by-name, so the key must stay invisible:
+// the schema's provider list is the observable that would leak a phantom
+// "proxy" provider to the model.
+func TestSearchChain_ReservedProxyKey(t *testing.T) {
+	chain := searchChain(nil, map[string]string{"proxy": "http://localhost:10809", "tavily": "tk"})
+	want := []string{"tavily", "duckduckgo"}
+	if got := chain.AvailableProviders(); !slices.Equal(got, want) {
+		t.Errorf("AvailableProviders() = %v, want %v — the reserved proxy key must not register a provider", got, want)
+	}
+	for _, p := range chain.Providers {
+		if p.ID() == "proxy" {
+			t.Errorf("chain registered provider %q from the reserved proxy key", p.ID())
+		}
+	}
+
+	tl := New(nil, WithAPIKeys(map[string]string{"proxy": "http://localhost:10809"}))
+	schema := string(tl.InputSchema())
+	if !strings.Contains(schema, "Available: auto, duckduckgo.") {
+		t.Errorf("Web schema provider list = %s, want only duckduckgo when the sole web key is the reserved proxy", schema)
+	}
+}
+
 // The ddg registration must carry the headless-Chrome escalation closure
 // and the injected client.
 func TestSearchChain_DDGBrowseWired(t *testing.T) {

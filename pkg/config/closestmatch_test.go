@@ -2,6 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -287,49 +290,151 @@ func TestFindProvider_Found(t *testing.T) {
 func TestProxyHTTPClient_NoProxy(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{Proxy: ""}
-	client := cfg.ProxyHTTPClient()
-	if client == nil {
-		t.Fatal("ProxyHTTPClient() returned nil, want http.DefaultClient")
+	cases := []struct {
+		name string
+		web  map[string]string
+	}{
+		{"nil web", nil},
+		{"web without proxy key", map[string]string{"anysearch": "ak"}},
+		{"empty proxy", map[string]string{"proxy": ""}},
+	}
+	for _, tc := range cases {
+		cfg := &Config{Web: tc.web}
+		if got := cfg.ProxyHTTPClient(); got != http.DefaultClient {
+			t.Errorf("%s: ProxyHTTPClient() = %p, want http.DefaultClient", tc.name, got)
+		}
 	}
 }
 
 func TestProxyHTTPClient_ValidProxy(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{Proxy: "http://localhost:10809"}
+	cfg := &Config{Web: map[string]string{"anysearch": "ak", "proxy": "http://localhost:10809"}}
 	client := cfg.ProxyHTTPClient()
-	if client == nil {
-		t.Fatal("ProxyHTTPClient() returned nil for valid proxy")
+	if client == http.DefaultClient {
+		t.Fatal("ProxyHTTPClient() = http.DefaultClient, want a dedicated proxy client")
 	}
-	if client.Transport == nil {
-		t.Fatal("expected Transport to be set on proxy client")
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		t.Fatalf("Transport = %#v, want an http.Transport with a Proxy func", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	got, err := tr.Proxy(req)
+	if err != nil {
+		t.Fatalf("transport Proxy func failed: %v", err)
+	}
+	if got == nil || got.String() != "http://localhost:10809" {
+		t.Errorf("proxy = %v, want http://localhost:10809", got)
 	}
 }
 
 func TestProxyHTTPClient_InvalidProxyURL(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{Proxy: "://not-a-url"}
-	client := cfg.ProxyHTTPClient()
-	if client == nil {
-		t.Fatal("ProxyHTTPClient() returned nil for invalid proxy")
-	}
-	if client.Transport != nil {
-		t.Errorf("expected default client (nil Transport) for invalid proxy URL, got Transport=%v", client.Transport)
+	cfg := &Config{Web: map[string]string{"proxy": "://not-a-url"}}
+	if got := cfg.ProxyHTTPClient(); got != http.DefaultClient {
+		t.Errorf("ProxyHTTPClient() = %p, want http.DefaultClient for invalid proxy URL", got)
 	}
 }
 
 func TestProxyHTTPClient_SOCKSProxy(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{Proxy: "socks5://127.0.0.1:1080"}
+	cfg := &Config{Web: map[string]string{"proxy": "socks5://127.0.0.1:1080"}}
 	client := cfg.ProxyHTTPClient()
-	if client == nil {
-		t.Fatal("ProxyHTTPClient() returned nil for SOCKS proxy")
+	if client == http.DefaultClient {
+		t.Fatal("ProxyHTTPClient() = http.DefaultClient, want a dedicated SOCKS proxy client")
 	}
-	if client.Transport == nil {
-		t.Fatal("expected Transport to be set on SOCKS proxy client")
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		t.Fatalf("Transport = %#v, want an http.Transport with a Proxy func", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	got, err := tr.Proxy(req)
+	if err != nil {
+		t.Fatalf("transport Proxy func failed: %v", err)
+	}
+	if got == nil || got.String() != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %v, want socks5://127.0.0.1:1080", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// settings.json wire format for the proxy key
+// ---------------------------------------------------------------------------
+
+// writeUserSettings puts a settings.json under $HOME/.gbot and points HOME and
+// the working dir at the sandbox, so Load() reads exactly this file.
+func writeUserSettings(t *testing.T, content string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	userGbotDir := filepath.Join(dir, "home", ".gbot")
+	if err := os.MkdirAll(userGbotDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userGbotDir, "settings.json"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	t.Chdir(dir)
+}
+
+func TestLoad_WebProxyKey(t *testing.T) {
+	// The JSON key stays a literal here: it is the on-disk wire format, which
+	// must not drift even if the Go constant is renamed.
+	writeUserSettings(t, `{"web":{"proxy": "http://127.0.0.1:8888"}}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Web[WebProxyKey]; got != "http://127.0.0.1:8888" {
+		t.Errorf("Web[%q] = %q, want http://127.0.0.1:8888", WebProxyKey, got)
+	}
+
+	client := cfg.ProxyHTTPClient()
+	if client == http.DefaultClient {
+		t.Fatal("ProxyHTTPClient() = http.DefaultClient, want a dedicated proxy client")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		t.Fatalf("Transport = %#v, want an http.Transport with a Proxy func", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	got, err := tr.Proxy(req)
+	if err != nil {
+		t.Fatalf("transport Proxy func failed: %v", err)
+	}
+	if got == nil || got.String() != "http://127.0.0.1:8888" {
+		t.Errorf("proxy = %v, want http://127.0.0.1:8888", got)
+	}
+}
+
+func TestLoad_TopLevelProxyIgnored(t *testing.T) {
+	// The top-level proxy field was removed when proxy moved under "web";
+	// settings files that still carry it are ignored — no back-compat shim.
+	writeUserSettings(t, `{"proxy": "http://127.0.0.1:8888"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Web[WebProxyKey]; got != "" {
+		t.Errorf("Web[%q] = %q, want empty for top-level proxy key", WebProxyKey, got)
+	}
+	if got := cfg.ProxyHTTPClient(); got != http.DefaultClient {
+		t.Errorf("ProxyHTTPClient() = %p, want http.DefaultClient for top-level proxy key", got)
 	}
 }
 
