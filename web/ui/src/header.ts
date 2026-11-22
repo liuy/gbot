@@ -337,11 +337,11 @@ function createEnginePicker(
     return item
   }
 
-  // Footer toolbar (prototype layout C, right cluster): one leading flex
-  // spacer, then ＋ ✏️ − bunched at the right edge — icon-only, no borders,
-  // hover wash only. Each tool renders only when the host wires it.
+  // Footer toolbar (left cluster): ＋ − ✏️ left-aligned under the list's
+  // left baseline — the tools read as actions on the list above. Icon-only,
+  // no borders, hover wash only. Each tool renders only when the host wires it.
   const appendFooter = () => {
-    const footer = createElement('div', 'flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
+    const footer = createElement('div', 'flex items-center gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const newBtn = createIconButton({
       icon: 'plus',
       label: t('headerNewEngine'),

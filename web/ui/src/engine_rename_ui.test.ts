@@ -102,12 +102,19 @@ describe('engine rename chat wiring', () => {
       const btn = panel.querySelector(`button[aria-label="${label}"]`)
       expect(btn, `missing footer tool: ${label}`).not.toBeNull()
     }
-    // Layout C: the three tools cluster at the right edge — footer uses
-    // justify-end with no distribution spacers, tools adjacent (gap-0.5).
+    // Left cluster: no justify-end — the tools sit on the list's left
+    // baseline, ordered + − ✏ (the order the user set), adjacent via
+    // gap-0.5 with no distribution spacers.
     const footer = renameBtn(panel).closest('div') as HTMLElement
     const spacers = [...footer.children].filter((c) => (c as HTMLElement).classList.contains('flex-1'))
     expect(spacers.length).toBe(0)
-    expect(footer.className).toContain('justify-end')
+    expect(footer.className).not.toContain('justify-end')
+    const btns = footer.querySelectorAll('button')
+    expect([...btns].map((b) => (b as HTMLElement).getAttribute('aria-label'))).toEqual([
+      'New engine',
+      'Delete engines',
+      'Rename engine',
+    ])
     // Bare-tool styling: padding + hover wash, no full-width button chrome.
     expect(renameBtn(panel).className).toContain('p-1.5 rounded-md hover:bg-ink3/50')
     expect(renameBtn(panel).className).not.toContain('w-full')

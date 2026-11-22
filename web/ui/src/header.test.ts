@@ -1206,12 +1206,12 @@ describe('Header engine picker list', () => {
     expect(panel.classList.contains('hidden')).toBe(true)
   })
 
-  it('the footer is the right-cluster toolbar: bare 16px +, no − without delete wiring', () => {
+  it('the footer is the left-cluster toolbar: bare 16px +, no − without delete wiring', () => {
     setTwo()
     const panel = openPanel()
     const footer = list(panel).children[2] as HTMLElement
-    // Layout C container: right cluster via justify-end + gap, no spacers.
-    expect(footer.className).toBe('flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
+    // Left cluster: no justify-end, tools sit on the list's left baseline.
+    expect(footer.className).toBe('flex items-center gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const btns = footer.querySelectorAll('button')
     // onEngineDelete is not wired in this mount — the − toggle stays hidden
     // and the + sits alone at the right edge.
@@ -2283,11 +2283,11 @@ describe('Header engine picker delete', () => {
     delToggle(panel).dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
 
-  it('the footer carries bare + and − bunched at the right edge', () => {
+  it('the footer carries bare + and − left-aligned under the list', () => {
     const panel = openPanel()
     const footer = panel.children[0].lastElementChild as HTMLElement
-    // Layout C container: right cluster via justify-end + gap, no spacers.
-    expect(footer.className).toBe('flex items-center justify-end gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
+    // Left cluster: no justify-end, tools sit on the list's left baseline.
+    expect(footer.className).toBe('flex items-center gap-0.5 border-t border-hairline mt-1 px-1 pt-1')
     const btns = footer.querySelectorAll('button')
     expect(btns.length).toBe(2)
     expect((btns[0] as HTMLElement).getAttribute('aria-label')).toBe('New engine')
