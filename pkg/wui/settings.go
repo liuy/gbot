@@ -27,6 +27,7 @@ var settingsHTTPTimeout = 10 * time.Second
 //   - PUT  /api/settings/default    — set the default model tier
 //   - PUT  /api/settings/stt        — set the default STT model (audio providers only)
 //   - PUT  /api/settings/tts        — set the default TTS model (audio providers only)
+//   - PUT  /api/settings/web        — merge proxy + engine keys into the web map
 //   - POST /api/settings/test       — live connection probe against one provider
 //   - POST /api/settings/models     — fetch the model id list from an endpoint
 //
@@ -39,6 +40,7 @@ func RegisterSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/settings/providers", handlePutProviders)
 	mux.HandleFunc("PUT /api/settings/stt", handleSttDefaultPut)
 	mux.HandleFunc("PUT /api/settings/tts", handleTTSDefaultPut)
+	mux.HandleFunc("PUT /api/settings/web", handlePutWeb)
 	mux.HandleFunc("POST /api/settings/test", handleTestProvider)
 	mux.HandleFunc("POST /api/settings/models", handleFetchModels)
 }
@@ -50,6 +52,7 @@ type settingsPayload struct {
 	Default   settingsDefault   `json:"default"`
 	Stt       *settingsDefault  `json:"stt,omitempty"`
 	Tts       *settingsDefault  `json:"tts,omitempty"`
+	Web       webSection        `json:"web"`
 }
 
 type settingsDefault struct {
@@ -60,12 +63,30 @@ type settingsDefault struct {
 	Voice string `json:"voice,omitempty"`
 }
 
+type webSection struct {
+	Proxy   string            `json:"proxy"`
+	Engines map[string]string `json:"engines"` // web map minus the reserved proxy key
+}
+
+// webSectionOf splits cfg.Web into the proxy value and every other key (the
+// engines). Engines is never nil on the wire so the frontend can iterate it.
+func webSectionOf(cfg *config.Config) webSection {
+	sec := webSection{Proxy: cfg.Web[config.WebProxyKey], Engines: map[string]string{}}
+	for k, v := range cfg.Web {
+		if k == config.WebProxyKey {
+			continue
+		}
+		sec.Engines[k] = v
+	}
+	return sec
+}
+
 func handleGetProviders(w http.ResponseWriter, r *http.Request) {
 	// Cold start (missing/unreadable settings.json) is a normal state, not
 	// an error: the settings page just opens empty.
 	cfg, err := config.Load()
 	if err != nil {
-		writeJSON(w, http.StatusOK, settingsPayload{Providers: []config.Provider{}})
+		writeJSON(w, http.StatusOK, settingsPayload{Providers: []config.Provider{}, Web: webSection{Engines: map[string]string{}}})
 		return
 	}
 	def := settingsDefault{}
@@ -84,7 +105,7 @@ func handleGetProviders(w http.ResponseWriter, r *http.Request) {
 		cfg.Providers = []config.Provider{}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def, Stt: sttDef, Tts: ttsDef})
+	writeJSON(w, http.StatusOK, settingsPayload{Providers: cfg.Providers, Default: def, Stt: sttDef, Tts: ttsDef, Web: webSectionOf(cfg)})
 }
 
 // handleGetRawSettings returns the on-disk settings.json verbatim for the
@@ -116,6 +137,43 @@ func handlePutProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := config.SaveProviders(providers); err != nil {
 		errorJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePutWeb merges proxy + engine keys into the web map of settings.json
+// via config.SaveWeb (engines absent from the body are preserved server-side).
+// Validation happens here, before any write — same contract as providers.
+func handlePutWeb(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Proxy   string            `json:"proxy"`
+		Engines map[string]string `json:"engines"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorJSON(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	proxy := strings.TrimSpace(req.Proxy)
+	if proxy != "" && !strings.HasPrefix(proxy, "http://") && !strings.HasPrefix(proxy, "https://") && !strings.HasPrefix(proxy, "socks5://") {
+		// url.Parse accepts "localhost:10809" as scheme "localhost", so the
+		// prefix check is load-bearing: a scheme-less value would dial a
+		// broken proxy URL and fail at connect time.
+		errorJSON(w, http.StatusBadRequest, "proxy must be an http://, https:// or socks5:// URL")
+		return
+	}
+	for name := range req.Engines {
+		if name == "" {
+			errorJSON(w, http.StatusBadRequest, "engine name is required")
+			return
+		}
+		if name == config.WebProxyKey {
+			errorJSON(w, http.StatusBadRequest, "\"proxy\" is a reserved key")
+			return
+		}
+	}
+	if err := config.SaveWeb(proxy, req.Engines); err != nil {
+		errorJSON(w, http.StatusInternalServerError, "save: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

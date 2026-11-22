@@ -1299,7 +1299,9 @@ describe('createSettingsPage', () => {
     const labels = [...home.children]
       .filter((c) => c.className.includes('text-t3'))
       .map((c) => c.textContent)
-    expect(labels).toEqual(['提供方', '默认模型', '桌面', '配置', '通用'])
+    // The 工具 (TOOLS) section sits between DESKTOPS and CONFIG — the Web
+    // card's home slot.
+    expect(labels).toEqual(['提供方', '默认模型', '桌面', '工具', '配置', '通用'])
     // Protocol identifiers stay literal — only UI copy is translated.
     const cards = [...page.root.querySelectorAll('[data-provider-card]')] as HTMLElement[]
     expect(cards[0].querySelector('[data-type-badge]')?.textContent).toBe('AUTO')

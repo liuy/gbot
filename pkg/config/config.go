@@ -864,6 +864,89 @@ func SaveRemoteDevices(devices []RemoteDevice) error {
 	return os.Rename(tmpPath, path)
 }
 
+// SaveWeb merges the web section of ~/.gbot/settings.json: proxy is the
+// reserved WebProxyKey value ("" removes it); engines entries set an engine
+// key ("" removes the engine); engines absent from the request are preserved
+// verbatim so a save from a stale UI never drops engines added elsewhere.
+// Same safety contract as SaveProviders (backup first, atomic tmp+rename,
+// mode preserved). An empty resulting map removes the "web" key.
+func SaveWeb(proxy string, engines map[string]string) error {
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+
+	raw := make(map[string]json.RawMessage)
+	if readErr == nil {
+		// A corrupt file leaves raw as the fresh map above — map decoding
+		// does not partially populate on truncation (verified empirically).
+		_ = json.Unmarshal(existing, &raw)
+	}
+
+	web := make(map[string]string)
+	_ = json.Unmarshal(raw["web"], &web)
+	if proxy == "" {
+		delete(web, WebProxyKey)
+	} else {
+		web[WebProxyKey] = proxy
+	}
+	for name, key := range engines {
+		if key == "" {
+			delete(web, name)
+		} else {
+			web[name] = key
+		}
+	}
+	if len(web) == 0 {
+		delete(raw, "web")
+	} else {
+		webJSON, err := json.Marshal(web)
+		if err != nil {
+			return err
+		}
+		raw["web"] = webJSON
+	}
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	mode := os.FileMode(0600)
+	if readErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		// The backup must land before any write touches settings.json —
+		// if it fails, abort rather than destroy the only good copy.
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
+			return err
+		}
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	// See SaveProviders: chmod after WriteFile so a restrictive umask cannot
+	// defeat the preserved mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 // SaveDefaultModel sets the "default" tier of the model spec in the user
 // settings file, preserving every other tier. Same safety contract as
 // SaveProviders: backup first, then atomic tmp+rename, other keys verbatim.

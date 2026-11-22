@@ -43,11 +43,17 @@ export interface SettingsProvider {
   extra_params?: Record<string, unknown>
 }
 
+export interface SettingsWeb {
+  proxy: string
+  engines: Record<string, string> // lowercase engine id → API key ("" only in PUT bodies = remove)
+}
+
 export interface SettingsPayload {
   providers: SettingsProvider[]
   default: { provider: string; model: string }
   stt?: { provider: string; model: string }
   tts?: { provider: string; model: string; voice?: string }
+  web?: SettingsWeb
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
@@ -154,6 +160,26 @@ export async function saveSettings(providers: SettingsProvider[]): Promise<void>
     method: 'PUT',
     headers: jsonHeaders,
     body: JSON.stringify(providers),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body.error) msg = body.error
+    } catch {
+      // non-JSON failure body — keep the status text
+    }
+    throw new Error(msg)
+  }
+}
+
+// Web tool config (proxy + engine keys). The server merges engine keys into
+// the web map; engines sent with "" are removed, absent ones preserved.
+export async function saveWebSettings(web: { proxy: string; engines: Record<string, string> }): Promise<void> {
+  const res = await fetch('/api/settings/web', {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify(web),
   })
   if (!res.ok) {
     let msg = `HTTP ${res.status}`
@@ -299,6 +325,10 @@ export interface SettingsPageHandles {
   close: () => void
   isOpen: () => boolean
 }
+
+// Settings is a screen drill: home → edit (provider form) and home → web
+// (tool config) → webAdd (engine picker). Back walks one level up.
+type ScreenId = 'home' | 'edit' | 'web' | 'webAdd'
 
 // Canonical display/storage order for input modalities — toggle history
 // must not decide whether the row reads "text image" or "image text".
@@ -797,6 +827,9 @@ export function createSettingsPage(): SettingsPageHandles {
           segBtnStyle(el, l === loc)
         }
         languageValue.textContent = names[languagePref()]
+        // The Web card summary is composite copy (no anchor) — refresh it by
+        // hand in the new locale.
+        renderWebSummary()
       } catch (err) {
         toast(t('saveFailed')(err instanceof Error ? err.message : 'error'))
       }
@@ -1643,6 +1676,14 @@ export function createSettingsPage(): SettingsPageHandles {
   generalCard.insertBefore(appLogHead, logDivider)
   generalCard.insertBefore(appLogPanel, logDivider)
 
+  // Lives above both the edit screen and the web screens in this file, so it
+  // is hoisted here — each screen appends its own cancel/save pair.
+  const btnRow = (a: HTMLElement, b: HTMLElement) => {
+    const row = createElement('div', 'flex gap-2 px-3')
+    row.append(a, b)
+    return row
+  }
+
   // ------------------------------------------------- configuration reload
   // Manual two-phase config reload. The card is request→report: the daemon
   // answers once, so while the POST is in flight the phase list shows an
@@ -1852,6 +1893,290 @@ export function createSettingsPage(): SettingsPageHandles {
       })
   })
 
+  // ------------------------------------------------------------------ tools
+  // Web tool config. Engine ids are the provider ID()s stored lowercase in
+  // settings.json; display names are capitalized. DuckDuckGo never appears:
+  // the web tool registers it unconditionally, so it has no config surface.
+  const WEB_ENGINES: Array<{ id: string; name: string; sub?: StaticKey }> = [
+    { id: 'anysearch', name: 'Anysearch' },
+    { id: 'tavily', name: 'Tavily' },
+    { id: 'jina', name: 'Jina' },
+    { id: 'zhipu', name: 'Zhipu', sub: 'webZhipuSub' },
+  ]
+  const webEngineName = (id: string): string =>
+    WEB_ENGINES.find((e) => e.id === id)?.name ?? id.charAt(0).toUpperCase() + id.slice(1)
+
+  const webForm = { proxy: '', engines: [] as Array<{ id: string; key: string }> }
+  // ✕ drops the row from webForm.engines, but removals must still ride the
+  // PUT as "" — the server merge deletes "" keys and preserves absent ones,
+  // so a deletion that simply vanished from the body would be a no-op.
+  let webRemoved = new Set<string>()
+  let webAddSel: string | null = null
+
+  const webCard = createNode('div', {
+    className: 'mx-0 mb-2.5 px-3.5 py-3 bg-card border border-hairline rounded-2xl cursor-pointer',
+    attrs: { 'data-web-card': '' },
+  })
+  const webCardR1 = createElement('div', 'flex items-center gap-2')
+  webCardR1.append(
+    createNode('div', { className: 'text-sm font-semibold flex-1', text: 'Web' }),
+    createNode('span', { className: 'text-t3 text-[13px]', text: '›' }),
+  )
+  const webCardSub = createNode('div', {
+    className: 'text-[11px] text-t3 font-mono mt-0.5 truncate',
+    attrs: { 'data-web-card-sub': '' },
+  })
+  webCard.append(webCardR1, webCardSub)
+  webCard.addEventListener('click', () => openWeb())
+
+  // The summary interpolates counts and a host string — data-i18n-arg only
+  // carries numbers, so the composite line is recomputed on every home render
+  // AND by the language-switch handler instead of being anchored.
+  const renderWebSummary = () => {
+    const w = payload.web ?? { proxy: '', engines: {} }
+    const parts: string[] = []
+    const n = Object.keys(w.engines).length
+    if (n > 0) parts.push(t('webEnginesCount')(n))
+    if (w.proxy) parts.push(t('webProxyPart')(w.proxy.replace(/^(https?|socks5):\/\//, '')))
+    webCardSub.textContent = parts.length > 0 ? parts.join(' · ') : t('webCardEmpty')
+  }
+
+  const webScreen = createElement('div', '')
+  webScreen.setAttribute('data-screen', 'web')
+  const webProxyInput = createNode('input', {
+    className:
+      'w-full px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+    props: { type: 'text', spellcheck: false, placeholder: 'http://localhost:10809', value: '' },
+    attrs: { 'data-web-proxy': '' },
+  }) as HTMLInputElement
+  webProxyInput.addEventListener('input', () => {
+    webForm.proxy = webProxyInput.value
+  })
+  const webEngineList = createElement('div', 'px-3')
+  webEngineList.setAttribute('data-web-engines', '')
+  const addWebEngineBtn = createNode('div', {
+    className: 'flex items-center gap-1.5 px-3.5 py-2.5 text-[13px] text-blue cursor-pointer select-none mb-1',
+    attrs: { 'data-add-web-engine': '' },
+  })
+  addWebEngineBtn.append(renderIcon('plus', { size: 16 }), createNode('span', L('webAddEngine')))
+  addWebEngineBtn.addEventListener('click', () => openWebAdd())
+  const webCancelBtn = createNode('button', {
+    className: 'flex-1 py-2.5 rounded-xl text-[13px] font-semibold bg-transparent text-t2 border border-hairline',
+    ...L('cancelBtn', { 'data-web-cancel': '' }),
+  }) as HTMLButtonElement
+  const webSaveBtn = createNode('button', {
+    className: 'flex-[2] py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35',
+    ...L('saveBtn', { 'data-web-save': '' }),
+  }) as HTMLButtonElement
+  webScreen.append(
+    sectionLabel('webProxySection'),
+    createNode('div', { className: 'px-3 pb-2.5' }, webProxyInput),
+    sectionLabel('webEnginesSection'),
+    webEngineList,
+    addWebEngineBtn,
+    createElement('div', 'h-3.5'),
+    btnRow(webCancelBtn, webSaveBtn),
+  )
+
+  const renderWebEngines = () => {
+    webEngineList.replaceChildren()
+    webForm.engines.forEach((e, i) => {
+      const wrap = createElement('div', 'mb-3')
+      wrap.setAttribute('data-web-engine', e.id)
+      const inp = createNode('input', {
+        className:
+          'flex-1 px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+        props: { type: 'password', spellcheck: false, placeholder: t('phApiKey'), value: e.key },
+        attrs: { 'data-web-key': '' },
+      }) as HTMLInputElement
+      inp.addEventListener('input', () => {
+        webForm.engines[i].key = inp.value
+      })
+      const eye = createNode('button', {
+        className: 'w-[30px] h-9 bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0',
+        attrs: { title: t('showHideTitle'), type: 'button' },
+      })
+      eye.innerHTML = EYE
+      eye.addEventListener('click', () => {
+        const show = inp.type === 'password'
+        inp.type = show ? 'text' : 'password'
+        eye.innerHTML = show ? EYE_OFF : EYE
+      })
+      // ✕ removes the row now; the "" deletion encoding is applied in saveWeb.
+      const del = createNode('button', {
+        className: 'w-9 h-9 -mr-1 flex items-center justify-center text-[13px] text-red/70 active:text-red cursor-pointer select-none shrink-0 transition-colors',
+        text: '✕',
+        attrs: { type: 'button' },
+      })
+      del.addEventListener('click', () => {
+        webForm.engines.splice(i, 1)
+        webRemoved.add(e.id)
+        renderWebEngines()
+      })
+      const row = createElement('div', 'flex items-center gap-1.5')
+      row.append(inp, eye, del)
+      wrap.append(createNode('span', { className: 'block text-[11px] text-t2 mb-1.5', text: webEngineName(e.id) }), row)
+      webEngineList.appendChild(wrap)
+    })
+  }
+
+  const openWeb = () => {
+    const w = payload.web ?? { proxy: '', engines: {} }
+    webForm.proxy = w.proxy
+    // Known engines in WEB_ENGINES order, unknown ids after (alphabetical) —
+    // hand-added engines stay visible so they round-trip.
+    webForm.engines = Object.entries(w.engines)
+      .sort(([a], [b]) => {
+        const rank = (id: string) => {
+          const i = WEB_ENGINES.findIndex((e) => e.id === id)
+          return i >= 0 ? i : WEB_ENGINES.length
+        }
+        const ra = rank(a)
+        const rb = rank(b)
+        if (ra !== rb) return ra - rb
+        return a.localeCompare(b)
+      })
+      .map(([id, key]) => ({ id, key }))
+    webRemoved = new Set()
+    webProxyInput.value = webForm.proxy
+    renderWebEngines()
+    showScreen('web')
+  }
+
+  const saveWeb = async () => {
+    const engines: Record<string, string> = {}
+    for (const e of webForm.engines) engines[e.id] = e.key.trim()
+    for (const id of webRemoved) engines[id] = ''
+    try {
+      await saveWebSettings({ proxy: webForm.proxy.trim(), engines })
+      payload = await fetchSettings()
+      renderHome()
+      showScreen('home')
+      toast(t('webSaved'))
+    } catch (e) {
+      // Stay on the web screen — the form state is untouched.
+      toast(t('saveFailed')(e instanceof Error ? e.message : 'error'))
+    }
+  }
+  webSaveBtn.addEventListener('click', () => void saveWeb())
+  webCancelBtn.addEventListener('click', () => showScreen('home'))
+
+  // Add-engine screen: tile picker (protoSel layout) + one key field. The
+  // engine only lands in webForm here — the actual PUT happens on the Web
+  // page's save.
+  const webAddScreen = createElement('div', '')
+  webAddScreen.setAttribute('data-screen', 'webAdd')
+  const webTiles = createElement('div', 'grid grid-cols-2 gap-2 px-3')
+  const webAddKeyInput = createNode('input', {
+    className:
+      'flex-1 px-3 py-2.5 bg-ink2 border border-hairline rounded-xl text-t1 text-[13px] font-mono outline-none focus:border-blue/40',
+    props: { type: 'password', spellcheck: false, placeholder: t('phApiKey'), value: '' },
+    attrs: { 'data-web-add-key': '' },
+  }) as HTMLInputElement
+  const webAddKeyEye = createNode('button', {
+    className: 'w-[30px] h-9 bg-transparent border-none text-t3 flex items-center justify-center cursor-pointer shrink-0',
+    attrs: { title: t('showHideTitle'), type: 'button' },
+  })
+  webAddKeyEye.innerHTML = EYE
+  webAddKeyEye.addEventListener('click', () => {
+    const show = webAddKeyInput.type === 'password'
+    webAddKeyInput.type = show ? 'text' : 'password'
+    webAddKeyEye.innerHTML = show ? EYE_OFF : EYE
+  })
+  const webAddKeyDel = createNode('button', {
+    className: 'w-9 h-9 -mr-1 flex items-center justify-center text-[13px] text-red/70 active:text-red cursor-pointer select-none shrink-0 transition-colors',
+    text: '✕',
+    attrs: { type: 'button' },
+  })
+  webAddKeyDel.addEventListener('click', () => {
+    webAddKeyInput.value = ''
+  })
+  const webAddKeyRow = createElement('div', 'flex items-center gap-1.5')
+  webAddKeyRow.append(webAddKeyInput, webAddKeyEye, webAddKeyDel)
+  const webAddCancelBtn = createNode('button', {
+    className: 'flex-1 py-2.5 rounded-xl text-[13px] font-semibold bg-transparent text-t2 border border-hairline',
+    ...L('cancelBtn', { 'data-web-add-cancel': '' }),
+  }) as HTMLButtonElement
+  const webAddSaveBtn = createNode('button', {
+    className: 'flex-[2] py-2.5 rounded-xl text-[13px] font-semibold bg-blue/15 text-blue border border-blue/35',
+    ...L('saveBtn', { 'data-web-add-save': '' }),
+  }) as HTMLButtonElement
+  webAddScreen.append(
+    sectionLabel('webEnginesSection'),
+    webTiles,
+    sectionLabel('apiKeySection'),
+    createNode('div', { className: 'px-3' }, webAddKeyRow),
+    createElement('div', 'h-3.5'),
+    btnRow(webAddCancelBtn, webAddSaveBtn),
+  )
+
+  const webTileEls: Array<{ el: HTMLElement; id: string }> = []
+  const webTilesTint = () => {
+    for (const tw of webTileEls) {
+      const selected = webAddSel !== null && tw.id === webAddSel
+      tw.el.classList.toggle('border-blue/50', selected)
+      tw.el.classList.toggle('bg-blue/10', selected)
+      tw.el.classList.toggle('border-hairline', !selected)
+      tw.el.classList.toggle('bg-ink2', !selected)
+    }
+  }
+  const renderWebTiles = () => {
+    webTiles.replaceChildren()
+    webTileEls.length = 0
+    const added = new Set(webForm.engines.map((e) => e.id))
+    for (const engine of WEB_ENGINES) {
+      const dim = added.has(engine.id)
+      const tile = createNode('div', {
+        className:
+          'py-2.5 px-2 rounded-xl text-center bg-ink2 border border-hairline' +
+          (dim ? ' opacity-35 pointer-events-none' : ''),
+        attrs: { 'data-web-tile': engine.id },
+      })
+      tile.append(
+        createNode('div', { className: 'text-xs font-semibold mb-0.5', text: engine.name }),
+        createNode('div', {
+          className: 'text-[9px] text-t3 font-mono',
+          text: dim ? t('webEngineAdded') : engine.sub ? t(engine.sub) : '',
+        }),
+      )
+      tile.addEventListener('click', () => {
+        webAddSel = engine.id
+        webTilesTint()
+      })
+      webTiles.appendChild(tile)
+      webTileEls.push({ el: tile, id: engine.id })
+    }
+    webTilesTint()
+  }
+
+  const openWebAdd = () => {
+    const added = new Set(webForm.engines.map((e) => e.id))
+    webAddSel = WEB_ENGINES.find((e) => !added.has(e.id))?.id ?? null
+    webAddKeyInput.value = ''
+    renderWebTiles()
+    showScreen('webAdd')
+  }
+
+  webAddSaveBtn.addEventListener('click', () => {
+    if (!webAddSel) {
+      toast(t('webEngineRequired'))
+      return
+    }
+    const key = webAddKeyInput.value.trim()
+    if (!key) {
+      toast(t('webKeyRequired'))
+      return
+    }
+    // Rows added this session append at the bottom; reopen re-sorts. A
+    // re-added engine replaces its pending "" deletion with the new key.
+    webForm.engines.push({ id: webAddSel, key })
+    webRemoved.delete(webAddSel)
+    renderWebEngines()
+    showScreen('web')
+  })
+  webAddCancelBtn.addEventListener('click', () => showScreen('web'))
+
+  homeScreen.append(sectionLabel('toolsSection'), webCard)
   homeScreen.append(sectionLabel('configSection'), configCard)
   homeScreen.append(sectionLabel('generalSection'), generalCard)
   addProviderBtn.addEventListener('click', () => loadForm(null, true, payload.providers.length))
@@ -1963,12 +2288,6 @@ export function createSettingsPage(): SettingsPageHandles {
     ...L('saveBtn', { 'data-save': '' }),
   }) as HTMLButtonElement
 
-  const btnRow = (a: HTMLElement, b: HTMLElement) => {
-    const row = createElement('div', 'flex gap-2 px-3')
-    row.append(a, b)
-    return row
-  }
-
   editScreen.append(
     sectionLabel('protocolSection'),
     protoSel,
@@ -2058,18 +2377,37 @@ export function createSettingsPage(): SettingsPageHandles {
   }
   jsonAction.addEventListener('click', openSheet)
 
-  frame.append(hdr, homeScreen, editScreen)
+  frame.append(hdr, homeScreen, editScreen, webScreen, webAddScreen)
   root.append(frame, sheetWrap, toastEl)
 
   // --------------------------------------------------------------- screens
-  const showScreen = (home: boolean) => {
-    homeScreen.classList.toggle('hidden', !home)
-    editScreen.classList.toggle('hidden', home)
+  const screenEls: Record<ScreenId, HTMLElement> = {
+    home: homeScreen,
+    edit: editScreen,
+    web: webScreen,
+    webAdd: webAddScreen,
+  }
+  let curScreen: ScreenId = 'home'
+  const showScreen = (which: ScreenId) => {
+    curScreen = which
+    for (const id of Object.keys(screenEls) as ScreenId[]) {
+      screenEls[id].classList.toggle('hidden', id !== which)
+    }
     // The anchor follows the visible screen so a locale switch retranslates
-    // whichever heading is showing.
-    const k = home ? 'settingsTitle' : form.isNew ? 'addProviderTitle' : 'editProviderTitle'
-    titleEl.textContent = t(k)
-    titleEl.setAttribute('data-i18n', k)
+    // whichever heading is showing — except "Web", a product name that stays
+    // untranslated and unanchored.
+    if (which === 'edit') {
+      const k = form.isNew ? 'addProviderTitle' : 'editProviderTitle'
+      titleEl.textContent = t(k)
+      titleEl.setAttribute('data-i18n', k)
+    } else if (which === 'web') {
+      titleEl.textContent = 'Web'
+      titleEl.removeAttribute('data-i18n')
+    } else {
+      const k: StaticKey = which === 'webAdd' ? 'webAddEngine' : 'settingsTitle'
+      titleEl.textContent = t(k)
+      titleEl.setAttribute('data-i18n', k)
+    }
     // scrollTop (not scrollTo): jsdom lacks the scrolling API, and the
     // property write is a no-op there while still scrolling in the browser.
     root.scrollTop = 0
@@ -2081,6 +2419,7 @@ export function createSettingsPage(): SettingsPageHandles {
       provList.appendChild(createProviderCard(p))
     }
     llmDefaultCard.title.textContent = `${payload.default.provider} / ${payload.default.model}`
+    renderWebSummary()
     // Unconfigured STT/TTS greys the card instead of showing an empty picker.
     if (payload.stt) {
       sttDefaultCard.title.textContent = `${payload.stt.provider} / ${payload.stt.model}`
@@ -2188,7 +2527,7 @@ export function createSettingsPage(): SettingsPageHandles {
       del.addEventListener('click', askDelete)
       delZone.appendChild(del)
     }
-    showScreen(false)
+    showScreen('edit')
   }
 
   // Builds the wire provider from the current form state — the probe and the
@@ -2608,7 +2947,7 @@ export function createSettingsPage(): SettingsPageHandles {
       audioTasks.clear()
       audioTaskFetches.clear()
       renderHome()
-      showScreen(true)
+      showScreen('home')
       toast(successMsg)
     } catch (e) {
       // Stay on the edit screen — the user's form state is untouched.
@@ -2650,12 +2989,13 @@ export function createSettingsPage(): SettingsPageHandles {
     void persist(next, t('deletedRestorable'))
   }
 
-  cancelBtn.addEventListener('click', () => showScreen(true))
+  cancelBtn.addEventListener('click', () => showScreen('home'))
   backBtn.addEventListener('click', () => {
-    // Drill-down: from the edit screen back goes to settings home; from
-    // home it leaves Settings entirely and returns to the chat.
-    if (editScreen.classList.contains('hidden')) close()
-    else showScreen(true)
+    // Drill-down: each sub-screen returns to its parent (webAdd → web,
+    // web/edit → home); home leaves Settings entirely, back to the chat.
+    if (curScreen === 'home') close()
+    else if (curScreen === 'webAdd') showScreen('web')
+    else showScreen('home')
   })
 
   // ------------------------------------------------------------------ open
@@ -2676,7 +3016,7 @@ export function createSettingsPage(): SettingsPageHandles {
       })
       .finally(() => {
         renderHome()
-        showScreen(true)
+        showScreen('home')
       })
     // Independent fetch: a device-list failure must not blank the page (the
     // section just renders empty, editable via +).
