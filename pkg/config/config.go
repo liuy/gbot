@@ -648,9 +648,8 @@ func (c *Config) Save() error {
 
 	raw := make(map[string]json.RawMessage)
 	if existing, readErr := os.ReadFile(path); readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 
 	modelJSON, _ := json.Marshal(c.Model)
@@ -692,9 +691,8 @@ func SaveProviders(providers []Provider) error {
 
 	raw := make(map[string]json.RawMessage)
 	if readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 
 	providersJSON, err := json.Marshal(providers)
@@ -820,9 +818,8 @@ func SaveRemoteDevices(devices []RemoteDevice) error {
 
 	raw := make(map[string]json.RawMessage)
 	if readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 
 	devicesJSON, err := json.Marshal(devices)
@@ -973,9 +970,8 @@ func SaveDefaultModel(provider, model string) error {
 	}
 	raw := make(map[string]json.RawMessage)
 	if readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 	// Validate INSIDE the lock: checking against a pre-lock Load() (the old
 	// handler-side validation) raced with a concurrent SaveProviders that
@@ -1055,9 +1051,8 @@ func SaveSTTDefault(provider, model string) error {
 	}
 	raw := make(map[string]json.RawMessage)
 	if readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 	var providers []Provider
 	if pj, ok := raw["providers"]; ok {
@@ -1139,9 +1134,8 @@ func SaveTTSDefault(provider, model, voice string) error {
 	}
 	raw := make(map[string]json.RawMessage)
 	if readErr == nil {
-		if err := json.Unmarshal(existing, &raw); err != nil {
-			raw = make(map[string]json.RawMessage)
-		}
+		// Corrupt JSON leaves raw as the fresh map above (see SaveWeb).
+		_ = json.Unmarshal(existing, &raw)
 	}
 	var providers []Provider
 	if pj, ok := raw["providers"]; ok {
