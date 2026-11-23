@@ -2645,13 +2645,19 @@ export function createSettingsPage(): SettingsPageHandles {
     nameInp.addEventListener('click', (e) => e.stopPropagation())
     nameInp.addEventListener('input', () => {
       const next = nameInp.value
-      if (next === currentKey) return
-      // Renaming onto an existing id would silently merge two models —
-      // reject instead and snap the field back to the current key.
-      if (next !== '' && form.models[next] !== undefined) {
-        nameInp.value = currentKey
-        return
-      }
+      // Renaming onto an existing id would silently merge two models. The
+      // text stays (a name whose PREFIX is an existing id must transit
+      // through the collision — snapping mid-typing makes such names
+      // untypable) and the field just flags red; the map is never re-keyed
+      // while colliding, so it can never hold a duplicate key.
+      const colliding = next !== '' && next !== currentKey && form.models[next] !== undefined
+      nameInp.classList.toggle('border-red/50', colliding)
+      // Both border-color siblings outrank or trail border-red/50 in the
+      // cascade (focus: via specificity, transparent via source order), so
+      // each must yield while the collision flag is up or red never shows.
+      nameInp.classList.toggle('focus:border-blue/40', !colliding)
+      nameInp.classList.toggle('border-transparent', !colliding)
+      if (colliding || next === currentKey) return
       // re-key preserving position
       const rebuilt: Record<string, SettingsModelMeta> = {}
       for (const [k, v] of Object.entries(form.models)) {
@@ -2659,6 +2665,16 @@ export function createSettingsPage(): SettingsPageHandles {
       }
       form.models = rebuilt
       currentKey = next
+    })
+    nameInp.addEventListener('blur', () => {
+      // Committing a collision would be the merge the input handler
+      // refused — snap to the row's valid key; the map was never polluted.
+      const v = nameInp.value
+      if (v !== '' && v !== currentKey && form.models[v] !== undefined) {
+        nameInp.value = currentKey
+        nameInp.classList.remove('border-red/50')
+        nameInp.classList.add('focus:border-blue/40', 'border-transparent')
+      }
     })
     mrow.appendChild(nameInp)
     // Input-modality chips, exactly as configured (text/image/video/…);

@@ -1575,7 +1575,7 @@ func homeDir(t *testing.T) string {
 func TestValidateProviders_AudioAccepted(t *testing.T) {
 	p := config.Provider{Name: "a", URL: "http://127.0.0.1:8082/v1", Type: config.ProviderTypeAudio}
 	p.Models.Set("stt-stream", config.ModelConfig{})
-	if msg := validateProviders([]config.Provider{p}); msg != "" {
+	if msg := validateProviders([]config.Provider{p}, nil); msg != "" {
 		t.Errorf("validateProviders(audio) = %q, want accepted", msg)
 	}
 }

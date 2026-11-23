@@ -653,7 +653,49 @@ describe('createSettingsPage', () => {
     })
   })
 
-  it('renaming onto an existing model id snaps back instead of silently merging', async () => {
+  it('typing through a prefix collision keeps the text; the map gains the new key, the existing one intact', async () => {
+    const payload = {
+      providers: [
+        {
+          ...PAYLOAD.providers[0],
+          models: { 'glm-5.3': { context: '1M', input: ['text'] } },
+        },
+      ],
+      default: PAYLOAD.default,
+    }
+    const page = await openPage(makeFetchHandler({ payload }), payload)
+    ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
+    ;(page.root.querySelector('[data-add-model]') as HTMLElement).click()
+    const fresh = [...page.root.querySelectorAll('[data-model-name]')].find(
+      (i) => (i as HTMLInputElement).value === '',
+    ) as HTMLInputElement
+    expect(fresh.classList.contains('border-red/50')).toBe(false)
+    const type = (s: string) => input(fresh, s)
+    // char by char up to the exact collision: "glm-5.3" itself
+    for (let i = 1; i <= 'glm-5.3'.length; i++) type('glm-5.3'.slice(0, i))
+    // the intermediate value equals the existing id — kept, never wiped
+    expect(fresh.value).toBe('glm-5.3')
+    expect(fresh.classList.contains('border-red/50')).toBe(true)
+    // the blue focus border must yield while red is up or the cascade
+    // (focus:border-blue/40 outranks border-red/50) hides the flag
+    expect(fresh.classList.contains('focus:border-blue/40')).toBe(false)
+    // border-transparent trails border-red/50 in source order: it must go
+    // too or the red flag loses the cascade to the resting border color.
+    expect(fresh.classList.contains('border-transparent')).toBe(false)
+    // continue past the collision to the full name
+    for (let i = 'glm-5.3-'.length; i <= 'glm-5.3-flash'.length; i++) type('glm-5.3-flash'.slice(0, i))
+    expect(fresh.value).toBe('glm-5.3-flash')
+    expect(fresh.classList.contains('border-red/50')).toBe(false)
+    expect(fresh.classList.contains('focus:border-blue/40')).toBe(true)
+    expect(fresh.classList.contains('border-transparent')).toBe(true)
+    let putBody: SettingsProvider[] | undefined
+    vi.stubGlobal('fetch', makeFetchHandler({ payload, onPut: (p) => { putBody = p } }))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    expect(Object.keys(putBody![0].models)).toEqual(['glm-5.3', 'glm-5.3-flash'])
+  })
+
+  it('blur with a duplicate name snaps the field back; the map is unchanged', async () => {
     const payload = {
       providers: [
         {
@@ -668,18 +710,23 @@ describe('createSettingsPage', () => {
     }
     const page = await openPage(makeFetchHandler({ payload }), payload)
     ;(page.root.querySelector('[data-provider-card]') as HTMLElement).click()
-    const rows = [...page.root.querySelectorAll('[data-model-name]')] as HTMLInputElement[]
-    const rowFor = (id: string) =>
-      rows.find((r) => (r as HTMLInputElement).dataset.currentKeyTest === id) ??
-      rows.find((r) => r.value === id || r.placeholder === 'model id') ??
-      rows[0]
-    // rename model-a → model-b (existing id): rejected, field snaps back
-    const inp = rows[0]
+    const inp = page.root.querySelector('[data-model-name]') as HTMLInputElement
+    expect(inp.classList.contains('border-red/50')).toBe(false)
     input(inp, 'model-b')
+    // free typing: the colliding text stays in the field, flagged red
+    expect(inp.value).toBe('model-b')
+    expect(inp.classList.contains('border-red/50')).toBe(true)
+    inp.dispatchEvent(new Event('blur'))
     expect(inp.value).toBe('model-a')
-    expect(modelNames(page.root)).toContain('model-a')
-    expect(modelNames(page.root)).toContain('model-b')
-    void rowFor
+    expect(inp.classList.contains('border-red/50')).toBe(false)
+    expect(inp.classList.contains('focus:border-blue/40')).toBe(true)
+    expect(inp.classList.contains('border-transparent')).toBe(true)
+    let putBody: SettingsProvider[] | undefined
+    vi.stubGlobal('fetch', makeFetchHandler({ payload, onPut: (p) => { putBody = p } }))
+    ;(page.root.querySelector('[data-save]') as HTMLElement).click()
+    await vi.waitFor(() => expect(putBody).toBeDefined())
+    // no merge happened: both models survive under their original keys
+    expect(Object.keys(putBody![0].models).sort()).toEqual(['model-a', 'model-b'])
   })
 
   it('save with only an unnamed row is rejected client-side (no PUT)', async () => {

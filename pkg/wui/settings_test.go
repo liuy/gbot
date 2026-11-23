@@ -1012,9 +1012,154 @@ func TestValidateKnownTypes(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &providers); err != nil {
 			t.Fatalf("type %q: unmarshal: %v", typ, err)
 		}
-		if msg := validateProviders(providers); msg != "" {
+		if msg := validateProviders(providers, nil); msg != "" {
 			t.Errorf("type %q rejected: %q", typ, msg)
 		}
+	}
+}
+
+// zeroModelsFixture carries the historical bad state: an openrouter saved
+// with zero models next to a valid zhipu. The bad entry must not block
+// edits to other providers, but any change to it re-arms the strict rules.
+const zeroModelsFixture = `{
+  "providers": [
+    {
+      "name": "zhipu",
+      "url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "keys": ["zhipu-test-key"],
+      "models": {"glm-5.3": {"context": "1M"}}
+    },
+    {
+      "name": "openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "keys": ["sk-or-test"],
+      "models": {}
+    }
+  ]
+}`
+
+const fixtureZhipu = `{"name":"zhipu","url":"https://open.bigmodel.cn/api/coding/paas/v4","keys":["zhipu-test-key"],"models":{"glm-5.3":{"context":"1M"}}}`
+const fixtureOpenRouter = `{"name":"openrouter","url":"https://openrouter.ai/api/v1","keys":["sk-or-test"],"models":{}}`
+
+// putProviders PUTs body and returns status, the decoded error envelope and
+// the file bytes after the request.
+func putProviders(t *testing.T, srvURL, body string) (int, string, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, srvURL+"/api/settings/providers", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(home, ".gbot", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, e.Error, after
+}
+
+func TestPutProvidersUnchangedBrokenEntryDoesNotBlockOthers(t *testing.T) {
+	srv := newSettingsServer(t)
+	seedSettings(t, zeroModelsFixture)
+
+	body := `[
+      {"name":"zhipu","url":"https://open.bigmodel.cn/api/coding/paas/v4","keys":["zhipu-test-key"],"models":{"glm-5.3":{"context":"2M"}}},
+      ` + fixtureOpenRouter + `
+    ]`
+	status, errMsg, after := putProviders(t, srv.URL, body)
+	if status != http.StatusOK {
+		mbFatalf(t, "status = %d (error %q), want 200 — an unchanged broken provider must not block other providers' edits", status, errMsg)
+	}
+	var disk struct {
+		Providers []struct {
+			Name   string                    `json:"name"`
+			Models map[string]map[string]any `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(after, &disk); err != nil {
+		t.Fatalf("round-trip settings: %v", err)
+	}
+	if len(disk.Providers) != 2 {
+		mbFatalf(t, "providers on disk = %d, want both to survive the save", len(disk.Providers))
+	}
+	if disk.Providers[0].Name != "zhipu" || disk.Providers[0].Models["glm-5.3"]["context"] != "2M" {
+		mbFatalf(t, "zhipu edit not on disk: %+v", disk.Providers[0])
+	}
+	if disk.Providers[1].Name != "openrouter" || len(disk.Providers[1].Models) != 0 {
+		mbFatalf(t, "openrouter must ride along unchanged with zero models, got %+v", disk.Providers[1])
+	}
+}
+
+func TestPutProvidersEditingBrokenEntryStillRejected(t *testing.T) {
+	srv := newSettingsServer(t)
+	_, old := seedSettings(t, zeroModelsFixture)
+
+	body := `[
+      ` + fixtureZhipu + `,
+      {"name":"openrouter","url":"https://openrouter.ai/api/v2","keys":["sk-or-test"],"models":{}}
+    ]`
+	status, errMsg, after := putProviders(t, srv.URL, body)
+	if status != http.StatusBadRequest {
+		mbFatalf(t, "status = %d, want 400 — editing the broken provider re-arms its rules", status)
+	}
+	if errMsg != "provider openrouter: at least one model is required" {
+		mbFatalf(t, "error = %q, want the openrouter model rule", errMsg)
+	}
+	if string(after) != string(old) {
+		mbFatalf(t, "rejected PUT must leave settings.json byte-identical")
+	}
+}
+
+func TestPutProvidersDuplicateNamesStillRejected(t *testing.T) {
+	srv := newSettingsServer(t)
+	_, old := seedSettings(t, zeroModelsFixture)
+
+	// Both entries are identical to the on-disk zhipu — the duplicate rule
+	// is cross-list and fires even when each copy alone would be unchanged.
+	body := `[` + fixtureZhipu + `,` + fixtureZhipu + `]`
+	status, errMsg, after := putProviders(t, srv.URL, body)
+	if status != http.StatusBadRequest {
+		mbFatalf(t, "status = %d, want 400 (duplicate names are a whole-batch rule)", status)
+	}
+	if errMsg != `duplicate provider name "zhipu"` {
+		mbFatalf(t, "error = %q, want the duplicate-name rule", errMsg)
+	}
+	if string(after) != string(old) {
+		mbFatalf(t, "rejected PUT must leave settings.json byte-identical")
+	}
+}
+
+func TestPutProvidersNewEntryWithZeroModelsRejected(t *testing.T) {
+	srv := newSettingsServer(t)
+	_, old := seedSettings(t, zeroModelsFixture)
+
+	body := `[
+      ` + fixtureZhipu + `,
+      {"name":"newp","url":"https://n.example","keys":["k"],"models":{}}
+    ]`
+	status, errMsg, after := putProviders(t, srv.URL, body)
+	if status != http.StatusBadRequest {
+		mbFatalf(t, "status = %d, want 400 — new entries get full validation", status)
+	}
+	if errMsg != "provider newp: at least one model is required" {
+		mbFatalf(t, "error = %q, want the newp model rule", errMsg)
+	}
+	if string(after) != string(old) {
+		mbFatalf(t, "rejected PUT must leave settings.json byte-identical")
 	}
 }
 

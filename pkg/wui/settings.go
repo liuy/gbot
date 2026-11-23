@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -131,7 +132,19 @@ func handlePutProviders(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if msg := validateProviders(providers); msg != "" {
+	// The client always PUTs the full list, so pre-existing entries ride
+	// along; content rules apply only at the boundary of change — entries
+	// identical to disk pass through untouched, keeping one historically
+	// broken provider from holding every other provider's edits hostage.
+	// An unreadable config behaves as cold start: nothing matches, every
+	// entry gets full validation.
+	onDisk := map[string]config.Provider{}
+	if cfg, err := config.Load(); err == nil {
+		for _, p := range cfg.Providers {
+			onDisk[p.Name] = p
+		}
+	}
+	if msg := validateProviders(providers, onDisk); msg != "" {
 		errorJSON(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -190,9 +203,12 @@ var knownProviderTypes = map[string]bool{
 }
 
 // validateProviders returns the first rule violation as a user-facing
-// message, or "" when the provider set is acceptable. Checked before any
-// write happens, so a rejected PUT never touches settings.json.
-func validateProviders(providers []config.Provider) string {
+// message, or "" when the provider set is acceptable. Cross-list rules
+// (at-least-one, duplicate names) cover the whole batch; per-provider
+// content rules cover only entries that are new or changed relative to
+// onDisk (name → on-disk provider; nil enforces everything). Checked
+// before any write happens, so a rejected PUT never touches settings.json.
+func validateProviders(providers []config.Provider, onDisk map[string]config.Provider) string {
 	if len(providers) == 0 {
 		return "at least one provider is required"
 	}
@@ -205,6 +221,9 @@ func validateProviders(providers []config.Provider) string {
 			return fmt.Sprintf("duplicate provider name %q", p.Name)
 		}
 		seen[p.Name] = true
+		if cur, ok := onDisk[p.Name]; ok && providerUnchanged(p, cur) {
+			continue
+		}
 		if strings.TrimSpace(p.URL) == "" {
 			return fmt.Sprintf("provider %s: url is required", p.Name)
 		}
@@ -221,6 +240,29 @@ func validateProviders(providers []config.Provider) string {
 		}
 	}
 	return ""
+}
+
+// providerUnchanged reports whether p is identical to the on-disk entry cur
+// in exactly the fields the content rules constrain: name/url/keys/models/
+// type. FreeFetched and ExtraParams carry no content rule, so a difference
+// there cannot smuggle invalid content past validation and is not compared.
+// Models compares marshaled JSON so key order and per-model metadata count
+// as differences too.
+func providerUnchanged(p, cur config.Provider) bool {
+	if p.Name != cur.Name || p.URL != cur.URL || p.Type != cur.Type {
+		return false
+	}
+	if !slices.Equal(p.Keys, cur.Keys) {
+		return false
+	}
+	pm, perr := json.Marshal(p.Models)
+	cm, cerr := json.Marshal(cur.Models)
+	// Marshal cannot fail for Models' shape; treat the impossible as
+	// "changed" so validation errs strict, never permissive.
+	if perr != nil || cerr != nil {
+		return false
+	}
+	return bytes.Equal(pm, cm)
 }
 
 // handleTestProvider probes one provider (decoded from the request body)
